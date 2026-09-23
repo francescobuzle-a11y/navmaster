@@ -1,0 +1,203 @@
+# Offline data packages for the tablet (map, routing graph, heavy-vehicle limits).
+#
+#  test   : small extract around Rimini / San Marino, used by the emulator tests (fast)
+#  italia : the whole of Italy, the package drivers download on the tablet
+#
+# Every package is published on a fixed release tag (dati-test, dati-italia) with a
+# manifest.json the app reads to know which files to download. Files larger than GitHub's
+# 2 GB asset limit are split into parts; the app joins them after downloading.
+name: Dati offline
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "test, italia oppure entrambe"
+        default: "entrambe"
+  schedule:
+    - cron: "0 2 1 * *"   # a fresh package every month, as in the project plan
+
+permissions:
+  contents: write
+
+env:
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:3.6.3   # must match valhalla-mobile 0.6.3 on the tablet
+  PLANETILER: https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar
+  PBF_ITALY: https://download.geofabrik.de/europe/italy-latest.osm.pbf
+  TEST_BBOX: "12.30,43.85,12.72,44.12"
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica l'estratto OSM dell'Italia
+        run: |
+          curl -fsSL -o italy.osm.pbf "$PBF_ITALY"
+          ls -la italy.osm.pbf
+      - name: Estratto di prova (Rimini / San Marino)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          osmium extract -b "$TEST_BBOX" italy.osm.pbf -o test.osm.pbf --overwrite
+          ls -la test.osm.pbf
+      - uses: actions/upload-artifact@v4
+        with: {name: pbf-italy, path: italy.osm.pbf, retention-days: 3, compression-level: 0}
+      - uses: actions/upload-artifact@v4
+        with: {name: pbf-test, path: test.osm.pbf, retention-days: 3, compression-level: 0}
+
+  build:
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [test, italia]
+        part: [mappa, percorsi, limiti]
+    steps:
+      - name: Serve fare questa regione?
+        id: want
+        run: |
+          r="${{ github.event.inputs.region || 'entrambe' }}"
+          if [ "$r" = "entrambe" ] || [ "$r" = "${{ matrix.region }}" ]; then echo "go=1" >> $GITHUB_OUTPUT; else echo "go=0" >> $GITHUB_OUTPUT; fi
+      - name: Libera spazio sul disco
+        if: steps.want.outputs.go == '1' && matrix.region == 'italia'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+      - uses: actions/checkout@v4
+        if: steps.want.outputs.go == '1'
+      - uses: actions/download-artifact@v4
+        if: steps.want.outputs.go == '1'
+        with: {name: "pbf-${{ matrix.region == 'italia' && 'italy' || 'test' }}"}
+      - name: Nome file sorgente
+        if: steps.want.outputs.go == '1'
+        run: |
+          if [ "${{ matrix.region }}" = "italia" ]; then echo "PBF=italy.osm.pbf" >> $GITHUB_ENV; else echo "PBF=test.osm.pbf" >> $GITHUB_ENV; fi
+          mkdir -p out
+
+      # ---------------------------------------------------------------- map (vector tiles)
+      - uses: actions/setup-java@v4
+        if: steps.want.outputs.go == '1' && matrix.part == 'mappa'
+        with: {distribution: temurin, java-version: "21"}
+      - name: Mappa vettoriale (Planetiler → PMTiles)
+        if: steps.want.outputs.go == '1' && matrix.part == 'mappa'
+        run: |
+          curl -fsSL -o planetiler.jar "$PLANETILER"
+          HEAP=$([ "${{ matrix.region }}" = "italia" ] && echo 11g || echo 2g)
+          java -Xmx$HEAP -jar planetiler.jar --osm-path="$PBF" --output=out/mappa.pmtiles \
+            --download --force --languages=it,en --maxzoom=14 --nodemap-type=array --storage=mmap
+          ls -la out
+
+      # ---------------------------------------------------------------- routing graph
+      - name: Grafo di calcolo (Valhalla truck / bus / auto)
+        if: steps.want.outputs.go == '1' && matrix.part == 'percorsi'
+        run: |
+          mkdir -p v && mv "$PBF" v/
+          docker pull "$VALHALLA_IMAGE"
+          docker run --rm -v "$PWD/v:/data" "$VALHALLA_IMAGE" bash -c "
+            set -e
+            cd /data
+            valhalla_build_config --mjolnir-tile-dir /data/tiles --mjolnir-tile-extract /data/valhalla_tiles.tar \
+              --mjolnir-timezone /data/tz.sqlite --mjolnir-admin /data/admins.sqlite > valhalla.json
+            valhalla_build_timezones > /data/tz.sqlite || echo 'timezones not available, continuing'
+            valhalla_build_admins -c valhalla.json /data/$PBF
+            valhalla_build_tiles -c valhalla.json /data/$PBF
+            valhalla_build_extract -c valhalla.json -v --overwrite
+            ls -la /data
+          "
+          sudo mv v/valhalla_tiles.tar out/percorsi.tar
+          ls -la out
+
+      # ---------------------------------------------------------------- heavy-vehicle limits
+      - name: Limiti mezzi pesanti (sottopassi, ponti, divieti)
+        if: steps.want.outputs.go == '1' && matrix.part == 'limiti'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          osmium tags-filter "$PBF" \
+            nwr/maxheight nwr/maxheight:physical nwr/maxweight nwr/maxweightrating nwr/maxwidth nwr/maxlength \
+            nwr/maxaxleload w/hgv w/hazmat w/hazmat:water w/motorhome w/bus w/psv \
+            w/hgv:conditional w/maxweight:conditional w/goods:conditional \
+            -o limits.osm.pbf --overwrite
+          osmium export limits.osm.pbf -f geojsonseq --add-unique-id=type_id \
+            --format-option print_record_separator=false -o limits.geojsonseq --overwrite
+          python3 data/build_limits.py limits.geojsonseq out/limiti.sqlite "${{ matrix.region }}"
+          ls -la out
+
+      - name: Dividi i file oltre 1,9 GB
+        if: steps.want.outputs.go == '1'
+        run: |
+          cd out
+          for f in *; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt 1990000000 ]; then
+              split -b 1900m -d -a 2 "$f" "$f.part"
+              rm "$f"
+            fi
+          done
+          ls -la
+      - uses: actions/upload-artifact@v4
+        if: steps.want.outputs.go == '1'
+        with:
+          name: "out-${{ matrix.region }}-${{ matrix.part }}"
+          path: out/*
+          retention-days: 3
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        region: [test, italia]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "out-${{ matrix.region }}-*"
+          merge-multiple: true
+          path: pkg
+      - name: Manifesto del pacchetto
+        id: man
+        run: |
+          if [ ! -d pkg ] || [ -z "$(ls -A pkg 2>/dev/null)" ]; then echo "none=1" >> $GITHUB_OUTPUT; exit 0; fi
+          python3 - <<'PY'
+          import hashlib, json, os, re, time
+          region = "${{ matrix.region }}"
+          files = sorted(os.listdir("pkg"))
+          groups = {}
+          for f in files:
+              base = re.sub(r"\.part\d+$", "", f)
+              groups.setdefault(base, []).append(f)
+          items = []
+          for base, parts in sorted(groups.items()):
+              parts.sort()
+              total = 0
+              plist = []
+              for p in parts:
+                  path = os.path.join("pkg", p)
+                  h = hashlib.sha256()
+                  with open(path, "rb") as fh:
+                      for chunk in iter(lambda: fh.read(1 << 20), b""):
+                          h.update(chunk)
+                  size = os.path.getsize(path)
+                  total += size
+                  plist.append({"name": p, "size": size, "sha256": h.hexdigest()})
+              items.append({"file": base, "size": total, "parts": plist})
+          manifest = {"region": region, "label": "Italia" if region == "italia" else "Prova Rimini / San Marino",
+                      "built": time.strftime("%Y-%m-%d"), "valhalla": "3.6.3", "format": 1, "files": items}
+          with open("pkg/manifest.json", "w") as fh:
+              json.dump(manifest, fh, indent=1)
+          print(json.dumps(manifest, indent=1))
+          PY
+      - name: Pubblica il pacchetto (release dati-${{ matrix.region }})
+        if: steps.man.outputs.none != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="dati-${{ matrix.region }}"
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" pkg/* --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)" \
+            --notes "Mappa (PMTiles), grafo Valhalla 3.6.3 e limiti mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
+            --latest=false
