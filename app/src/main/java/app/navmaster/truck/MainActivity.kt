@@ -46,6 +46,9 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
    * starts (simulated) guidance, so the CI can take screenshots of a real offline route.
    */
   private fun handleTestIntent() {
+    intent?.getStringExtra("nm_from")?.split(',')?.takeIf { it.size == 2 }?.let {
+      vm.setTestLocation(it[0].trim().toDouble(), it[1].trim().toDouble())
+    }
     val dest = intent?.getStringExtra("nm_dest") ?: return
     val parts = dest.split(',')
     if (parts.size != 2) return

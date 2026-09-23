@@ -82,6 +82,19 @@ class NavViewModel :
     }
   }
 
+  /** Emulator tests: a fixed starting position when the emulator GPS delivers nothing. */
+  fun setTestLocation(lat: Double, lng: Double) {
+    val l =
+        android.location.Location("test").apply {
+          latitude = lat
+          longitude = lng
+          accuracy = 5f
+          time = System.currentTimeMillis()
+        }
+    Log.i(TAG, "posizione di prova: $lat,$lng")
+    lastLocation.value = l.toUserLocation()
+  }
+
   fun setLocationPermission(granted: Boolean) {
     Log.i(TAG, "permesso posizione: $granted")
     hasPermission.value = granted

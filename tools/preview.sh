@@ -28,6 +28,7 @@ adb shell cmd location set-location-enabled true 2>/dev/null
 ( for i in $(seq 1 400); do adb emu geo fix 12.5663 44.0587 >/dev/null 2>&1; sleep 2; done ) &
 GEO=$!
 adb shell settings get secure location_providers_allowed >> "$INFO"
+adb emu geo fix 12.5663 44.0587 >> "$INFO" 2>&1
 
 # first start creates the app folders, then the offline package is copied in
 adb shell am start -n $PKG/.MainActivity; sleep 12
@@ -41,13 +42,13 @@ done
 adb shell ls -la $D >> "$INFO" 2>&1
 
 adb emu geo fix 12.5663 44.0587
-adb shell am start -n $PKG/.MainActivity; sleep 15
+adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663"; sleep 15
 adb emu geo fix 12.5664 44.0588; sleep 5
 shot 02_mappa_offline
 
 # truck route Rimini -> San Marino, offline, started in simulation
 adb shell am force-stop $PKG
-adb shell am start -n $PKG/.MainActivity --es nm_dest "43.9360,12.4460" --es nm_label "San Marino" --es nm_profile camion --es nm_load 12 --ez nm_sim true
+adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663" --es nm_dest "43.9360,12.4460" --es nm_label "San Marino" --es nm_profile camion --es nm_load 12 --ez nm_sim true
 sleep 25; shot 03_guida_camion
 sleep 15; shot 04_guida_camion_2
 adb shell settings put system accelerometer_rotation 0
@@ -56,7 +57,7 @@ adb shell settings put system user_rotation 0; sleep 4
 
 # same trip for the camper: the route may differ where the truck is not allowed
 adb shell am force-stop $PKG
-adb shell am start -n $PKG/.MainActivity --es nm_dest "43.9360,12.4460" --es nm_label "San Marino" --es nm_profile camper --es nm_load 0.4 --ez nm_sim true
+adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663" --es nm_dest "43.9360,12.4460" --es nm_label "San Marino" --es nm_profile camper --es nm_load 0.4 --ez nm_sim true
 sleep 25; shot 06_guida_camper
 log
 grep -E "route computed|scan:|Valhalla ready|request=" "$OUT/logcat.txt" | head -20 >> "$INFO"
