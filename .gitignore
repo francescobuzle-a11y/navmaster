@@ -1,0 +1,6 @@
+build/
+.gradle/
+local.properties
+app/src/main/assets/glyphs/
+app/src/main/assets/style/
+*.apk

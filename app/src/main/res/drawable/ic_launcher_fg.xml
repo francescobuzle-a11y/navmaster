@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- NavMaster mark: a road narrowing to the horizon with a route arrow on it -->
+    <path android:fillColor="#FFFFFF" android:pathData="M30,82 L48,34 L60,34 L78,82 Z" android:fillAlpha="0.25"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M54,26 L68,50 L59,50 L59,78 L49,78 L49,50 L40,50 Z"/>
+</vector>
