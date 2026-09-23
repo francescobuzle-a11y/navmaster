@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs NavMaster on the emulator with the offline test package (Rimini / San Marino) and
-# takes screenshots: map, route preview with limits, guidance (simulated), landscape.
+# takes screenshots: map, route preview with limits, guidance (simulated), portrait.
 APKDIR="$1"; DATA="$2"; OUT="$3"
 PKG=app.navmaster.truck
 mkdir -p "$OUT"
@@ -44,7 +44,7 @@ adb shell am start -n $PKG/.MainActivity --es nm_dest "43.9360,12.4460" --es nm_
 sleep 25; shot 03_guida_camion
 sleep 15; shot 04_guida_camion_2
 adb shell settings put system accelerometer_rotation 0
-adb shell settings put system user_rotation 1; sleep 8; shot 05_guida_orizzontale
+adb shell settings put system user_rotation 1; sleep 8; shot 05_guida_verticale
 adb shell settings put system user_rotation 0; sleep 4
 
 # same trip for the camper: the route may differ where the truck is not allowed

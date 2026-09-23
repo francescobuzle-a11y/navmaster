@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     createFerrostarLogger()
     enableEdgeToEdge()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false
-    setContent { MaterialTheme(colorScheme = darkColorScheme()) { MainScreen(vm) } }
+    setContent { MaterialTheme(colorScheme = darkColorScheme(primary = androidx.compose.ui.graphics.Color(0xFF2EB85C), onPrimary = androidx.compose.ui.graphics.Color.White, secondary = androidx.compose.ui.graphics.Color(0xFF2EB85C))) { MainScreen(vm) } }
     handleTestIntent()
   }
 

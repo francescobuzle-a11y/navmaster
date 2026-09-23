@@ -71,8 +71,8 @@ fun BigButton(text: String, modifier: Modifier = Modifier, primary: Boolean = tr
         onClick,
         modifier.heightIn(min = 60.dp),
         shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = NmGreenTop),
-    ) { Text(text, fontSize = 19.sp, fontWeight = FontWeight.Bold) }
+        colors = ButtonDefaults.buttonColors(containerColor = NmGreenTop, contentColor = Color.White),
+    ) { Text(text, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = Color.White) }
   } else {
     OutlinedButton(onClick, modifier.heightIn(min = 60.dp), shape = RoundedCornerShape(16.dp)) {
       Text(text, fontSize = 18.sp, color = Color.White)
