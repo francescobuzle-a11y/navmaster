@@ -85,7 +85,7 @@ jobs:
           curl -fsSL -o planetiler.jar "$PLANETILER"
           HEAP=$([ "${{ matrix.region }}" = "italia" ] && echo 11g || echo 2g)
           java -Xmx$HEAP -jar planetiler.jar --osm-path="$PBF" --output=out/mappa.pmtiles \
-            --download --force --languages=it,en --maxzoom=14 --nodemap-type=array --storage=mmap
+            --download --force --languages=it,en --maxzoom=14 --nodemap-type=sparsearray --storage=mmap
           ls -la out
 
       # ---------------------------------------------------------------- routing graph
