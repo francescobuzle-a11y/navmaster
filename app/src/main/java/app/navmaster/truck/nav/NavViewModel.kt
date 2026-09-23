@@ -75,11 +75,15 @@ class NavViewModel :
           .flatMapLatest { ok ->
             if (ok) locationProvider.locationUpdates(1000L).map { it.toUserLocation() } else emptyFlow()
           }
-          .collect { lastLocation.value = it }
+          .collect {
+            if (lastLocation.value == null) Log.i(TAG, "prima posizione: ${it.coordinates.lat},${it.coordinates.lng}")
+            lastLocation.value = it
+          }
     }
   }
 
   fun setLocationPermission(granted: Boolean) {
+    Log.i(TAG, "permesso posizione: $granted")
     hasPermission.value = granted
   }
 
@@ -105,6 +109,7 @@ class NavViewModel :
         val garage = AppGraph.profiles.garage.value
         val routes = core.getRoutes(from, listOf(Waypoint(coordinate = dest, kind = WaypointKind.BREAK)))
         val route = routes.first()
+        Log.i(TAG, "route computed: ${route.distance.toInt()} m, ${route.steps.size} steps")
         val weight = garage.active.tripWeightT(garage.loadT)
         val limits = AppGraph.limits.scan(route.geometry, garage.active, weight)
         val planned =
@@ -140,6 +145,7 @@ class NavViewModel :
   /** Used by the emulator tests: route to a point and start right away, optionally simulated. */
   fun autoRun(dest: GeographicCoordinate, label: String?, simulate: Boolean) {
     viewModelScope.launch {
+      Log.i(TAG, "autoRun verso ${dest.lat},${dest.lng}, attendo la posizione")
       while (lastLocation.value == null) kotlinx.coroutines.delay(500)
       _scene.value = _scene.value.copy(destination = dest, destinationLabel = label)
       planRoute { viewModelScope.launch(Dispatchers.Main) { start(simulate) } }
