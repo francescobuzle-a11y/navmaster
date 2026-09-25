@@ -1,142 +1,183 @@
-# Offline data packages for the tablet (map, routing graph, heavy-vehicle limits).
+# Offline data packages for the tablet, one per European country (plus a small test area used by
+# the emulator): vector map, routing graph, heavy-vehicle limits, POI, address book and the
+# physical difficulties of the roads (narrow, rough, steep, tight curves).
 #
-#  test   : small extract around Rimini / San Marino, used by the emulator tests (fast)
-#  italia : the whole of Italy, the package drivers download on the tablet
-#
-# Every package is published on a fixed release tag (dati-test, dati-italia) with a
-# manifest.json the app reads to know which files to download. Files larger than GitHub's
-# 2 GB asset limit are split into parts; the app joins them after downloading.
+# Every package is published on a fixed release tag (dati-<country>) with a manifest.json; files
+# over GitHub's 2 GB limit are split into parts that the app joins. catalogo.yml then rebuilds the
+# list of countries the app shows.
 name: Dati offline
 
 on:
   workflow_dispatch:
     inputs:
       region:
-        description: "test, italia oppure entrambe"
-        default: "entrambe"
+        description: "Paesi separati da virgola (es. romania,italy,test) oppure europa"
+        default: "romania,italy,test"
   schedule:
-    - cron: "0 2 1 * *"   # a fresh package every month, as in the project plan
+    - cron: "0 2 1 * *"   # every month, all of Europe
 
 permissions:
   contents: write
+  actions: write
 
 env:
   VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:3.6.3   # must match valhalla-mobile 0.6.3 on the tablet
   PLANETILER: https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar
-  PBF_ITALY: https://download.geofabrik.de/europe/italy-latest.osm.pbf
+  GEOFABRIK: https://download.geofabrik.de/europe
   TEST_BBOX: "12.30,43.85,12.72,44.12"
 
 jobs:
-  source:
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.m.outputs.regions }}
     steps:
-      - name: Scarica l'estratto OSM dell'Italia
+      - uses: actions/checkout@v4
+      - id: m
         run: |
-          curl -fsSL -o italy.osm.pbf "$PBF_ITALY"
-          ls -la italy.osm.pbf
-      - name: Estratto di prova (Rimini / San Marino)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
-          osmium extract -b "$TEST_BBOX" italy.osm.pbf -o test.osm.pbf --overwrite
-          ls -la test.osm.pbf
-      - uses: actions/upload-artifact@v4
-        with: {name: pbf-italy, path: italy.osm.pbf, retention-days: 3, compression-level: 0}
-      - uses: actions/upload-artifact@v4
-        with: {name: pbf-test, path: test.osm.pbf, retention-days: 3, compression-level: 0}
+          python3 - "${{ github.event.inputs.region || 'europa' }}" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          want = sys.argv[1].strip().lower()
+          countries = [c["id"] for c in json.load(open("data/countries.json"))]
+          if want in ("europa", "tutti", "all"):
+              sel = countries + ["test"]
+          else:
+              sel = [x.strip() for x in want.split(",") if x.strip() and (x.strip() in countries or x.strip() == "test")]
+          print("regions=" + json.dumps(sel))
+          PY
 
   build:
-    needs: source
+    needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 350
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix:
-        region: [test, italia]
-        part: [mappa, percorsi, limiti]
+        region: ${{ fromJson(needs.plan.outputs.regions) }}
+        part: [mappa, dati]
     steps:
-      - name: Serve fare questa regione?
-        id: want
-        run: |
-          r="${{ github.event.inputs.region || 'entrambe' }}"
-          if [ "$r" = "entrambe" ] || [ "$r" = "${{ matrix.region }}" ]; then echo "go=1" >> $GITHUB_OUTPUT; else echo "go=0" >> $GITHUB_OUTPUT; fi
       - name: Libera spazio sul disco
-        if: steps.want.outputs.go == '1' && matrix.region == 'italia'
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
-          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup /usr/share/swift || true
+          df -h / /mnt
       - uses: actions/checkout@v4
-        if: steps.want.outputs.go == '1'
-      - uses: actions/download-artifact@v4
-        if: steps.want.outputs.go == '1'
-        with: {name: "pbf-${{ matrix.region == 'italia' && 'italy' || 'test' }}"}
-      - name: Nome file sorgente
-        if: steps.want.outputs.go == '1'
+      - name: Estratto OSM
         run: |
-          if [ "${{ matrix.region }}" = "italia" ]; then echo "PBF=italy.osm.pbf" >> $GITHUB_ENV; else echo "PBF=test.osm.pbf" >> $GITHUB_ENV; fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          if [ "${{ matrix.region }}" = "test" ]; then
+            curl -fsSL -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+            osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
+            rm src.osm.pbf
+          else
+            curl -fsSL -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
+          fi
+          ls -la region.osm.pbf
+          echo "PBF_MB=$(( $(stat -c%s region.osm.pbf) / 1000000 ))" >> $GITHUB_ENV
           mkdir -p out
 
-      # ---------------------------------------------------------------- map (vector tiles)
+      # ------------------------------------------------------------------ map (vector tiles)
       - uses: actions/setup-java@v4
-        if: steps.want.outputs.go == '1' && matrix.part == 'mappa'
+        if: matrix.part == 'mappa'
         with: {distribution: temurin, java-version: "21"}
       - name: Mappa vettoriale (Planetiler → PMTiles)
-        if: steps.want.outputs.go == '1' && matrix.part == 'mappa'
+        if: matrix.part == 'mappa'
         run: |
           curl -fsSL -o planetiler.jar "$PLANETILER"
-          HEAP=$([ "${{ matrix.region }}" = "italia" ] && echo 11g || echo 2g)
-          java -Xmx$HEAP -jar planetiler.jar --osm-path="$PBF" --output=out/mappa.pmtiles \
-            --download --force --languages=it,en --maxzoom=14 --nodemap-type=sparsearray --storage=mmap
+          HEAP=$([ "$PBF_MB" -gt 1500 ] && echo 12g || echo 5g)
+          java -Xmx$HEAP -jar planetiler.jar --osm-path=region.osm.pbf --output=out/mappa.pmtiles \
+            --download --force --languages=it,en,ro,de,fr --maxzoom=14 --nodemap-type=sparsearray --storage=mmap
           ls -la out
 
-      # ---------------------------------------------------------------- routing graph
-      - name: Grafo di calcolo (Valhalla truck / bus / auto)
-        if: steps.want.outputs.go == '1' && matrix.part == 'percorsi'
+      # ------------------------------------------------------------------ everything else
+      - name: Limiti mezzi pesanti (sottopassi, ponti, divieti, gallerie ADR)
+        if: matrix.part == 'dati'
         run: |
-          mkdir -p v && mv "$PBF" v/
-          docker pull "$VALHALLA_IMAGE"
+          osmium tags-filter region.osm.pbf \
+            nwr/maxheight nwr/maxheight:physical nwr/maxweight nwr/maxweightrating nwr/maxwidth nwr/maxlength \
+            nwr/maxaxleload w/hgv w/hazmat w/hazmat:water w/motorhome w/bus w/psv \
+            w/hgv:conditional w/maxweight:conditional w/goods:conditional \
+            w/hazmat:adr_tunnel_cat w/hazmat:tunnel_cat w/tunnel:adr_category w/hazmat:B w/hazmat:C w/hazmat:D w/hazmat:E \
+            -o limits.osm.pbf --overwrite
+          osmium export limits.osm.pbf -f geojsonseq --add-unique-id=type_id \
+            --format-option print_record_separator=false -o limits.geojsonseq --overwrite
+          python3 data/build_limits.py limits.geojsonseq out/limiti.sqlite "${{ matrix.region }}"
+          rm -f limits.osm.pbf limits.geojsonseq
+      - name: Punti di interesse per camion, bus e camper
+        if: matrix.part == 'dati'
+        run: |
+          osmium tags-filter region.osm.pbf \
+            nwr/amenity=fuel,parking,restaurant,fast_food,cafe,toilets,shower,car_wash,weighbridge,atm,bank,pharmacy,hospital,sanitary_dump_station,charging_station \
+            nwr/highway=rest_area,services nwr/shop=supermarket,tyres,truck_repair,car_repair \
+            nwr/tourism=hotel,motel,caravan_site nwr/barrier=border_control nwr/craft=truck_repair \
+            -o poi.osm.pbf --overwrite
+          osmium export poi.osm.pbf -f geojsonseq --add-unique-id=type_id \
+            --format-option print_record_separator=false -o poi.geojsonseq --overwrite
+          python3 data/build_poi.py poi.geojsonseq out/poi.sqlite "${{ matrix.region }}"
+          rm -f poi.osm.pbf poi.geojsonseq
+      - name: Strade (per indirizzi e criticità)
+        if: matrix.part == 'dati'
+        run: |
+          cat > roads-cfg.json <<'EOF'
+          {"attributes": {"type": false, "id": true},
+           "include_tags": ["highway", "name", "ref", "width", "width:carriageway", "est_width", "lanes", "oneway",
+                            "junction", "surface", "smoothness", "tracktype", "incline", "narrow", "ford", "service",
+                            "hgv", "maxspeed"]}
+          EOF
+          osmium tags-filter region.osm.pbf w/highway -o roads.osm.pbf --overwrite
+          osmium export roads.osm.pbf -c roads-cfg.json -f geojsonseq --geometry-types=linestring \
+            --add-unique-id=type_id --format-option print_record_separator=false -o roads.geojsonseq --overwrite
+          rm -f roads.osm.pbf
+          ls -la roads.geojsonseq
+      - name: Criticità fisiche (strade strette, dissestate, ripide, curve e svincoli stretti)
+        if: matrix.part == 'dati'
+        run: python3 data/build_critical.py roads.geojsonseq out/criticita.sqlite "${{ matrix.region }}"
+      - name: Indirizzi (Paese → città → via → civico)
+        if: matrix.part == 'dati'
+        run: |
+          python3 -m pip install --quiet --break-system-packages shapely 2>/dev/null || python3 -m pip install --quiet shapely
+          osmium tags-filter region.osm.pbf nwr/place=city,town,village,hamlet,suburb,quarter,isolated_dwelling -o places.osm.pbf --overwrite
+          osmium export places.osm.pbf -f geojsonseq --format-option print_record_separator=false -o places.geojsonseq --overwrite
+          osmium tags-filter region.osm.pbf nwr/addr:housenumber -o addr.osm.pbf --overwrite
+          cat > addr-cfg.json <<'EOF'
+          {"attributes": {"type": false, "id": false},
+           "include_tags": ["addr:housenumber", "addr:street", "addr:place", "addr:city"]}
+          EOF
+          osmium export addr.osm.pbf -c addr-cfg.json -f geojsonseq --format-option print_record_separator=false -o addr.geojsonseq --overwrite
+          osmium tags-filter region.osm.pbf r/admin_level=4 -o admin.osm.pbf --overwrite
+          osmium export admin.osm.pbf -f geojsonseq --geometry-types=polygon --format-option print_record_separator=false -o admin.geojsonseq --overwrite
+          python3 data/build_addresses.py places.geojsonseq roads.geojsonseq addr.geojsonseq admin.geojsonseq out/indirizzi.sqlite "${{ matrix.region }}"
+          rm -f places.* addr.* admin.* roads.geojsonseq
+      - name: Grafo di calcolo del Paese (Valhalla truck / bus)
+        if: matrix.part == 'dati'
+        run: |
+          mkdir -p v && mv region.osm.pbf v/
+          docker pull -q "$VALHALLA_IMAGE"
           docker run --rm -v "$PWD/v:/data" "$VALHALLA_IMAGE" bash -c "
             set -e
             cd /data
             valhalla_build_config --mjolnir-tile-dir /data/tiles --mjolnir-tile-extract /data/valhalla_tiles.tar \
               --mjolnir-timezone /data/tz.sqlite --mjolnir-admin /data/admins.sqlite > valhalla.json
             valhalla_build_timezones > /data/tz.sqlite || echo 'timezones not available, continuing'
-            valhalla_build_admins -c valhalla.json /data/$PBF
-            valhalla_build_tiles -c valhalla.json /data/$PBF
+            valhalla_build_admins -c valhalla.json /data/region.osm.pbf
+            valhalla_build_tiles -c valhalla.json /data/region.osm.pbf
             valhalla_build_extract -c valhalla.json -v --overwrite
-            ls -la /data
           "
           sudo mv v/valhalla_tiles.tar out/percorsi.tar
-          ls -la out
-
-      # ---------------------------------------------------------------- heavy-vehicle limits
-      - name: Limiti mezzi pesanti (sottopassi, ponti, divieti)
-        if: steps.want.outputs.go == '1' && matrix.part == 'limiti'
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
-          osmium tags-filter "$PBF" \
-            nwr/maxheight nwr/maxheight:physical nwr/maxweight nwr/maxweightrating nwr/maxwidth nwr/maxlength \
-            nwr/maxaxleload w/hgv w/hazmat w/hazmat:water w/motorhome w/bus w/psv \
-            w/hgv:conditional w/maxweight:conditional w/goods:conditional \
-            -o limits.osm.pbf --overwrite
-          osmium export limits.osm.pbf -f geojsonseq --add-unique-id=type_id \
-            --format-option print_record_separator=false -o limits.geojsonseq --overwrite
-          python3 data/build_limits.py limits.geojsonseq out/limiti.sqlite "${{ matrix.region }}"
+          sudo rm -rf v
           ls -la out
 
       - name: Dividi i file oltre 1,9 GB
-        if: steps.want.outputs.go == '1'
         run: |
           cd out
           for f in *; do
-            size=$(stat -c%s "$f")
-            if [ "$size" -gt 1990000000 ]; then
+            if [ "$(stat -c%s "$f")" -gt 1990000000 ]; then
               split -b 1900m -d -a 2 "$f" "$f.part"
               rm "$f"
             fi
           done
           ls -la
       - uses: actions/upload-artifact@v4
-        if: steps.want.outputs.go == '1'
         with:
           name: "out-${{ matrix.region }}-${{ matrix.part }}"
           path: out/*
@@ -144,13 +185,14 @@ jobs:
           compression-level: 0
 
   publish:
-    needs: build
+    needs: [plan, build]
     if: always()
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 10
       matrix:
-        region: [test, italia]
+        region: ${{ fromJson(needs.plan.outputs.regions) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -161,21 +203,20 @@ jobs:
       - name: Manifesto del pacchetto
         id: man
         run: |
-          if [ ! -d pkg ] || [ -z "$(ls -A pkg 2>/dev/null)" ]; then echo "none=1" >> $GITHUB_OUTPUT; exit 0; fi
+          # a package is published only when map, graph and limits are all there
+          have() { ls pkg/$1* >/dev/null 2>&1; }
+          if ! have mappa.pmtiles || ! have percorsi.tar || ! have limiti.sqlite; then echo "none=1" >> $GITHUB_OUTPUT; ls -la pkg || true; exit 0; fi
           python3 - <<'PY'
           import hashlib, json, os, re, time
           region = "${{ matrix.region }}"
-          files = sorted(os.listdir("pkg"))
+          names = {c["id"]: c["name"] for c in json.load(open("data/countries.json"))}
           groups = {}
-          for f in files:
-              base = re.sub(r"\.part\d+$", "", f)
-              groups.setdefault(base, []).append(f)
+          for f in sorted(os.listdir("pkg")):
+              groups.setdefault(re.sub(r"\.part\d+$", "", f), []).append(f)
           items = []
           for base, parts in sorted(groups.items()):
-              parts.sort()
-              total = 0
-              plist = []
-              for p in parts:
+              plist, total = [], 0
+              for p in sorted(parts):
                   path = os.path.join("pkg", p)
                   h = hashlib.sha256()
                   with open(path, "rb") as fh:
@@ -185,10 +226,9 @@ jobs:
                   total += size
                   plist.append({"name": p, "size": size, "sha256": h.hexdigest()})
               items.append({"file": base, "size": total, "parts": plist})
-          manifest = {"region": region, "label": "Italia" if region == "italia" else "Prova Rimini / San Marino",
-                      "built": time.strftime("%Y-%m-%d"), "valhalla": "3.6.3", "format": 1, "files": items}
-          with open("pkg/manifest.json", "w") as fh:
-              json.dump(manifest, fh, indent=1)
+          manifest = {"region": region, "label": names.get(region, "Prova Rimini / San Marino"),
+                      "built": time.strftime("%Y-%m-%d"), "valhalla": "3.6.3", "format": 2, "files": items}
+          json.dump(manifest, open("pkg/manifest.json", "w"), indent=1)
           print(json.dumps(manifest, indent=1))
           PY
       - name: Pubblica il pacchetto (release dati-${{ matrix.region }})
@@ -199,5 +239,15 @@ jobs:
           TAG="dati-${{ matrix.region }}"
           gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" pkg/* --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)" \
-            --notes "Mappa (PMTiles), grafo Valhalla 3.6.3 e limiti mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
+            --notes "Mappa (PMTiles), grafo Valhalla 3.6.3, limiti, POI, indirizzi e criticità per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
             --latest=false
+
+  catalog:
+    needs: publish
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggiorna il catalogo dei Paesi
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run catalogo.yml --repo "${{ github.repository }}" --ref main
