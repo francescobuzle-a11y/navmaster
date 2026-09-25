@@ -49,6 +49,13 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     intent?.getStringExtra("nm_from")?.split(',')?.takeIf { it.size == 2 }?.let {
       vm.setTestLocation(it[0].trim().toDouble(), it[1].trim().toDouble())
     }
+    // settings for the emulator scenarios (they stay saved, like the driver's own choices)
+    intent?.getIntExtra("nm_tollmax", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(tollMaxExtraMin = v) } }
+    intent?.getStringExtra("nm_tolls")?.let { t ->
+      app.navmaster.truck.settings.TollPolicy.entries.firstOrNull { it.name.equals(t, true) }?.let { p -> AppGraph.settings.update { it.copy(tollPolicy = p) } }
+    }
+    intent?.getIntExtra("nm_poicount", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailCount = v) } }
+    intent?.getIntExtra("nm_poisec", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailSeconds = v) } }
     val dest = intent?.getStringExtra("nm_dest") ?: return
     val parts = dest.split(',')
     if (parts.size != 2) return
@@ -58,7 +65,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     val label = intent?.getStringExtra("nm_label") ?: "Prova"
     // plan only: the route choice with its difficulties stays on screen
     if (intent?.getBooleanExtra("nm_plan", false) == true) vm.autoPlan(c, label)
-    else vm.autoRun(c, label, intent?.getBooleanExtra("nm_sim", true) ?: true)
+    else vm.autoRun(c, label, intent?.getBooleanExtra("nm_sim", true) ?: true, intent?.getIntExtra("nm_variant", -1)?.takeIf { it >= 0 })
   }
 
   override fun onTtsInitialized(tts: TextToSpeech?, status: Int) {

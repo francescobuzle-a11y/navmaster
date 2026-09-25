@@ -50,7 +50,25 @@ fun SettingsScreen(onClose: () -> Unit, onRegions: () -> Unit) {
     }
 
     SectionHeader("Punti di interesse lungo il percorso")
-    Caption("Scegli cosa vuoi vedere mentre guidi.")
+    Caption("In guida compaiono in un pannello stretto al bordo dello schermo, che si apre da solo quando arrivano " +
+        "nuovi punti e poi si richiude: resta una linguetta da toccare per riaprirlo.")
+    Stepper("Quanti punti mostrare (0 = mai)", s.poiRailCount.toDouble(), "", 1.0, 0.0, 6.0, 0) { v -> set { it.copy(poiRailCount = v.toInt()) } }
+    Caption("Per quanti secondi resta aperto", size = 14)
+    Spacer(Modifier.height(4.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      for (sec in listOf(5, 8, 12, 20, 30, 60, 0)) {
+        Pill(if (sec == 0) "Sempre aperto" else "$sec s", s.poiRailSeconds == sec) { set { it.copy(poiRailSeconds = sec) } }
+      }
+    }
+    Stepper("Opacità del pannello", s.poiRailOpacity.toDouble(), "%", 10.0, 20.0, 100.0, 0) { v -> set { it.copy(poiRailOpacity = v.toInt()) } }
+    PoiRailPreview(s.poiRailOpacity, Modifier.fillMaxWidth().padding(vertical = 6.dp))
+    Caption("Lato dello schermo", size = 14)
+    Spacer(Modifier.height(4.dp))
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      for (side in app.navmaster.truck.settings.PoiSide.entries) Pill(side.label, s.poiRailSide == side) { set { it.copy(poiRailSide = side) } }
+    }
+    Spacer(Modifier.height(10.dp))
+    Caption("Categorie da mostrare", size = 14)
     Spacer(Modifier.height(6.dp))
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
       for (c in PoiCategories.all) {

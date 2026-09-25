@@ -117,7 +117,7 @@ def main():
         nonlocal cid
         cid += 1
         info = {"hw": t.get("highway"), "lanes": num(t.get("lanes")), "w": width_of(t), "ow": oneway(t)}
-        for k in ("surface", "smoothness", "tracktype", "incline", "narrow", "ref", "hgv", "maxspeed"):
+        for k in ("surface", "smoothness", "tracktype", "incline", "narrow", "ref", "hgv", "maxspeed", "junction"):
             if t.get(k):
                 info[k] = t[k]
         pts = simplify(clip_around(coords, at) if kind == "curve" and at is not None else coords, 40)
@@ -170,8 +170,10 @@ def main():
         if t.get("ford") == "yes":
             add(f, "ford", 0.0, t, coords)
 
+        # roundabouts are tight by design and lorries use the apron: only the really small ones count
+        roundabout = t.get("junction") in ("roundabout", "circular")
         if len(coords) >= 3 and hw not in ("track", "service") and turning(coords) >= 70:
-            limit = 40.0 if hw in LINKS else 22.0
+            limit = 9.0 if roundabout else 40.0 if hw in LINKS else 22.0
             r, at = min_radius(coords)
             if r < limit and at is not None:
                 add(f, "curve", round(r, 1), t, coords, at)

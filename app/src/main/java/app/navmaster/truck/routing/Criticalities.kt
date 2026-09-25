@@ -231,6 +231,11 @@ class CriticalityFinder(regions: RegionManager) {
     val sorted = out.sortedBy { it.startM }
     Log.i("NavMasterCrit", "criticalities: ${sorted.size} (${sorted.count { it.severity == Severity.CRITICAL }} critical) " +
         "from ${rows.size} rows in ${System.currentTimeMillis() - started} ms")
+    // one line per difficulty, to check them against the map
+    for (c in sorted) {
+      Log.d("NavMasterCrit", "crit ${c.kind} ${c.severity} @${c.startM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, c.lat)},${"%.5f".format(java.util.Locale.ROOT, c.lon)} " +
+          "r=${c.scene?.radiusM?.toInt() ?: -1} over=${c.scene?.overrunM?.let { "%.2f".format(java.util.Locale.ROOT, it) } ?: "-"} ${c.id} | ${c.title}")
+    }
     return sorted
   }
 
@@ -238,6 +243,8 @@ class CriticalityFinder(regions: RegionManager) {
       val id: Long, val kind: String, val value: Double, val info: String, val name: String?,
       val lat: Double, val lon: Double, val pts: List<GeographicCoordinate>,
   )
+
+  private val ROUNDABOUT_NAME = Regex("(?i)rotonda|rotatoria|roundabout|kreisel|kreisverkehr|rond-point|giratoriu|rondo|körforgalom|glorieta|rotunda")
 
   private fun judge(
       r: DbRow, lo: Double, hi: Double, info: JsonObject?, v: VehicleProfile, heavy: Boolean, a: RouteAnalysis,
@@ -290,14 +297,22 @@ class CriticalityFinder(regions: RegionManager) {
       "ford" -> c(CritKind.FORD, Severity.CRITICAL, "Guado", "La strada attraversa un corso d'acqua.")
       "curve" -> {
         if (!heavy || System.currentTimeMillis() > deadline) return null
+        // roundabouts are tight by design and a lorry uses the apron: only a really small one counts
+        val roundabout = info?.get("junction")?.jsonPrimitive?.contentOrNull in setOf("roundabout", "circular") ||
+            ROUNDABOUT_NAME.containsMatchIn(r.name ?: "") ||
+            (r.pts.size > 4 && Geo.dist(r.pts.first(), r.pts.last()) < 3.0)
+        if (roundabout && r.value > 9.0) return null
         val (dist, at) = m.nearest(GeographicCoordinate(r.lat, r.lon)) ?: return null
         if (dist > 15) return null
-        // the route must really drive through the curve (not just touch the road where it ends)
-        val onCurve = r.pts.count { q -> m.nearest(q)?.let { (d, along) -> d <= 8 && abs(along - at) <= 45 } == true }
-        if (onCurve < 3) return null
-        // the curve as the route drives it (full detail), a vehicle length and a bit around the
-        // tightest point: the whole mapped road can be kilometres long
-        val forward = Geo.slice(a.route.geometry, a.cum, (at - 70).coerceAtLeast(0.0), (at + 70).coerceAtMost(a.length))
+        // only where the route is really on this road around the tightest point: a turn from or
+        // onto another road at a junction is the junction check's job, not a "hairpin"
+        val onWay = r.pts.mapNotNull { q -> m.nearest(q)?.takeIf { it.first <= 8 && abs(it.second - at) <= 70 }?.second }
+        if (onWay.size < 3) return null
+        val from = onWay.minOrNull() ?: return null
+        val to = onWay.maxOrNull() ?: return null
+        if (to - from < 20 || at < from - 5 || at > to + 5) return null
+        // the curve as the route drives it (full detail)
+        val forward = Geo.slice(a.route.geometry, a.cum, from, to)
         if (forward.size < 3) return null
         val plane = LocalPlane(forward.first().lat, forward.first().lng)
         val lanes = info?.get("lanes")?.jsonPrimitive?.doubleOrNull?.toInt()
@@ -309,7 +324,8 @@ class CriticalityFinder(regions: RegionManager) {
         val sev = if (scene.verdict == TurnCheck.Verdict.NO && wTag != null) Severity.CRITICAL else Severity.WARN
         val here = a.pointAt(at)
         (if (isLink) c(CritKind.RAMP, sev, "Svincolo con curva stretta", rampText(scene, v), scene, wTag == null)
-        else c(CritKind.CURVE, sev, "Tornante / curva stretta", rampText(scene, v), scene, wTag == null))
+        else if (roundabout) c(CritKind.CURVE, Severity.WARN, "Rotatoria molto piccola", rampText(scene, v), scene, true)
+        else c(CritKind.CURVE, sev, if (scene.radiusM < 15) "Tornante" else "Curva stretta", rampText(scene, v), scene, wTag == null))
             .copy(startM = (at - 30).coerceAtLeast(0.0), endM = at + 30, lat = here.lat, lon = here.lng, headingDeg = headingAt(at))
       }
       else -> null

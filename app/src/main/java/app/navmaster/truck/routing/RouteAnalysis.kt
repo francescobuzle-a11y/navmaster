@@ -44,6 +44,12 @@ data class EdgeInfo(
     get() = roadClass in setOf("motorway", "trunk", "primary")
 }
 
+/** A toll booth, a toll gantry or a border control on the route (at the end of an edge). */
+data class RouteNode(val alongM: Double, val type: String) {
+  val isToll: Boolean
+    get() = type == "toll_booth" || type == "toll_gantry"
+}
+
 /** A stretch of the route (metres from the start). */
 data class Span(val startM: Double, val endM: Double) {
   val length: Double
@@ -54,7 +60,7 @@ data class Span(val startM: Double, val endM: Double) {
  * What the route is made of: toll stretches, exit ramps, countries crossed, surface, road classes.
  * Read with Valhalla's trace_attributes on the route's own shape, on the tablet.
  */
-class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>) {
+class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List<RouteNode> = emptyList()) {
   val cum: DoubleArray = Geo.cumulative(route.geometry)
   val length: Double
     get() = cum.lastOrNull() ?: 0.0
@@ -64,6 +70,22 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>) {
   val tolls: List<Span> = merge(edges.filter { it.toll })
   val tollKm: Double
     get() = tolls.sumOf { it.length } / 1000.0
+
+  /** Toll booths (and gantries) along the route, in order. */
+  val tollBooths: List<RouteNode> = nodes.filter { it.isToll }
+
+  val borders: List<RouteNode> = nodes.filter { it.type == "border_control" }
+
+  /** "entrata" / "uscita" / null for a booth in the middle of a toll stretch (a barrier). */
+  fun boothRole(b: RouteNode): String? {
+    val before = edgeAt((b.alongM - 15).coerceAtLeast(0.0))?.toll ?: false
+    val after = edgeAt(b.alongM + 15)?.toll ?: false
+    return when {
+      !before && after -> "entrata"
+      before && !after -> "uscita"
+      else -> null
+    }
+  }
 
   val ramps: List<Pair<Span, List<EdgeInfo>>> =
       mergeGroups(edges.filter { it.isRamp })
@@ -134,10 +156,12 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>) {
             })
           }
           val raw = engine.use(first.lat, first.lng) { it.traceAttributesRaw(req.toString()) }
-          val edges = parse(raw)
+          val (edges, nodes) = parse(raw)
           if (edges.isNotEmpty()) {
-            Log.i(TAG, "$match: ${edges.size} edges in ${System.currentTimeMillis() - started} ms")
-            return RouteAnalysis(route, edges)
+            val a = RouteAnalysis(route, edges, nodes)
+            Log.i(TAG, "$match: ${edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
+                "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}" }}, borders ${a.borders.size}")
+            return a
           }
         } catch (e: Exception) {
           Log.w(TAG, "trace_attributes $match: $e")
@@ -151,21 +175,24 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>) {
             "edge.way_id", "edge.road_class", "edge.use", "edge.toll", "edge.surface", "edge.lane_count",
             "edge.length", "edge.begin_shape_index", "edge.end_shape_index", "edge.names", "edge.tunnel",
             "edge.bridge", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
-            "node.admin_index", "admin.country_code", "admin.country_text", "shape",
+            "node.admin_index", "node.type", "admin.country_code", "admin.country_text", "shape",
         )
 
-    private fun parse(raw: String): List<EdgeInfo> {
+    private fun parse(raw: String): Pair<List<EdgeInfo>, List<RouteNode>> {
       val root = json.parseToJsonElement(raw).jsonObject
-      val shape = root["shape"]?.jsonPrimitive?.contentOrNull?.let { Geo.decodePolyline6(it) } ?: return emptyList()
+      val shape = root["shape"]?.jsonPrimitive?.contentOrNull?.let { Geo.decodePolyline6(it) } ?: return emptyList<EdgeInfo>() to emptyList()
       val cum = Geo.cumulative(shape)
       val admins = root["admins"]?.jsonArray?.map { it.jsonObject["country_code"]?.jsonPrimitive?.contentOrNull } ?: emptyList()
-      val edges = root["edges"]?.jsonArray ?: return emptyList()
-      return edges.mapNotNull { el ->
+      val edges = root["edges"]?.jsonArray ?: return emptyList<EdgeInfo>() to emptyList()
+      val nodes = mutableListOf<RouteNode>()
+      val list = edges.mapNotNull { el ->
         val e = el.jsonObject
         val b = e.int("begin_shape_index") ?: return@mapNotNull null
         val en = e.int("end_shape_index") ?: return@mapNotNull null
         if (b !in cum.indices || en !in cum.indices) return@mapNotNull null
-        val adminIdx = (e["end_node"] as? JsonObject)?.int("admin_index")
+        val endNode = e["end_node"] as? JsonObject
+        val adminIdx = endNode?.int("admin_index")
+        endNode?.str("type")?.takeIf { it in NODE_TYPES }?.let { nodes += RouteNode(cum[en], it) }
         EdgeInfo(
             startM = cum[b],
             endM = cum[en],
@@ -183,7 +210,10 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>) {
             maxDownGrade = e["max_downward_grade"]?.jsonPrimitive?.doubleOrNull,
         )
       }
+      return list to nodes
     }
+
+    private val NODE_TYPES = setOf("toll_booth", "toll_gantry", "border_control")
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.contentOrNull
 

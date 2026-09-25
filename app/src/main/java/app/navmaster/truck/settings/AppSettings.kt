@@ -23,6 +23,14 @@ enum class NightMode(val label: String) {
   NIGHT("Sempre notte"),
 }
 
+/** Which side of the screen the places along the route go. */
+@Serializable
+enum class PoiSide(val label: String) {
+  AUTO("Automatico"),
+  RIGHT("Destra"),
+  LEFT("Sinistra"),
+}
+
 /** One kind of place the driver can choose to see along the route. */
 data class PoiCategory(val id: String, val label: String, val icon: String)
 
@@ -67,6 +75,13 @@ data class Settings(
     val poiCategories: Set<String> = setOf("truck_parking", "fuel", "services", "rest_area", "food", "shower"),
     val poiOnlyTruckFriendly: Boolean = true,
     val poiMaxDetourM: Int = 800,
+    /** How many places the side panel shows (0 = never). */
+    val poiRailCount: Int = 3,
+    /** Seconds the panel stays open when new places come up (0 = always open). */
+    val poiRailSeconds: Int = 12,
+    /** Opacity of the panel, percent. */
+    val poiRailOpacity: Int = 70,
+    val poiRailSide: PoiSide = PoiSide.AUTO,
     val driveTimeReminder: Boolean = true,
     val useEuropeGraph: Boolean = true,
     val wifiOnly: Boolean = true,

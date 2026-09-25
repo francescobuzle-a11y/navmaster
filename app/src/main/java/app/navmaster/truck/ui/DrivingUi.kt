@@ -26,6 +26,11 @@ import androidx.compose.material.icons.rounded.MoneyOff
 import androidx.compose.material.icons.rounded.Route
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,6 +44,7 @@ import app.navmaster.truck.nav.DriverPrompt
 import app.navmaster.truck.poi.RoutePoi
 import app.navmaster.truck.routing.Criticality
 import app.navmaster.truck.settings.PoiCategories
+import kotlinx.coroutines.delay
 
 /** The question of the moment, in the middle of the screen with two big answers. */
 @Composable
@@ -103,6 +109,28 @@ fun PromptCard(p: DriverPrompt, traveledM: Double, onRamp: (Boolean) -> Unit, on
   }
 }
 
+/** A toll booth (or a border) coming up: the driver gets ready to pay or to stop. */
+@Composable
+fun BoothBanner(node: app.navmaster.truck.routing.RouteNode, role: String?, distanceM: Double, modifier: Modifier = Modifier) {
+  val (icon, title) = when {
+    !node.isToll -> "🛂" to "Confine di Stato"
+    role == "entrata" -> "🎫" to "Casello d'ingresso"
+    role == "uscita" -> "💶" to "Casello di uscita · pagamento"
+    else -> "💶" to "Barriera del pedaggio"
+  }
+  Row(
+      modifier.shadow(6.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)).background(NmPanel).padding(horizontal = 8.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(Modifier.size(46.dp).clip(CircleShape).background(Color(0xFF1565C0)), contentAlignment = Alignment.Center) { Text(icon, fontSize = 22.sp) }
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.padding(end = 12.dp)) {
+      Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+      Text(if (distanceM < 30) "qui" else "tra " + Fmt.distanceText(distanceM), color = Color(0xFF90CAF9), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    }
+  }
+}
+
 /** The next difficulty ahead, under the manoeuvre bar. */
 @Composable
 fun CritBanner(c: Criticality, distanceM: Double, modifier: Modifier = Modifier, onClick: () -> Unit) {
@@ -123,16 +151,103 @@ fun CritBanner(c: Criticality, distanceM: Double, modifier: Modifier = Modifier,
   }
 }
 
-/** Places ahead on the route (the categories chosen by the driver). */
+/**
+ * Places ahead on the route (the categories chosen by the driver), in a narrow panel at the edge of
+ * the screen. It opens by itself when new places come up and closes again after the chosen
+ * seconds, leaving a small tab the driver can touch to open it; how many places, for how long and
+ * how transparent are in the settings.
+ */
 @Composable
-fun PoiRail(pois: List<RoutePoi>, traveledM: Double, modifier: Modifier = Modifier, onPoi: (RoutePoi) -> Unit) {
+fun PoiRail(
+    pois: List<RoutePoi>,
+    traveledM: Double,
+    count: Int,
+    seconds: Int,
+    opacity: Int,
+    atRight: Boolean,
+    narrow: Boolean,
+    modifier: Modifier = Modifier,
+    onPoi: (RoutePoi) -> Unit,
+) {
+  if (count <= 0) return
   // the nearest of each kind ahead (a parking, a fuel station, a service area...) rather than four
   // restaurants in the same street
   val ahead = pois.filter { it.alongM > traveledM + 50 && it.alongM < traveledM + 80_000 }
-      .groupBy { it.poi.cat }.values.map { it.first() }.sortedBy { it.alongM }.take(4)
+      .groupBy { it.poi.cat }.values.map { it.first() }.sortedBy { it.alongM }.take(count.coerceAtMost(6))
   if (ahead.isEmpty()) return
-  Column(modifier.widthIn(max = 330.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-    for (p in ahead) PoiRow(p, traveledM) { onPoi(p) }
+  val keys = ahead.map { it.poi.key }
+  var open by remember { mutableStateOf(true) }
+  var seen by remember { mutableStateOf(emptySet<String>()) }
+  LaunchedEffect(keys) {
+    if (keys.any { it !in seen }) open = true
+    seen = seen + keys
+  }
+  LaunchedEffect(open, keys, seconds) {
+    if (open && seconds > 0) {
+      delay(seconds * 1000L)
+      open = false
+    }
+  }
+  val alpha = (opacity.coerceIn(15, 100)) / 100f
+  val bg = Color(0xFF1B222B).copy(alpha = alpha)
+  val width = if (narrow) 188.dp else 232.dp
+  Column(modifier.width(width), horizontalAlignment = if (atRight) Alignment.End else Alignment.Start,
+      verticalArrangement = Arrangement.spacedBy(5.dp)) {
+    if (open) {
+      for (p in ahead) PoiChip(p, traveledM, bg) { onPoi(p) }
+      // a thin handle to close it by hand
+      Text(if (atRight) "›  chiudi" else "chiudi  ‹", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
+          modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(bg).clickable { open = false }
+              .padding(horizontal = 10.dp, vertical = 4.dp))
+    } else {
+      // closed: a small tab with the kinds of places ahead
+      val icons = ahead.take(3).joinToString(" ") { PoiCategories.byId(it.poi.cat)?.icon ?: "📍" }
+      Text(if (atRight) "‹ $icons" else "$icons ›", fontSize = 17.sp, color = Color.White,
+          modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(bg).clickable { open = true }
+              .padding(horizontal = 10.dp, vertical = 6.dp))
+    }
+  }
+}
+
+/** One place in the side panel: small, one line for the name, the distance on the right. */
+@Composable
+private fun PoiChip(p: RoutePoi, traveledM: Double, bg: Color, onClick: () -> Unit) {
+  val cat = PoiCategories.byId(p.poi.cat)
+  Row(
+      Modifier.fillMaxWidth().heightIn(min = 42.dp).clip(RoundedCornerShape(14.dp)).background(bg)
+          .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 4.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(cat?.icon ?: "📍", fontSize = 18.sp, modifier = Modifier.width(26.dp))
+    Column(Modifier.weight(1f)) {
+      Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+          overflow = TextOverflow.Ellipsis)
+      val tags = listOfNotNull(
+          if ("hgv" in p.poi.flags) "TIR" else null, if ("adblue" in p.poi.flags) "AdBlue" else null,
+          if ("h24" in p.poi.flags) "24h" else null,
+          if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m" else null,
+      )
+      if (tags.isNotEmpty()) Text(tags.joinToString(" · "), color = Color(0xFFB8C2CC), fontSize = 11.sp, maxLines = 1)
+    }
+    Text(Fmt.distanceText(p.alongM - traveledM), color = Nm.Amber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+  }
+}
+
+/** A sample of the panel for the settings, with the chosen transparency. */
+@Composable
+fun PoiRailPreview(opacity: Int, modifier: Modifier = Modifier) {
+  val bg = Color(0xFF1B222B).copy(alpha = opacity.coerceIn(15, 100) / 100f)
+  Box(modifier.clip(RoundedCornerShape(16.dp)).background(Color(0xFFD9D3C7)).padding(12.dp)) {
+    Column(Modifier.width(232.dp).align(Alignment.CenterEnd), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+      for ((icon, name, d) in listOf(Triple("⛽", "Distributore TIR", "2,4 km"), Triple("🅿", "Parcheggio camion", "8 km"))) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 42.dp).clip(RoundedCornerShape(14.dp)).background(bg).padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+          Text(icon, fontSize = 18.sp, modifier = Modifier.width(26.dp))
+          Text(name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+          Text(d, color = Nm.Amber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+      }
+    }
   }
 }
 

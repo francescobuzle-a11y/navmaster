@@ -1,6 +1,13 @@
 package app.navmaster.truck.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -62,7 +69,9 @@ import uniffi.ferrostar.GeographicCoordinate
 @Composable
 fun SearchScreen(near: GeographicCoordinate?, onPick: (Found) -> Unit, onClose: () -> Unit, startGuided: Boolean = false) {
   var guided by remember { mutableStateOf(startGuided) }
-  AdaptiveSheet("Dove andiamo?", onClose, wide = true) {
+  // the mode buttons and the field stay put, only the results scroll: with the keyboard open the
+  // panel sits above it and every result can be reached
+  AdaptiveSheet("Dove andiamo?", onClose, wide = true, scroll = false) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
       Pill("🔎 Ricerca libera", !guided) { guided = false }
       Pill("🧭 Paese › Città › Via", guided) { guided = true }
@@ -76,10 +85,22 @@ fun SearchScreen(near: GeographicCoordinate?, onPick: (Found) -> Unit, onClose: 
   }
 }
 
+/** The results under a search field: they scroll, and scrolling them puts the keyboard away. */
+@Composable
+private fun ColumnScope.Results(content: @Composable ColumnScope.() -> Unit) {
+  val kb = LocalSoftwareKeyboardController.current
+  val scroll = rememberScrollState()
+  LaunchedEffect(scroll.isScrollInProgress) { if (scroll.isScrollInProgress) kb?.hide() }
+  Column(Modifier.weight(1f, fill = false).verticalScroll(scroll), content = content)
+}
+
 @Composable
 private fun field(value: String, onChange: (String) -> Unit, hint: String, focus: FocusRequester? = null) {
+  val kb = LocalSoftwareKeyboardController.current
   OutlinedTextField(
       value, onChange, placeholder = { Text(hint, fontSize = 18.sp) }, singleLine = true,
+      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+      keyboardActions = KeyboardActions(onSearch = { kb?.hide() }, onDone = { kb?.hide() }),
       leadingIcon = { Icon(Icons.Rounded.Search, null, tint = Nm.Muted) },
       textStyle = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, color = Nm.Text),
       modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).then(if (focus != null) Modifier.focusRequester(focus) else Modifier),
@@ -106,7 +127,7 @@ private fun ResultRow(icon: String, title: String, detail: String?, trailing: St
 }
 
 @Composable
-private fun FreeSearch(near: GeographicCoordinate?, onPick: (Found) -> Unit) {
+private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) -> Unit) {
   var q by remember { mutableStateOf("") }
   var offline by remember { mutableStateOf<List<Found>>(emptyList()) }
   var online by remember { mutableStateOf<List<Found>>(emptyList()) }
@@ -142,23 +163,25 @@ private fun FreeSearch(near: GeographicCoordinate?, onPick: (Found) -> Unit) {
   }
   field(q, { q = it }, "Via, città, azienda o coordinate", focus)
   Spacer(Modifier.height(8.dp))
-  if (q.isBlank()) {
-    if (recents.isNotEmpty()) SectionHeader("Recenti")
-    for (r in recents) ResultRow("🕘", r.title, r.detail) { onPick(r.toFound()) }
-    return
+  Results {
+    if (q.isBlank()) {
+      if (recents.isNotEmpty()) SectionHeader("Recenti")
+      for (r in recents) ResultRow("🕘", r.title, r.detail) { onPick(r.toFound()) }
+    } else {
+      if (busy && offline.isEmpty()) CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.padding(12.dp))
+      if (offline.isNotEmpty()) SectionHeader("Sul tablet (senza rete)")
+      for (f in offline) ResultRow(f.icon, f.title, f.detail, f.distanceM?.let { Fmt.distanceText(it) }) { onPick(f) }
+      val extra = online.filter { o -> offline.none { app.navmaster.truck.core.Geo.dist(it.coordinate, o.coordinate) < 60 } }
+      if (extra.isNotEmpty()) SectionHeader("Online")
+      for (f in extra) ResultRow(f.icon, f.title, f.detail) { onPick(f) }
+      if (!busy && offline.isEmpty() && extra.isEmpty()) Caption("Nessun risultato. Prova con meno parole o con la ricerca guidata.")
+    }
   }
-  if (busy && offline.isEmpty()) CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.padding(12.dp))
-  if (offline.isNotEmpty()) SectionHeader("Sul tablet (senza rete)")
-  for (f in offline) ResultRow(f.icon, f.title, f.detail, f.distanceM?.let { Fmt.distanceText(it) }) { onPick(f) }
-  val extra = online.filter { o -> offline.none { app.navmaster.truck.core.Geo.dist(it.coordinate, o.coordinate) < 60 } }
-  if (extra.isNotEmpty()) SectionHeader("Online")
-  for (f in extra) ResultRow(f.icon, f.title, f.detail) { onPick(f) }
-  if (!busy && offline.isEmpty() && extra.isEmpty()) Caption("Nessun risultato. Prova con meno parole o con la ricerca guidata.")
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun GuidedSearch(onPick: (Found) -> Unit) {
+private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
   val regions = remember { AppGraph.addresses.regionsWithAddresses() }
   var region by remember { mutableStateOf(regions.singleOrNull()) }
   var place by remember { mutableStateOf<PlaceHit?>(null) }
@@ -178,8 +201,10 @@ private fun GuidedSearch(onPick: (Found) -> Unit) {
 
   val r = region
   if (r == null) {
-    if (regions.isEmpty()) Caption("Scarica prima un Paese: gli indirizzi sono sul tablet e funzionano senza rete.")
-    for (x in regions) ResultRow(flagOf(x), x.label, "Indirizzi offline") { region = x; q = "" }
+    Results {
+      if (regions.isEmpty()) Caption("Scarica prima un Paese: gli indirizzi sono sul tablet e funzionano senza rete.")
+      for (x in regions) ResultRow(flagOf(x), x.label, "Indirizzi offline") { region = x; q = "" }
+    }
     return
   }
   val p = place
@@ -191,9 +216,11 @@ private fun GuidedSearch(onPick: (Found) -> Unit) {
     }
     field(q, { q = it }, "Città o paese")
     Spacer(Modifier.height(6.dp))
-    for (x in list) {
-      val detail = listOfNotNull(x.kindLabel, x.parentName, x.county).joinToString(" · ")
-      ResultRow(if (x.kind == "city") "🏙" else "🏘", x.name, detail) { place = x; q = "" }
+    Results {
+      for (x in list) {
+        val detail = listOfNotNull(x.kindLabel, x.parentName, x.county).joinToString(" · ")
+        ResultRow(if (x.kind == "city") "🏙" else "🏘", x.name, detail) { place = x; q = "" }
+      }
     }
     return
   }
@@ -206,16 +233,19 @@ private fun GuidedSearch(onPick: (Found) -> Unit) {
     }
     field(q, { q = it }, "Via di ${p.name}")
     Spacer(Modifier.height(6.dp))
-    ResultRow("🎯", "Centro di ${p.name}", "Senza via") {
-      onPick(Found(p.name, listOfNotNull(p.county, r.label).joinToString(" · "), GeographicCoordinate(p.lat, p.lon), "🏙"))
+    Results {
+      ResultRow("🎯", "Centro di ${p.name}", "Senza via") {
+        onPick(Found(p.name, listOfNotNull(p.county, r.label).joinToString(" · "), GeographicCoordinate(p.lat, p.lon), "🏙"))
+      }
+      for (x in list) ResultRow(if (x.noStreet) "🏘" else "🛣", x.name, x.placeName) { street = x; q = "" }
     }
-    for (x in list) ResultRow(if (x.noStreet) "🏘" else "🛣", x.name, x.placeName) { street = x; q = "" }
     return
   }
   var houses by remember(s.id) { mutableStateOf<List<HouseHit>>(emptyList()) }
   LaunchedEffect(s.id) { houses = withContext(Dispatchers.IO) { runCatching { AppGraph.addresses.houses(r.id, s.id) }.getOrDefault(emptyList()) } }
   field(q, { q = it }, "Numero civico")
   Spacer(Modifier.height(8.dp))
+  Results {
   BigButton("Vai in ${s.name} (senza civico)", Modifier.fillMaxWidth(), style = BtnStyle.SECONDARY) {
     onPick(Found(s.name, listOfNotNull(s.placeName, r.label).joinToString(" · "), GeographicCoordinate(s.lat, s.lon), "🛣"))
   }
@@ -230,6 +260,7 @@ private fun GuidedSearch(onPick: (Found) -> Unit) {
               .clickable { onPick(Found("${s.name} ${h.num}", listOfNotNull(s.placeName, r.label).joinToString(" · "), GeographicCoordinate(h.lat, h.lon), "📍")) }
               .padding(horizontal = 14.dp, vertical = 14.dp))
     }
+  }
   }
 }
 

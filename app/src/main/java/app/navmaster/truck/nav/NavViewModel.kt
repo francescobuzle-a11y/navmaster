@@ -293,6 +293,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         }
         val list = variants.mapIndexed { i, x -> if (i == recommended) x.copy(recommended = true) else x }
         if (list.isEmpty()) throw IllegalStateException("Nessun percorso trovato")
+        for (x in list) Log.i(TAG, "variant ${x.title}: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
+            "toll ${"%.1f".format(x.analysis.tollKm)} km, booths ${x.analysis.tollBooths.size}, crit ${x.critical}/${x.warnings}${if (x.recommended) " CONSIGLIATO" else ""}")
+        Log.i(TAG, "advice: $advice")
         val state = _plan.value.copy(variants = list, selected = recommended, computing = false, advice = advice)
         _plan.value = state
         if (advice != null && settings.voiceWarnings && settings.tollPolicy == TollPolicy.ASK && recommended != 0) say(advice)
@@ -402,6 +405,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       }
     }
 
+    // toll booths and borders: said once, about a kilometre before
+    if (settings.voiceWarnings) {
+      val a = extras.analysis
+      val booth = a?.nodes?.firstOrNull { it.alongM - traveled in 150.0..1100.0 && "node:${it.alongM.toLong()}" !in asked }
+      if (a != null && booth != null) {
+        asked += "node:${booth.alongM.toLong()}"
+        val d = Fmt.distanceText(booth.alongM - traveled).replace("km", "chilometri").replace(" m", " metri")
+        val what = if (booth.isToll) when (a.boothRole(booth)) {
+          "entrata" -> "casello d'ingresso in autostrada"
+          "uscita" -> "casello di uscita: prepara il pagamento"
+          else -> "barriera del pedaggio"
+        } else "confine di Stato"
+        say("Tra $d, $what.")
+      }
+    }
+
     // a tight exit ramp ahead: ask the driver
     if (settings.askTightRamps) {
       val ramp = extras.criticalities.firstOrNull { c ->
@@ -451,6 +470,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val extra = altS - remainingS
         val max = AppGraph.settings.settings.value.tollMaxExtraMin * 60
         val tollKm = a.tolls.filter { it.endM > traveled }.sumOf { it.length } / 1000.0
+        Log.i(TAG, "toll check: ${distToToll.toInt()} m to the toll, ${"%.1f".format(tollKm)} km toll, toll-free +${extra.toInt()} s (max $max s)")
         if (extra <= max && tollKm > 1) {
           val extraKm = (alt.distance - (a.length - traveled)) / 1000.0
           val p = DriverPrompt.TollChoice("toll", (extra / 60).roundToInt().coerceAtLeast(0), extraKm, tollKm, alt, distToToll)
@@ -563,12 +583,17 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   }
 
   /** Used by the emulator tests: route to a point and start right away, optionally simulated. */
-  fun autoRun(dest: GeographicCoordinate, label: String?, simulate: Boolean) {
+  fun autoRun(dest: GeographicCoordinate, label: String?, simulate: Boolean, variant: Int? = null) {
     viewModelScope.launch {
       Log.i(TAG, "autoRun verso ${dest.lat},${dest.lng}, attendo la posizione")
       while (lastLocation.value == null) delay(500)
       _plan.value = PlanState(stops = listOf(Stop(dest, label ?: "Prova")))
-      planRoutes { state -> if (state.variants.isNotEmpty()) start(simulate) }
+      planRoutes { state ->
+        if (state.variants.isNotEmpty()) {
+          if (variant != null) selectVariant(variant)
+          start(simulate)
+        }
+      }
     }
   }
 

@@ -232,8 +232,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
 
     if (navigating) {
-      NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, traveled, nav.pois, landscape, mapState,
-          onCrit = { openCrit = it }, onPoi = { openPoi = it })
+      val booth = nav.analysis?.nodes?.firstOrNull { it.alongM > traveled - 20 }
+          ?.let { b -> Triple(b, nav.analysis?.boothRole(b), b.alongM - traveled) }
+          ?.takeIf { it.third <= 2500 }
+      NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
+          settings, onCrit = { openCrit = it }, onPoi = { openPoi = it })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -388,10 +391,12 @@ private fun NavigatingOverlay(
     nextLimit: RouteLimit?,
     nextLimitDist: Double?,
     nextCrit: Criticality?,
+    booth: Triple<app.navmaster.truck.routing.RouteNode, String?, Double>?,
     traveled: Double,
     pois: List<RoutePoi>,
     landscape: Boolean,
     mapState: com.stadiamaps.ferrostar.maplibreui.runtime.NavigationMapState,
+    settings: app.navmaster.truck.settings.Settings,
     onCrit: (Criticality) -> Unit,
     onPoi: (RoutePoi) -> Unit,
 ) {
@@ -406,11 +411,15 @@ private fun NavigatingOverlay(
       } else if (nextCrit != null) {
         CritBanner(nextCrit, (nextCrit.startM - traveled).coerceAtLeast(0.0)) { onCrit(nextCrit) }
       }
+      if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
     }
     Box(Modifier.weight(1f).fillMaxWidth()) {
       SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp))
-      PoiRail(pois, traveled, Modifier.align(if (landscape) Alignment.TopEnd else Alignment.BottomCenter)
-          .padding(top = 8.dp, bottom = 8.dp, end = if (landscape) 0.dp else 76.dp, start = if (landscape) 0.dp else 84.dp), onPoi)
+      // places along the route: a narrow panel at the edge (the right one unless the driver chose
+      // the left), under the manoeuvre bar, never in the middle of the road ahead
+      val atRight = settings.poiRailSide != app.navmaster.truck.settings.PoiSide.LEFT
+      PoiRail(pois, traveled, settings.poiRailCount, settings.poiRailSeconds, settings.poiRailOpacity, atRight, narrow = !landscape,
+          modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi)
       Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         RoundAction(if (ui.isMuted == true) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, "Voce") { vm.toggleMute() }
         RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }

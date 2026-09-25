@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -242,7 +243,7 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
  */
 @Composable
 fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modifier, wide: Boolean = false,
-                  actions: @Composable () -> Unit = {}, content: @Composable ColumnScope.() -> Unit) {
+                  scroll: Boolean = true, actions: @Composable () -> Unit = {}, content: @Composable ColumnScope.() -> Unit) {
   val cfg = LocalConfiguration.current
   val landscape = cfg.screenWidthDp > cfg.screenHeightDp
   Box(
@@ -256,7 +257,8 @@ fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modif
     Column(
         Modifier.align(align).then(sizeMod).clip(shape).background(Nm.PanelSolid)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
-            .statusBarsPadding().navigationBarsPadding().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 12.dp),
+            // the keyboard pushes the panel up instead of covering it (edge to edge: no automatic resize)
+            .statusBarsPadding().navigationBarsPadding().imePadding().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 12.dp),
     ) {
       Row(verticalAlignment = Alignment.CenterVertically) {
         Title(title, Modifier.weight(1f))
@@ -264,7 +266,9 @@ fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modif
         RoundAction(Icons.Rounded.Close, "Chiudi", size = 52.dp, container = Nm.Raised, onClick = onClose)
       }
       Spacer(Modifier.size(8.dp))
-      Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), content = content)
+      // scroll = false: the caller keeps some parts fixed (a search field) and scrolls the rest itself
+      if (scroll) Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), content = content)
+      else Column(Modifier.weight(1f, fill = false), content = content)
     }
   }
 }
