@@ -24,7 +24,7 @@ import sqlite3
 import sys
 import time
 
-from nmcommon import cells_for, min_radius, pts_text, read_geojsonseq, simplify
+from nmcommon import cells_for, dist_m, min_radius, read_geojsonseq, simplify
 
 CLASSES = {"motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary",
            "secondary_link", "tertiary", "tertiary_link", "unclassified", "residential", "living_street",
@@ -78,6 +78,26 @@ def turning(coords):
     return total
 
 
+def clip_around(coords, at, radius_m=70.0):
+    """The part of a way within radius_m (along the way) of a point: a tight curve only needs the
+    curve itself to be matched with the route, not the whole road."""
+    i0 = min(range(len(coords)), key=lambda i: dist_m(coords[i], at))
+    lo, d = i0, 0.0
+    while lo > 0 and d < radius_m:
+        d += dist_m(coords[lo - 1], coords[lo])
+        lo -= 1
+    hi, d = i0, 0.0
+    while hi < len(coords) - 1 and d < radius_m:
+        d += dist_m(coords[hi], coords[hi + 1])
+        hi += 1
+    return coords[lo:hi + 1]
+
+
+def pts_text(coords):
+    # 5 decimals = 1.1 m: plenty to match a route, and a third smaller than 6
+    return ";".join(f"{c[1]:.5f},{c[0]:.5f}" for c in coords)
+
+
 def main():
     src, dst, region = sys.argv[1], sys.argv[2], sys.argv[3]
     db = sqlite3.connect(dst)
@@ -100,7 +120,7 @@ def main():
         for k in ("surface", "smoothness", "tracktype", "incline", "narrow", "ref", "hgv", "maxspeed"):
             if t.get(k):
                 info[k] = t[k]
-        pts = simplify(coords, 40)
+        pts = simplify(clip_around(coords, at) if kind == "curve" and at is not None else coords, 40)
         p = at or coords[len(coords) // 2]
         rows.append((cid, f.get("id"), kind, value, json.dumps(info, separators=(",", ":")), t.get("name") or t.get("ref"),
                      round(p[1], 6), round(p[0], 6), pts_text(pts)))
@@ -134,7 +154,9 @@ def main():
 
         rough = max(BAD_SURFACE.get(t.get("surface"), 0), BAD_SMOOTH.get(t.get("smoothness"), 0),
                     TRACKTYPE.get(t.get("tracktype"), 0))
-        if rough:
+        # tracks are left out: the lorry and camper profiles already avoid unpaved roads, and they
+        # would be most of the file
+        if rough and hw != "track":
             add(f, "rough", float(rough), t, coords)
 
         inc = t.get("incline")

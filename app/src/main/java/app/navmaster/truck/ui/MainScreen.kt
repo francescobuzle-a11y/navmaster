@@ -91,7 +91,7 @@ import uniffi.ferrostar.GeographicCoordinate
 private enum class Sheet { NONE, SEARCH, VEHICLE, SETTINGS, REGIONS }
 
 @Composable
-fun MainScreen(vm: NavViewModel, initialSheet: String? = null) {
+fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int? = null) {
   KeepScreenOnDisposableEffect()
   val context = LocalContext.current
   val configuration = LocalConfiguration.current
@@ -139,11 +139,21 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null) {
       "vehicle" -> Sheet.VEHICLE
       "settings" -> Sheet.SETTINGS
       "regions" -> Sheet.REGIONS
-      "search" -> Sheet.SEARCH
+      "search", "search_guided" -> Sheet.SEARCH
       else -> Sheet.NONE
     })
   }
+  val searchGuided = initialSheet == "search_guided"
   var openCrit by remember { mutableStateOf<Criticality?>(null) }
+  // emulator test: open the detail of the n-th difficulty as soon as the routes are ready
+  var critShown by remember { mutableStateOf(false) }
+  LaunchedEffect(plan.current, plan.computing) {
+    val cur = plan.current
+    if (initialCrit != null && !critShown && cur != null && !plan.computing) {
+      cur.criticalities.getOrNull(initialCrit)?.let { openCrit = it }
+      critShown = true
+    }
+  }
   var openPoi by remember { mutableStateOf<RoutePoi?>(null) }
   var countryHintClosed by remember { mutableStateOf(false) }
   val styleUri = remember(installed, night, satellite) { MapStyles.styleUri(context, installed, night, satellite) }
@@ -275,7 +285,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null) {
     }
 
     when (sheet) {
-      Sheet.SEARCH -> SearchScreen(location?.coordinates, onPick = { f ->
+      Sheet.SEARCH -> SearchScreen(location?.coordinates, startGuided = searchGuided, onPick = { f ->
         sheet = Sheet.NONE
         vm.selectDestination(f.coordinate, f.title)
       }, onClose = { sheet = Sheet.NONE })

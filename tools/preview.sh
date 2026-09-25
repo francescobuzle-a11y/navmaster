@@ -43,10 +43,20 @@ adb shell ls -la $D >> "$INFO" 2>&1
 start; sleep 16; shot 02_mappa_offline
 start --es nm_sheet vehicle; sleep 10; shot 03_mezzo
 start --es nm_sheet search; sleep 8; adb shell input text "via"; sleep 1; adb shell input keyevent 62; adb shell input text "flaminia"; sleep 5; shot 04_ricerca
+# guided search (country > town > street > number), offline
+start --es nm_sheet search_guided; sleep 9; shot 04b_ricerca_guidata
 
 # route choice: variants, tolls advice, difficulties
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
 sleep 30; shot 05_scelta_percorso
+# detail of the first difficulty: swept path, satellite, street photos, choices
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ei nm_crit 0
+sleep 40; shot 05b_criticita
+# tolls: Santarcangelo -> Riccione, motorway A14 or the free SS16
+start --es nm_from "44.0633,12.4466" --es nm_dest "43.9990,12.6560" --es nm_label "Riccione" --es nm_profile camion --es nm_load 12 --ez nm_plan true
+sleep 34; shot 05c_pedaggi
+start --es nm_from "44.0633,12.4466" --es nm_dest "43.9990,12.6560" --es nm_label "Riccione" --es nm_profile camion --es nm_load 12 --ez nm_sim true
+sleep 45; shot 05d_guida_pedaggio
 
 # guidance, articulated lorry
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_sim true

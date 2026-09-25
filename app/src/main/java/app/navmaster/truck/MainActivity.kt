@@ -26,7 +26,8 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     createFerrostarLogger()
     enableEdgeToEdge()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false
-    setContent { NmTheme { MainScreen(vm, intent?.getStringExtra("nm_sheet")) } }
+    val crit = intent?.getIntExtra("nm_crit", -1)?.takeIf { it >= 0 }
+    setContent { NmTheme { MainScreen(vm, intent?.getStringExtra("nm_sheet"), crit) } }
     handleTestIntent()
   }
 

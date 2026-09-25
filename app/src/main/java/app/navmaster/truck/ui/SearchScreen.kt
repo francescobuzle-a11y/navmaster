@@ -60,8 +60,8 @@ import uniffi.ferrostar.GeographicCoordinate
  *  - free text (Google Maps): anything typed, offline first and online when there is a connection.
  */
 @Composable
-fun SearchScreen(near: GeographicCoordinate?, onPick: (Found) -> Unit, onClose: () -> Unit) {
-  var guided by remember { mutableStateOf(false) }
+fun SearchScreen(near: GeographicCoordinate?, onPick: (Found) -> Unit, onClose: () -> Unit, startGuided: Boolean = false) {
+  var guided by remember { mutableStateOf(startGuided) }
   AdaptiveSheet("Dove andiamo?", onClose, wide = true) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
       Pill("🔎 Ricerca libera", !guided) { guided = false }

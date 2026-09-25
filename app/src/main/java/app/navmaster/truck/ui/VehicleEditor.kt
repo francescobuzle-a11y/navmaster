@@ -175,7 +175,7 @@ fun VehicleEditor(onClose: () -> Unit) {
 fun VehicleDrawing(v: VehicleProfile, modifier: Modifier = Modifier) {
   Canvas(modifier.clip(RoundedCornerShape(18.dp)).background(Nm.Raised)) {
     val padL = 24f
-    val padR = 90f
+    val padR = 175f
     val ground = size.height - 42f
     val scale = minOf((size.width - padL - padR) / v.lengthM.toFloat(), (ground - 18f) / 4.9f)
     fun x(m: Double) = padL + (m * scale).toFloat()
