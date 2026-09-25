@@ -282,7 +282,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           ?.let { b -> Triple(b, nav.analysis?.boothRole(b), b.alongM - traveled) }
           ?.takeIf { it.third <= 2500 }
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
-          settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, onCrit = { openCrit = it }, onPoi = { openPoi = it })
+          settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -471,6 +471,7 @@ private fun NavigatingOverlay(
     lastMapTap: Long,
     camera: RouteLimit?,
     cameraZoneOnly: Boolean,
+    countryIso: String?,
     onCrit: (Criticality) -> Unit,
     onPoi: (RoutePoi) -> Unit,
 ) {
@@ -483,7 +484,7 @@ private fun NavigatingOverlay(
     delay(8_000)
     controls = false
   }
-  val jv = if (settings.junctionView) junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled) else null
+  val jv = if (settings.junctionView) junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso) else null
   val speedKmh = ui.location?.speed?.value?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {

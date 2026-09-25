@@ -368,6 +368,7 @@ fun junctionSceneOf(
     distanceM: Double?,
     a: app.navmaster.truck.routing.RouteAnalysis?,
     traveled: Double,
+    countryFallback: String? = null,
 ): JunctionScene? {
   if (instruction == null || distanceM == null || distanceM < 0) return null
   val p = instruction.primaryContent
@@ -413,7 +414,7 @@ fun junctionSceneOf(
       branchRefs = (sign?.first?.refs ?: emptyList()) + (after?.refs ?: emptyList()),
       mainRefs = here?.refs ?: emptyList(),
       motorway = motorway,
-      country = here?.country ?: after?.country,
+      country = here?.country ?: after?.country ?: countryFallback,
       exit = type.contains("OFFRAMP") || type.contains("FORK"),
       analysis = a,
       traveledM = traveled,
@@ -439,37 +440,40 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
   val asphalt = if (night) Color(0xFF3B4047) else Color(0xFF5A6068)
   val marking = if (night) Color(0xFFCFD3D8) else Color.White
 
-  // local frame: x to the right of the vehicle, y ahead (metres)
-  val here = a.pointAt(pos)
+  // The view is anchored a little before the junction while the vehicle is still far, so the
+  // junction is always seen large; from there on it follows the vehicle, live.
+  val m = scene.maneuverAtM
+  val lead = if (scene.turn) 60.0 else 110.0
+  val anchor = max(pos, m - lead).coerceAtMost(a.length)
+  // local frame at the anchor: x to the right, y ahead (metres)
+  val here = a.pointAt(anchor)
   val plane = app.navmaster.truck.core.LocalPlane(here.lat, here.lng)
-  val hv = (plane.toXY(a.pointAt(pos + 12)) - plane.toXY(a.pointAt((pos - 8).coerceAtLeast(0.0)))).unit()
+  val hv = (plane.toXY(a.pointAt(anchor + 12)) - plane.toXY(a.pointAt((anchor - 8).coerceAtLeast(0.0)))).unit()
   if (hv.len() < 0.5) return
   fun loc(c: uniffi.ferrostar.GeographicCoordinate): app.navmaster.truck.core.XY {
     val p = plane.toXY(c)
     return app.navmaster.truck.core.XY(p.x * hv.y - p.y * hv.x, p.x * hv.x + p.y * hv.y)
   }
-  // camera 14 m behind and 9 m above the cab, looking down a little
-  val back = 14.0
-  val camH = 9.0
-  val pitch = Math.toRadians(if (scene.turn) 24.0 else 16.0)
-  val cp = kotlin.math.cos(pitch)
-  val sp = kotlin.math.sin(pitch)
-  val f = w * 0.95
+  // pseudo-3D like the dedicated navigators: far things shrink and rise towards the horizon
+  val zMax = (m - anchor) + if (scene.turn) 50.0 else 90.0
+  val k = 0.012
+  fun persp(z: Double) = 1.0 / (1.0 + max(z, -12.0) * k)
+  val bottomY = h * 0.97
+  val topY = horizon + (h - horizon) * 0.04
+  val span = 1.0 - persp(zMax)
+  val xs = w / (if (scene.turn) 34.0 else 44.0)
   val cx = w / 2.0
-  val cy = horizon + (h - horizon) * 0.02
   fun proj(p: app.navmaster.truck.core.XY): Offset? {
-    val dz = p.y + back
-    val zc = dz * cp + camH * sp
-    if (zc < 2.0) return null
-    val yc = camH * cp - dz * sp
-    return Offset((cx + p.x / zc * f).toFloat(), (cy + yc / zc * f).toFloat())
+    if (p.y > zMax + 5 || p.y < -14) return null
+    val q = persp(p.y)
+    val y = bottomY - (1.0 - q) / span * (bottomY - topY)
+    return Offset((cx + p.x * xs * q).toFloat(), y.toFloat())
   }
 
-  val m = scene.maneuverAtM
-  val end = min(a.length, m + if (scene.turn) 90.0 else 220.0)
-  val start = (pos - 6).coerceAtLeast(0.0)
+  val end = min(a.length, m + if (scene.turn) 60.0 else 110.0)
+  val start = (anchor - 12).coerceAtLeast(0.0)
   if (end - start < 10) return
-  val step = 3.0
+  val step = 2.5
   val center = mutableListOf<app.navmaster.truck.core.XY>()
   val along = mutableListOf<Double>()
   var s0 = start
@@ -520,7 +524,7 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
     if (mi in 2 until center.size) {
       val inDir = (center[mi] - center[max(0, mi - 8)]).unit()
       if (inDir.len() > 0.5) {
-        val ghost = (0..60).map { k -> center[mi] + inDir * (k * 3.0) }
+        val ghost = (0..45).map { j -> center[mi] + inDir * (j * 3.0) }
         val gw = n * laneW + 1.0
         ribbon(ghost, { -gw / 2 }, { gw / 2 })?.let { drawPath(it, asphalt.copy(alpha = 0.85f)) }
       }
@@ -549,7 +553,7 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
   ribbon(center, { i -> bandCenter(i) - bw / 2 }, { i -> bandCenter(i) + bw / 2 })?.let { drawPath(it, NmRoute.copy(alpha = 0.55f)) }
   val centerNormals = normals(center)
   // the arrow through the manoeuvre, running along the real path
-  val arrowPts = center.indices.filter { along[it] >= max(pos + 4, m - 35) && along[it] <= m + 28 }.map { i ->
+  val arrowPts = center.indices.filter { along[it] >= max(pos + 4, m - 40) && along[it] <= m + 32 }.map { i ->
     center[i] + centerNormals[i] * bandCenter(i)
   }
   val arrowScreen = arrowPts.mapNotNull { proj(it) }
@@ -574,7 +578,7 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
     drawPath(head, Color.White)
   }
   // the vehicle, at the bottom
-  proj(app.navmaster.truck.core.XY(0.0, 0.0))?.let { v ->
+  proj(loc(a.pointAt(pos)))?.let { v ->
     drawCircle(Color(0xFF1E88E5), w * 0.022f, v)
     drawCircle(Color.White, w * 0.022f, v, style = Stroke(4f))
   }
