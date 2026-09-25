@@ -36,6 +36,7 @@ data class EdgeInfo(
     val bridge: Boolean,
     val maxUpGrade: Double?,
     val maxDownGrade: Double?,
+    val roundabout: Boolean = false,
 ) {
   val isRamp: Boolean
     get() = use == "ramp"
@@ -174,7 +175,7 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
         listOf(
             "edge.way_id", "edge.road_class", "edge.use", "edge.toll", "edge.surface", "edge.lane_count",
             "edge.length", "edge.begin_shape_index", "edge.end_shape_index", "edge.names", "edge.tunnel",
-            "edge.bridge", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
+            "edge.bridge", "edge.roundabout", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
             "node.admin_index", "node.type", "admin.country_code", "admin.country_text", "shape",
         )
 
@@ -208,6 +209,7 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
             bridge = e.bool("bridge") ?: false,
             maxUpGrade = e["max_upward_grade"]?.jsonPrimitive?.doubleOrNull,
             maxDownGrade = e["max_downward_grade"]?.jsonPrimitive?.doubleOrNull,
+            roundabout = e.bool("roundabout") ?: false,
         )
       }
       return list to nodes

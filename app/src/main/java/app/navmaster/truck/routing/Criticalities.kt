@@ -116,7 +116,7 @@ class CriticalityFinder(regions: RegionManager) {
         if (out.any { it.kind == CritKind.RAMP && it.startM < span.endM && it.endM > span.startM }) continue
         if (span.length < 25 || System.currentTimeMillis() > deadline) continue
         val lanes = edges.maxOf { it.lanes }.coerceAtLeast(1)
-        val width = lanes * 3.5 + 1.0
+        val width = lanes * 3.6 + 2.2
         val pts = Geo.slice(line, a.cum, span.startM, span.endM)
         val plane = LocalPlane(pts.first().lat, pts.first().lng)
         val scene = TurnCheck.curve(pts.map { plane.toXY(it) }, width, v, 0.6) ?: continue
@@ -304,6 +304,9 @@ class CriticalityFinder(regions: RegionManager) {
         if (roundabout && r.value > 9.0) return null
         val (dist, at) = m.nearest(GeographicCoordinate(r.lat, r.lon)) ?: return null
         if (dist > 15) return null
+        // the graph knows the roundabouts too (older data has no roundabout flag in the rows)
+        val onRoundabout = listOf(-10.0, 0.0, 10.0).any { a.edgeAt((at + it).coerceAtLeast(0.0))?.roundabout == true }
+        if (onRoundabout && r.value > 9.0) return null
         // only where the route is really on this road around the tightest point: a turn from or
         // onto another road at a junction is the junction check's job, not a "hairpin"
         val onWay = r.pts.mapNotNull { q -> m.nearest(q)?.takeIf { it.first <= 8 && abs(it.second - at) <= 70 }?.second }
@@ -318,13 +321,14 @@ class CriticalityFinder(regions: RegionManager) {
         val lanes = info?.get("lanes")?.jsonPrimitive?.doubleOrNull?.toInt()
         val wTag = info?.get("w")?.jsonPrimitive?.doubleOrNull
         val isLink = hw.endsWith("_link")
-        val width = wTag ?: if (isLink) (lanes ?: 1) * 3.5 + 1.0 else roadWidthOf(hw, lanes ?: if (oneway) 1 else 1, oneway)
+        // ramps: 3.6 m lanes plus the paved shoulders (about 1.5 m right, 0.7 m left)
+        val width = wTag ?: if (isLink) (lanes ?: 1) * 3.6 + 2.2 else roadWidthOf(hw, lanes ?: if (oneway) 1 else 1, oneway)
         val scene = TurnCheck.curve(forward.map { plane.toXY(it) }, width, v, if (isLink) 0.6 else 0.3) ?: return null
         if (scene.verdict == TurnCheck.Verdict.OK) return null
         val sev = if (scene.verdict == TurnCheck.Verdict.NO && wTag != null) Severity.CRITICAL else Severity.WARN
         val here = a.pointAt(at)
         (if (isLink) c(CritKind.RAMP, sev, "Svincolo con curva stretta", rampText(scene, v), scene, wTag == null)
-        else if (roundabout) c(CritKind.CURVE, Severity.WARN, "Rotatoria molto piccola", rampText(scene, v), scene, true)
+        else if (roundabout || onRoundabout) c(CritKind.CURVE, Severity.WARN, "Rotatoria molto piccola", rampText(scene, v), scene, true)
         else c(CritKind.CURVE, sev, if (scene.radiusM < 15) "Tornante" else "Curva stretta", rampText(scene, v), scene, wTag == null))
             .copy(startM = (at - 30).coerceAtLeast(0.0), endM = at + 30, lat = here.lat, lon = here.lng, headingDeg = headingAt(at))
       }
