@@ -1,0 +1,39 @@
+# catalog.json: the list of European countries the app can download (outline, size, date), read by
+# the tablet to know where the driver is and what to offer. Rebuilt after every data run.
+name: Catalogo Paesi
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Raccogli i manifesti pubblicati
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m pip install --quiet --break-system-packages shapely 2>/dev/null || python3 -m pip install --quiet shapely
+          curl -fsSL -o index.json https://download.geofabrik.de/index-v1.json
+          mkdir -p manifests
+          for id in $(python3 -c "import json;print(' '.join(c['id'] for c in json.load(open('data/countries.json'))))"); do
+            gh release download "dati-$id" -p manifest.json -O "manifests/$id.json" 2>/dev/null || true
+          done
+          gh release download grafo-europa -p index.json -O graph-index.json 2>/dev/null || echo "grafo Europa non ancora pubblicato"
+          ls manifests
+      - name: Scrivi catalog.json
+        run: |
+          G=$([ -f graph-index.json ] && echo graph-index.json || echo -)
+          python3 data/make_catalog.py data/countries.json index.json manifests "$G" catalog.json
+          ls -la catalog.json
+      - name: Pubblica (release dati-catalogo)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view dati-catalogo >/dev/null 2>&1 || gh release create dati-catalogo --title "Catalogo Paesi" \
+            --notes "Elenco dei Paesi scaricabili nell'app NavMaster." --latest=false
+          gh release upload dati-catalogo catalog.json --clobber
