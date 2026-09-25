@@ -96,7 +96,7 @@ jobs:
         run: |
           osmium tags-filter region.osm.pbf \
             nwr/maxheight nwr/maxheight:physical nwr/maxweight nwr/maxweightrating nwr/maxwidth nwr/maxlength \
-            nwr/maxaxleload w/hgv w/hazmat w/hazmat:water w/motorhome w/bus w/psv \
+            nwr/maxaxleload n/highway=speed_camera w/hgv w/hazmat w/hazmat:water w/motorhome w/bus w/psv \
             w/hgv:conditional w/maxweight:conditional w/goods:conditional \
             w/hazmat:adr_tunnel_cat w/hazmat:tunnel_cat w/tunnel:adr_category w/hazmat:B w/hazmat:C w/hazmat:D w/hazmat:E \
             -o limits.osm.pbf --overwrite
@@ -115,6 +115,9 @@ jobs:
           osmium export poi.osm.pbf -f geojsonseq --add-unique-id=type_id \
             --format-option print_record_separator=false -o poi.geojsonseq --overwrite
           python3 data/build_poi.py poi.geojsonseq out/poi.sqlite "${{ matrix.region }}"
+          # more places from Overture Maps where OpenStreetMap has none (never blocks the package)
+          python3 -m pip install --quiet --break-system-packages duckdb || python3 -m pip install --quiet duckdb || true
+          timeout 1500 python3 data/merge_overture.py out/poi.sqlite "${{ matrix.region }}" || true
           rm -f poi.osm.pbf poi.geojsonseq
       - name: Strade (per indirizzi e criticità)
         if: matrix.part == 'dati'
