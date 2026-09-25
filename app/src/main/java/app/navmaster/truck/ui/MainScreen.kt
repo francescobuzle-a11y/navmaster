@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -195,6 +196,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   }
 
   Box(Modifier.fillMaxSize().background(Nm.Bg)) {
+    // a new map view when the tablet turns: the old one kept drawing at the old size (a blank strip
+    // on one side in portrait); the camera state survives, it is kept outside
+    key(landscape) {
     NavigationMapView(
         baseStyle = BaseStyle.Uri(styleUri),
         navigationMapState = mapState,
@@ -230,6 +234,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       LimitMarkers(if (navigating) nav.limits else plan.current?.limits ?: emptyList())
       StopMarkers(plan.stops.map { it.coordinate })
     }
+    }
 
     if (navigating) {
       val booth = nav.analysis?.nodes?.firstOrNull { it.alongM > traveled - 20 }
@@ -264,7 +269,15 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onCrit = { openCrit = it },
       )
       // in a country whose map is not on the tablet: offer it
-      if (here != null && installed.isNotEmpty() && installed.none { it.id == here.id } && here.available && !countryHintClosed) {
+      // the hint goes away by itself after a while and never covers a route being chosen
+      LaunchedEffect(here?.id) {
+        if (here != null) {
+          kotlinx.coroutines.delay(15_000)
+          countryHintClosed = true
+        }
+      }
+      if (here != null && installed.isNotEmpty() && installed.none { it.id == here.id } && here.available && !countryHintClosed &&
+          plan.current == null) {
         Row(
             Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 92.dp).shadow(8.dp, RoundedCornerShape(20.dp))
                 .clip(RoundedCornerShape(20.dp)).background(Nm.PanelSolid).border(1.dp, Nm.Accent, RoundedCornerShape(20.dp))

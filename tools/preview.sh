@@ -57,20 +57,24 @@ sleep 30; shot 05_scelta_percorso
 # detail of the first difficulty: swept path, satellite, street photos, choices
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ei nm_crit 0
 sleep 40; shot 05b_criticita
-# tolls: Savignano -> Riccione, motorway A14 (booths Valle del Rubicone and Riccione) or the free roads
-TOLL="--es nm_from 44.0935,12.3975 --es nm_dest 43.9990,12.6560 --es nm_label Riccione --es nm_profile camion --es nm_load 12 --es nm_tolls ask"
+# tolls on the A14 of the test map. From next to the Rimini Nord booth to Riccione: the motorway
+# (booths Rimini Nord and Riccione) or the free roads; the driver accepts 5 minutes more to save it
+TOLL="--es nm_from 44.08767,12.46958 --es nm_dest 43.99007,12.64362 --es nm_label Riccione --es nm_profile camion --es nm_load 12 --es nm_tolls ask"
 start $TOLL --ei nm_tollmax 5 --ez nm_plan true
 sleep 36; shot 05c_pedaggi
 # the driver accepts up to 30 minutes more to save the toll: the free road is suggested (and said)
 start $TOLL --ei nm_tollmax 30 --ez nm_plan true
 sleep 36; shot 05e_pedaggi_consiglio
-# on the motorway route anyway: the question before the toll, in simulated guidance
-start $TOLL --ei nm_tollmax 30 --ei nm_variant 0 --ez nm_sim true
-sleep 30; shot 05d_guida_pedaggio
-# no question (0 minutes accepted): the booth coming up
-start $TOLL --ei nm_tollmax 0 --ei nm_variant 0 --ez nm_sim true
-sleep 34; shot 05f_guida_casello
-sleep 25; shot 05g_guida_casello_2
+# onto the motorway (destination on the A14 towards Cattolica): the entry booth right after the start
+TOLLIN="--es nm_from 44.08767,12.46958 --es nm_dest 43.96360,12.69205 --es nm_label Cattolica --es nm_profile camion --es nm_load 12 --es nm_tolls allow"
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true
+sleep 14; shot 05d_guida_pedaggio
+sleep 12; shot 05h_guida_pedaggio_2
+# off the motorway at Riccione (start on the A14, 2 km before the exit): the exit booth, where to pay
+TOLLOUT="--es nm_from 43.99500,12.61810 --es nm_dest 43.99007,12.64362 --es nm_label Riccione --es nm_profile camion --es nm_load 12 --es nm_tolls allow"
+start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
+sleep 16; shot 05f_guida_casello
+sleep 16; shot 05g_guida_casello_2
 
 # guidance, articulated lorry (places panel: 3 places, closes after 12 s)
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ei nm_tollmax 5 --ei nm_poicount 3 --ei nm_poisec 12 --ez nm_sim true
@@ -88,5 +92,5 @@ start --es nm_sheet settings; sleep 8; shot 10_impostazioni
 adb shell input swipe 1800 1500 1800 250 600; sleep 2; adb shell input swipe 1800 1500 1800 700 600; sleep 3; shot 10b_impostazioni_poi
 start --es nm_sheet regions; sleep 12; shot 11_paesi
 log
-grep -E "route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
+grep -E "route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

@@ -254,7 +254,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
           val analysis = RouteAnalysis.analyse(AppGraph.engine, r, v, garage.loadT)
           val m = RouteMatcher(r.geometry)
           val weight = v.tripWeightT(garage.loadT)
-          val limits = AppGraph.limits.scan(m, v, weight, departure)
+          val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
           val crit = AppGraph.criticalities.find(analysis, m, limits, v, garage.loadT, departure)
           return RouteVariant(kind, title, r, analysis, limits, crit, opts)
         }
@@ -567,7 +567,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val v = g.active
         val a = RouteAnalysis.analyse(AppGraph.engine, r, v, g.loadT)
         val m = RouteMatcher(r.geometry)
-        val limits = AppGraph.limits.scan(m, v, v.tripWeightT(g.loadT))
+        val limits = AppGraph.limits.scan(m, v, v.tripWeightT(g.loadT), a = a)
         val crit = AppGraph.criticalities.find(a, m, limits, v, g.loadT, LocalDateTime.now())
         _nav.update { it.copy(analysis = a, limits = limits, criticalities = crit, pois = pois(r), routeLength = a.length) }
         Log.i(TAG, "new route checked: ${crit.size} criticalities")

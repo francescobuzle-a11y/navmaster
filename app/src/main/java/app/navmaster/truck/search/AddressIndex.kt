@@ -176,8 +176,16 @@ class AddressIndex(private val regions: RegionManager) {
         }
       }
     }
-    // with a house number the matching address first; then by distance
-    return out.sortedWith(compareBy<Found>({ number != null && !it.title.endsWith(" $number", true) }, { it.icon != "🏙" || words.size > 1 },
-        { it.distanceM ?: 0.0 })).distinctBy { "${it.title}|${it.detail}" }.take(limit)
+    // with a house number the matching address first; then the names that contain the words typed
+    // (whole words before beginnings of words: "via roma" gives Via Roma before Via Romagna, and
+    // before a street of Santarcangelo di Romagna that only matched through its town); then by distance
+    fun nameScore(f: Found): Int {
+      val t = TextNorm.tokens(f.title)
+      var score = 0
+      for (w in words) score += if (w in t) 3 else if (t.any { it.startsWith(w) }) 2 else 0
+      return score
+    }
+    return out.sortedWith(compareBy<Found>({ number != null && !it.title.endsWith(" $number", true) }, { -nameScore(it) },
+        { it.icon != "🏙" || words.size > 1 }, { it.distanceM ?: 0.0 })).distinctBy { "${it.title}|${it.detail}" }.take(limit)
   }
 }

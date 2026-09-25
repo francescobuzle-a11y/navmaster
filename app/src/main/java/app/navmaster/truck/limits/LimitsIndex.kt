@@ -4,6 +4,7 @@ import android.util.Log
 import app.navmaster.truck.data.RegionDbs
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.data.RouteMatcher
+import app.navmaster.truck.routing.RouteAnalysis
 import app.navmaster.truck.vehicle.AdrTunnel
 import app.navmaster.truck.vehicle.VehicleProfile
 import app.navmaster.truck.vehicle.VehicleType
@@ -11,6 +12,7 @@ import java.time.DayOfWeek
 import java.time.LocalDateTime
 import kotlin.math.abs
 import kotlin.math.floor
+import uniffi.ferrostar.GeographicCoordinate
 
 /** A limit found on the route, with where it is along the route and whether this vehicle passes. */
 data class RouteLimit(
@@ -64,25 +66,48 @@ data class RouteLimit(
 class LimitsIndex(regions: RegionManager) {
   private val dbs = RegionDbs(regions) { it.limits }
 
+  /**
+   * [a] (when the graph could describe the route) gives the OSM ways the route drives on: a limit
+   * mapped on a way counts only when the route is on that very way, so a road passing under a
+   * bridge of the route, or running right next to it, never lends it its limits. A limit mapped on
+   * a point (a barrier, a sign) counts only when the route goes through it (3 m).
+   */
   fun scan(m: RouteMatcher, vehicle: VehicleProfile, weightT: Double, departure: LocalDateTime = LocalDateTime.now(),
-           avgSpeedMs: Double = 16.0): List<RouteLimit> {
+           avgSpeedMs: Double = 16.0, a: RouteAnalysis? = null): List<RouteLimit> {
     if (m.route.size < 2) return emptyList()
     val started = System.currentTimeMillis()
     val found = HashMap<String, RouteLimit>()
+    val ways = a?.wayIds ?: emptySet()
+    var elsewhere = 0
     dbs.perCells(m.cells) { db, inList ->
       val out = mutableListOf<RouteLimit>()
       db.rawQuery(
-              "SELECT DISTINCT l.id, l.kind, l.value, l.raw, l.cond, l.name, l.pts FROM cells c " +
+              "SELECT DISTINCT l.id, l.kind, l.value, l.raw, l.cond, l.name, l.pts, l.osm FROM cells c " +
                   "JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList)",
               null,
           )
           .use { c ->
             while (c.moveToNext()) {
               val pts = RouteMatcher.parsePts(c.getString(6))
-              val (lo, _) = m.span(pts, 9.0) ?: continue
-              val p = pts.minByOrNull { pt -> m.nearest(pt)?.first ?: 1e9 } ?: continue
               val kind = c.getString(1)
               val value = c.getDouble(2)
+              // widths and heights no road vehicle fits: bollards and barriers of paths
+              if ((kind == "maxwidth" || kind == "maxheight") && value < 1.6) continue
+              val osm = c.getString(7) ?: ""
+              val wayId = osm.takeIf { it.startsWith("w") }?.substring(1)?.toLongOrNull()
+              val lo: Double
+              val p: GeographicCoordinate
+              if (wayId != null && ways.isNotEmpty() && a != null) {
+                if (wayId !in ways) {
+                  if (m.span(pts, 9.0) != null) elsewhere++
+                  continue
+                }
+                lo = a.wayExtent(wayId)?.startM ?: continue
+                p = a.pointAt(lo)
+              } else {
+                lo = m.span(pts, if (pts.size <= 1) 3.0 else 9.0)?.first ?: continue
+                p = pts.minByOrNull { pt -> m.nearest(pt)?.first ?: 1e9 } ?: continue
+              }
               val cond = c.getString(4)
               val at = departure.plusSeconds((lo / avgSpeedMs).toLong())
               out += RouteLimit(kind, value, c.getString(3), c.getString(5), cond, lo, p.lat, p.lng,
@@ -98,7 +123,10 @@ class LimitsIndex(regions: RegionManager) {
       out += l
     }
     Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
-        "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms")
+        "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms, " +
+        "$elsewhere on roads next to the route left out" + (if (ways.isEmpty()) " (no way ids: matched by distance)" else ""))
+    for (l in out) Log.d("NavMasterLimits", "limit ${l.kind} ${l.value} @${l.alongM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, l.lat)}," +
+        "${"%.5f".format(java.util.Locale.ROOT, l.lon)} blocking=${l.blocking} ${l.name ?: ""}")
     return out
   }
 

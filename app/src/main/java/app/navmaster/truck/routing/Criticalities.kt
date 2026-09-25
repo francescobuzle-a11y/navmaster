@@ -93,19 +93,30 @@ class CriticalityFinder(regions: RegionManager) {
     val rows = dbs.perCells(m.cells) { db, inList ->
       val list = mutableListOf<DbRow>()
       db.rawQuery(
-          "SELECT DISTINCT k.id, k.kind, k.value, k.info, k.name, k.lat, k.lon, k.pts FROM crit_cells c " +
+          "SELECT DISTINCT k.id, k.kind, k.value, k.info, k.name, k.lat, k.lon, k.pts, k.osm FROM crit_cells c " +
               "JOIN crit k ON k.id = c.cid WHERE c.cell IN ($inList)", null).use { c ->
         while (c.moveToNext()) {
           list += DbRow(c.getLong(0), c.getString(1), c.getDouble(2), c.getString(3), c.getString(4), c.getDouble(5), c.getDouble(6),
-              RouteMatcher.parsePts(c.getString(7)))
+              RouteMatcher.parsePts(c.getString(7)), c.getString(8))
         }
       }
       list
     }
     val seen = HashSet<Long>()
+    // with the graph's way ids a mapped road is matched exactly: a road passing under a bridge of
+    // the route, or running right next to it, is not taken for the road the route is on
+    val exact = a.wayIds.isNotEmpty()
+    var skipped = 0
     for (r in rows) {
       if (!seen.add(r.id)) continue
-      val (lo, hi) = m.span(r.pts, 12.0) ?: continue
+      val wayId = r.osm?.takeIf { it.startsWith("w") }?.substring(1)?.toLongOrNull()
+      val (lo, hi) = if (exact && wayId != null) {
+        if (wayId !in a.wayIds) {
+          if (m.span(r.pts, 12.0) != null) skipped++
+          continue
+        }
+        a.wayExtent(wayId)?.let { it.startM to it.endM } ?: continue
+      } else m.span(r.pts, 12.0) ?: continue
       val info = runCatching { json.parseToJsonElement(r.info).jsonObject }.getOrNull()
       judge(r, lo, hi, info, v, heavy, a, m, deadline, ::headingAt)?.let { out += it }
     }
@@ -230,7 +241,8 @@ class CriticalityFinder(regions: RegionManager) {
 
     val sorted = out.sortedBy { it.startM }
     Log.i("NavMasterCrit", "criticalities: ${sorted.size} (${sorted.count { it.severity == Severity.CRITICAL }} critical) " +
-        "from ${rows.size} rows in ${System.currentTimeMillis() - started} ms")
+        "from ${rows.size} rows in ${System.currentTimeMillis() - started} ms, $skipped near the route but on other roads, " +
+        "${a.junctions.size} junctions")
     // one line per difficulty, to check them against the map
     for (c in sorted) {
       Log.d("NavMasterCrit", "crit ${c.kind} ${c.severity} @${c.startM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, c.lat)},${"%.5f".format(java.util.Locale.ROOT, c.lon)} " +
@@ -241,8 +253,23 @@ class CriticalityFinder(regions: RegionManager) {
 
   private data class DbRow(
       val id: Long, val kind: String, val value: Double, val info: String, val name: String?,
-      val lat: Double, val lon: Double, val pts: List<GeographicCoordinate>,
+      val lat: Double, val lon: Double, val pts: List<GeographicCoordinate>, val osm: String?,
   )
+
+  /** How many degrees the route turns within halfM of a point (signed, right positive). */
+  private fun turnAround(a: RouteAnalysis, at: Double, halfM: Double): Double {
+    var sum = 0.0
+    var prev: Double? = null
+    var s = (at - halfM).coerceAtLeast(0.0)
+    val end = (at + halfM).coerceAtMost(a.length)
+    while (s + 5 <= end) {
+      val h = Geo.bearing(a.pointAt(s), a.pointAt(s + 5))
+      prev?.let { sum += Geo.angleDiff(it, h) }
+      prev = h
+      s += 5
+    }
+    return sum
+  }
 
   private val ROUNDABOUT_NAME = Regex("(?i)rotonda|rotatoria|roundabout|kreisel|kreisverkehr|rond-point|giratoriu|rondo|körforgalom|glorieta|rotunda")
 
@@ -304,9 +331,12 @@ class CriticalityFinder(regions: RegionManager) {
         if (roundabout && r.value > 9.0) return null
         val (dist, at) = m.nearest(GeographicCoordinate(r.lat, r.lon)) ?: return null
         if (dist > 15) return null
-        // the graph knows the roundabouts too (older data has no roundabout flag in the rows)
+        // the graph knows the roundabouts too (older data has no roundabout flag in the rows); the
+        // bends of the entries and exits right next to one are part of the roundabout, not curves
         val onRoundabout = listOf(-10.0, 0.0, 10.0).any { a.edgeAt((at + it).coerceAtLeast(0.0))?.roundabout == true }
         if (onRoundabout && r.value > 9.0) return null
+        val nearRoundabout = listOf(-35.0, -25.0, -15.0, 15.0, 25.0, 35.0).any { a.edgeAt((at + it).coerceAtLeast(0.0))?.roundabout == true }
+        if (nearRoundabout && !onRoundabout && !roundabout) return null
         // only where the route is really on this road around the tightest point: a turn from or
         // onto another road at a junction is the junction check's job, not a "hairpin"
         val onWay = r.pts.mapNotNull { q -> m.nearest(q)?.takeIf { it.first <= 8 && abs(it.second - at) <= 70 }?.second }
@@ -321,15 +351,25 @@ class CriticalityFinder(regions: RegionManager) {
         val lanes = info?.get("lanes")?.jsonPrimitive?.doubleOrNull?.toInt()
         val wTag = info?.get("w")?.jsonPrimitive?.doubleOrNull
         val isLink = hw.endsWith("_link")
+        // how much the road turns around its tightest point: a hairpin turns back on itself (about
+        // 180 degrees), a corner about 90; a sharp corner at a crossing is a turn at a junction,
+        // which has its own check, and a small bend with a sharp vertex is only mapping detail
+        val turn = abs(turnAround(a, at, 45.0))
+        val hairpin = turn >= 135
+        val plainCurve = !isLink && !roundabout && !onRoundabout
+        if (plainCurve && !hairpin && (turn < 60 || a.junctionNear(at, 15.0))) return null
         // ramps: 3.6 m lanes plus the paved shoulders (about 1.5 m right, 0.7 m left)
         val width = wTag ?: if (isLink) (lanes ?: 1) * 3.6 + 2.2 else roadWidthOf(hw, lanes ?: if (oneway) 1 else 1, oneway)
         val scene = TurnCheck.curve(forward.map { plane.toXY(it) }, width, v, if (isLink) 0.6 else 0.3) ?: return null
         if (scene.verdict == TurnCheck.Verdict.OK) return null
+        // a corner that only asks for care (the vehicle keeps to its road) is not worth a warning
+        if (plainCurve && !hairpin && scene.verdict != TurnCheck.Verdict.NO) return null
         val sev = if (scene.verdict == TurnCheck.Verdict.NO && wTag != null) Severity.CRITICAL else Severity.WARN
         val here = a.pointAt(at)
         (if (isLink) c(CritKind.RAMP, sev, "Svincolo con curva stretta", rampText(scene, v), scene, wTag == null)
         else if (roundabout || onRoundabout) c(CritKind.CURVE, Severity.WARN, "Rotatoria molto piccola", rampText(scene, v), scene, true)
-        else c(CritKind.CURVE, sev, if (scene.radiusM < 15) "Tornante" else "Curva stretta", rampText(scene, v), scene, wTag == null))
+        else c(CritKind.CURVE, sev, if (hairpin) "Tornante" else if (turn >= 75) "Curva a gomito" else "Curva stretta",
+            rampText(scene, v), scene, wTag == null))
             .copy(startM = (at - 30).coerceAtLeast(0.0), endM = at + 30, lat = here.lat, lon = here.lng, headingDeg = headingAt(at))
       }
       else -> null

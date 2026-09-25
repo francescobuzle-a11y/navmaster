@@ -61,7 +61,13 @@ data class Span(val startM: Double, val endM: Double) {
  * What the route is made of: toll stretches, exit ramps, countries crossed, surface, road classes.
  * Read with Valhalla's trace_attributes on the route's own shape, on the tablet.
  */
-class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List<RouteNode> = emptyList()) {
+class RouteAnalysis(
+    val route: Route,
+    val edges: List<EdgeInfo>,
+    val nodes: List<RouteNode> = emptyList(),
+    /** Where the route crosses other drivable roads (metres along the route, in order). */
+    val junctions: DoubleArray = DoubleArray(0),
+) {
   val cum: DoubleArray = Geo.cumulative(route.geometry)
   val length: Double
     get() = cum.lastOrNull() ?: 0.0
@@ -77,15 +83,40 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
 
   val borders: List<RouteNode> = nodes.filter { it.type == "border_control" }
 
-  /** "entrata" / "uscita" / null for a booth in the middle of a toll stretch (a barrier). */
+  /**
+   * "entrata" / "uscita" / null for a booth in the middle of a toll stretch (a barrier). The
+   * ramps between a booth and the motorway are usually not tagged as toll roads in OSM, so the
+   * toll stretch is looked for within 3 km on each side of the booth.
+   */
   fun boothRole(b: RouteNode): String? {
-    val before = edgeAt((b.alongM - 15).coerceAtLeast(0.0))?.toll ?: false
-    val after = edgeAt(b.alongM + 15)?.toll ?: false
+    val before = tolls.any { it.startM < b.alongM - 1 && it.endM > b.alongM - 3000 }
+    val after = tolls.any { it.endM > b.alongM + 1 && it.startM < b.alongM + 3000 }
     return when {
       !before && after -> "entrata"
       before && !after -> "uscita"
       else -> null
     }
+  }
+
+  /** OSM ways the route drives on: what lets a mapped limit or difficulty be matched exactly. */
+  val wayIds: Set<Long> = edges.mapNotNullTo(HashSet<Long>()) { it.wayId.takeIf { id -> id > 0 } }
+
+  /** Where the route drives on this OSM way: first and last metre along the route. */
+  fun wayExtent(wayId: Long): Span? {
+    var lo = Double.MAX_VALUE
+    var hi = -1.0
+    for (e in edges) if (e.wayId == wayId) {
+      if (e.startM < lo) lo = e.startM
+      if (e.endM > hi) hi = e.endM
+    }
+    return if (hi >= 0) Span(lo, hi) else null
+  }
+
+  /** Is there a crossing with another drivable road within tolM of this point of the route? */
+  fun junctionNear(alongM: Double, tolM: Double): Boolean {
+    var i = java.util.Arrays.binarySearch(junctions, alongM - tolM)
+    if (i < 0) i = -i - 1
+    return i < junctions.size && junctions[i] <= alongM + tolM
   }
 
   val ramps: List<Pair<Span, List<EdgeInfo>>> =
@@ -157,11 +188,12 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
             })
           }
           val raw = engine.use(first.lat, first.lng) { it.traceAttributesRaw(req.toString()) }
-          val (edges, nodes) = parse(raw)
-          if (edges.isNotEmpty()) {
-            val a = RouteAnalysis(route, edges, nodes)
-            Log.i(TAG, "$match: ${edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
-                "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}" }}, borders ${a.borders.size}")
+          val p = parse(raw)
+          if (p.edges.isNotEmpty()) {
+            val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
+            Log.i(TAG, "$match: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
+                "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
+                "junctions ${p.junctions.size}")
             return a
           }
         } catch (e: Exception) {
@@ -176,16 +208,21 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
             "edge.way_id", "edge.road_class", "edge.use", "edge.toll", "edge.surface", "edge.lane_count",
             "edge.length", "edge.begin_shape_index", "edge.end_shape_index", "edge.names", "edge.tunnel",
             "edge.bridge", "edge.roundabout", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
-            "node.admin_index", "node.type", "admin.country_code", "admin.country_text", "shape",
+            "node.admin_index", "node.type", "node.intersecting_edge.driveability", "node.intersecting_edge.use",
+            "admin.country_code", "admin.country_text", "shape",
         )
 
-    private fun parse(raw: String): Pair<List<EdgeInfo>, List<RouteNode>> {
+    private class Parsed(val edges: List<EdgeInfo>, val nodes: List<RouteNode>, val junctions: DoubleArray)
+
+    private fun parse(raw: String): Parsed {
+      val none = Parsed(emptyList(), emptyList(), DoubleArray(0))
       val root = json.parseToJsonElement(raw).jsonObject
-      val shape = root["shape"]?.jsonPrimitive?.contentOrNull?.let { Geo.decodePolyline6(it) } ?: return emptyList<EdgeInfo>() to emptyList()
+      val shape = root["shape"]?.jsonPrimitive?.contentOrNull?.let { Geo.decodePolyline6(it) } ?: return none
       val cum = Geo.cumulative(shape)
       val admins = root["admins"]?.jsonArray?.map { it.jsonObject["country_code"]?.jsonPrimitive?.contentOrNull } ?: emptyList()
-      val edges = root["edges"]?.jsonArray ?: return emptyList<EdgeInfo>() to emptyList()
+      val edges = root["edges"]?.jsonArray ?: return none
       val nodes = mutableListOf<RouteNode>()
+      val junctions = mutableListOf<Double>()
       val list = edges.mapNotNull { el ->
         val e = el.jsonObject
         val b = e.int("begin_shape_index") ?: return@mapNotNull null
@@ -194,6 +231,12 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
         val endNode = e["end_node"] as? JsonObject
         val adminIdx = endNode?.int("admin_index")
         endNode?.str("type")?.takeIf { it in NODE_TYPES }?.let { nodes += RouteNode(cum[en], it) }
+        // a crossing: another road a vehicle can drive leaves this node (footways and the like do not count)
+        val crossing = (endNode?.get("intersecting_edges") as? JsonArray)?.any { x ->
+          val o = x as? JsonObject ?: return@any false
+          o.str("driveability") in DRIVABLE && o.str("use") !in NOT_ROADS
+        } ?: false
+        if (crossing) junctions += cum[en]
         EdgeInfo(
             startM = cum[b],
             endM = cum[en],
@@ -212,10 +255,12 @@ class RouteAnalysis(val route: Route, val edges: List<EdgeInfo>, val nodes: List
             roundabout = e.bool("roundabout") ?: false,
         )
       }
-      return list to nodes
+      return Parsed(list, nodes, junctions.sorted().toDoubleArray())
     }
 
     private val NODE_TYPES = setOf("toll_booth", "toll_gantry", "border_control")
+    private val DRIVABLE = setOf("forward", "backward", "both")
+    private val NOT_ROADS = setOf("driveway", "parking_aisle", "drive_through", "emergency_access", "footway", "cycleway", "path", "steps")
 
     private fun JsonObject.str(k: String) = this[k]?.jsonPrimitive?.contentOrNull
 
