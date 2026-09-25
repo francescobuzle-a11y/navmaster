@@ -54,6 +54,8 @@ jobs:
           changed=$(git diff --cached --name-only)
           echo "$changed"
           git commit -q -m "$msg" || echo "nessuna modifica"
+          # someone (the web editor) may have pushed meanwhile
+          git pull -q --rebase origin main
           git push
           app=$(echo "$changed" | grep -vqE '^(docs/|data/|inbox/|\.github/workflows/dati\.yml|[^/]*\.md$)' && echo 1 || echo 0)
           dati=$(echo "$changed" | grep -qE '^(data/|\.github/workflows/dati\.yml)' && echo 1 || echo 0)
