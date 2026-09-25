@@ -77,10 +77,12 @@ TOLLOUT="--es nm_from 43.99500,12.61810 --es nm_dest 43.99007,12.64362 --es nm_l
 start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 16; shot 05f_guida_casello
 sleep 16; shot 05g_guida_casello_2
+sleep 3; shot 05j_guida_casello_3
 
 # guidance, articulated lorry (places panel: 3 places, closes after 12 s)
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ei nm_tollmax 5 --ei nm_poicount 3 --ei nm_poisec 12 --ez nm_sim true
 sleep 28; shot 06_guida_camion
+sleep 3; shot 06b_svolta_dal_vivo
 sleep 15; shot 07_guida_camion_2
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1; sleep 8; shot 08_guida_verticale

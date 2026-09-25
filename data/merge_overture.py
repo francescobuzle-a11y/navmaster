@@ -102,12 +102,33 @@ def main():
     con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';")
     path = f"s3://overturemaps-us-west-2/release/{rel}/theme=places/type=place/*"
     cats = ",".join("'" + c + "'" for c in CATS)
+    # the schema changes between releases: pick what this one has
+    cols = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}', hive_partitioning=1) LIMIT 0").fetchall()}
+    print("overture columns:", ", ".join(sorted(cols)))
+
+    def has(c):
+        return c in cols
+
+    if has("categories"):
+        cat_expr = "categories.primary"
+    elif has("taxonomy"):
+        cat_expr = "taxonomy.primary"
+    elif has("basic_category"):
+        cat_expr = "basic_category"
+    else:
+        raise RuntimeError("no category column")
+    name_expr = "names.primary" if has("names") else "NULL"
+    brand_expr = "brand.names.primary" if has("brand") else "NULL"
+    country_expr = "addresses[1].country" if has("addresses") else "NULL"
+    web_expr = "websites[1]" if has("websites") else "NULL"
+    phone_expr = "phones[1]" if has("phones") else "NULL"
+    conf_expr = "confidence" if has("confidence") else "1.0"
     q = f"""
-      SELECT id, names.primary AS name, categories.primary AS cat, bbox.xmin AS lon, bbox.ymin AS lat, confidence,
-             brand.names.primary AS brand, addresses[1].country AS country, websites[1] AS web, phones[1] AS phone
+      SELECT id, {name_expr} AS name, {cat_expr} AS cat, bbox.xmin AS lon, bbox.ymin AS lat, {conf_expr} AS confidence,
+             {brand_expr} AS brand, {country_expr} AS country, {web_expr} AS web, {phone_expr} AS phone
       FROM read_parquet('{path}', hive_partitioning=1)
-      WHERE bbox.xmin BETWEEN {w} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND confidence >= 0.55
-        AND (categories.primary IN ({cats}) OR categories.primary LIKE '%\\_restaurant' ESCAPE '\\')
+      WHERE bbox.xmin BETWEEN {w} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND {conf_expr} >= 0.55
+        AND ({cat_expr} IN ({cats}) OR {cat_expr} LIKE '%\\_restaurant' ESCAPE '\\')
     """
     rows = con.execute(q).fetchall()
     print(f"overture {rel}: {len(rows)} candidates in {time.time() - started:.0f}s")
