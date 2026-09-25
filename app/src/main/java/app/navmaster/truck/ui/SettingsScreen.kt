@@ -59,9 +59,9 @@ private enum class SettingsPage(val id: String, val title: String, val icon: Str
   DRIVING("driving", "Guida e avvisi", "🧭"),
   MAP("map", "Mappa e vista", "🗺"),
   POI("poi", "Punti di interesse", "📍"),
-  OFFLINE("offline", "Mappe offline", "⬇"),
+  OFFLINE("offline", "Mappe offline", "📥"),
   PHOTOS("photos", "Foto stradali", "📷"),
-  ABOUT("about", "Dati e licenze", "ℹ"),
+  ABOUT("about", "Dati e licenze", "📄"),
 }
 
 @Composable

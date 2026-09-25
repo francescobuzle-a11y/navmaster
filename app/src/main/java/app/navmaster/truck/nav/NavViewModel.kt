@@ -270,10 +270,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         var recommended = 0
         if (noToll != null && fastest != null && fastest.analysis.tollKm > 0.5) {
           val nt = noToll.firstOrNull()
-          if (nt != null) {
-            val existing = variants.indexOfFirst { same(it.route, nt) }
-            val ntVariant = if (existing >= 0) variants[existing].copy(kind = VariantKind.NO_TOLL, title = "Senza pedaggi")
-            else build(VariantKind.NO_TOLL, "Senza pedaggi", nt, base.copy(avoidTolls = true))
+          // the graph may give back a route with tolls anyway (start or end on a motorway): it is a
+          // toll-free choice only when it really saves the toll
+          val existing = nt?.let { r -> variants.indexOfFirst { same(it.route, r) } } ?: -1
+          val candidate = when {
+            nt == null -> null
+            existing >= 0 -> variants[existing].copy(kind = VariantKind.NO_TOLL, title = "Senza pedaggi")
+            else -> build(VariantKind.NO_TOLL, "Senza pedaggi", nt, base.copy(avoidTolls = true))
+          }?.takeIf { it.analysis.tollKm < fastest.analysis.tollKm - 0.5 && it.analysis.tollKm < 0.5 }
+          if (nt != null && candidate == null) {
+            advice = "Il pedaggio qui non si può evitare: ${km(fastest.analysis.tollKm, false)} a pagamento."
+          }
+          if (candidate != null) {
+            val ntVariant = candidate
             if (existing >= 0) variants[existing] = ntVariant else variants += ntVariant
             val extraS = ntVariant.durationS - fastest.durationS
             val extraMin = (extraS / 60).roundToInt().coerceAtLeast(0)

@@ -214,7 +214,8 @@ fun SpeedPanel(speedKmh: Int?, limitKmh: Int?, vehicleMaxKmh: Int, modifier: Mod
           Modifier.size(64.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(Color.White).border(7.dp, NmRed, CircleShape),
           contentAlignment = Alignment.Center,
       ) {
-        Text(limitKmh.toString(), color = Color.Black, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        // the limit for this vehicle: on a motorway at 130 a lorry still has its own 80
+        Text((effective ?: limitKmh).toString(), color = Color.Black, fontSize = 24.sp, fontWeight = FontWeight.Bold)
       }
     }
     if (speedKmh != null) {
