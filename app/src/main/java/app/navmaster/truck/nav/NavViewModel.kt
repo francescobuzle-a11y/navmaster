@@ -44,7 +44,8 @@ import uniffi.ferrostar.UserLocation
 import uniffi.ferrostar.Waypoint
 import uniffi.ferrostar.WaypointKind
 
-data class Stop(val coordinate: GeographicCoordinate, val label: String)
+/** A stop of the trip; [via] = only pass through it (no stop, no "you have arrived"). */
+data class Stop(val coordinate: GeographicCoordinate, val label: String, val via: Boolean = false)
 
 enum class VariantKind(val label: String) {
   FASTEST("Più veloce"),
@@ -88,6 +89,8 @@ data class PlanState(
     val avoided: List<Criticality> = emptyList(),
     /** Next long press on the map adds a stop instead of changing the destination. */
     val addingStop: Boolean = false,
+    /** Zones the driver marked on the map to stay away from. */
+    val avoidAreas: List<GeographicCoordinate> = emptyList(),
 ) {
   val current: RouteVariant?
     get() = variants.getOrNull(selected)
@@ -192,6 +195,44 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
 
   fun startAddingStop() = _plan.update { it.copy(addingStop = true) }
 
+  /**
+   * "Pass here": the point goes where it lengthens the trip the least (between the start and the
+   * first stop, between two stops, ...), so the driver only has to show where, not when.
+   */
+  fun addVia(coordinate: GeographicCoordinate, label: String = "Passa di qui") {
+    val p = _plan.value
+    if (p.stops.isEmpty()) return selectDestination(coordinate, label)
+    val start = lastLocation.value?.coordinates
+    val pts = listOfNotNull(start) + p.stops.map { it.coordinate }
+    val offset = if (start != null) 1 else 0
+    var best = 0
+    var bestCost = Double.MAX_VALUE
+    for (i in 0 until p.stops.size) {
+      val prev = pts.getOrNull(i + offset - 1) ?: continue
+      val next = pts[i + offset]
+      val cost = Geo.dist(prev, coordinate) + Geo.dist(coordinate, next) - Geo.dist(prev, next)
+      if (cost < bestCost) {
+        bestCost = cost
+        best = i
+      }
+    }
+    if (start == null) best = (p.stops.size - 1).coerceAtLeast(0)
+    val stops = p.stops.toMutableList().apply { add(best, Stop(coordinate, label, via = true)) }
+    _plan.value = p.copy(stops = stops, addingStop = false, variants = emptyList(), error = null, advice = null)
+    planRoutes()
+  }
+
+  /** A zone of about 120 m the route must stay out of (a street the driver knows is bad). */
+  fun avoidArea(coordinate: GeographicCoordinate) {
+    _plan.update { it.copy(avoidAreas = it.avoidAreas + coordinate, variants = emptyList()) }
+    planRoutes()
+  }
+
+  fun removeAvoidArea(index: Int) {
+    _plan.update { it.copy(avoidAreas = it.avoidAreas.filterIndexed { i, _ -> i != index }, variants = emptyList()) }
+    planRoutes()
+  }
+
   fun cancelAddingStop() = _plan.update { it.copy(addingStop = false) }
 
   fun removeStop(index: Int) {
@@ -242,8 +283,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val settings = AppGraph.settings.settings.value
         val garage = AppGraph.profiles.garage.value
         val v = garage.active
-        val waypoints = p.stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }
-        val exclusions = exclusionsFor(p.avoided, _plan.value.current?.analysis)
+        val waypoints = p.stops.mapIndexed { i, st ->
+          Waypoint(coordinate = st.coordinate, kind = if (st.via && i < p.stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+        }
+        val exclusions = exclusionsFor(p.avoided, _plan.value.current?.analysis) +
+            p.avoidAreas.map { Geo.squareAround(it.lat, it.lng, 60.0) }
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions)
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2))
@@ -586,8 +630,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
+  private val saidAt = HashMap<String, Long>()
+
   fun say(text: String) {
     if (!AppGraph.settings.settings.value.voiceWarnings) return
+    // muted means muted, and the same warning is not repeated within two minutes
+    if (AppGraph.ferrostar.spokenInstructionObserver?.isMuted == true) return
+    val now = System.currentTimeMillis()
+    if ((saidAt[text] ?: 0L) > now - 120_000) return
+    saidAt[text] = now
     runCatching { AppGraph.tts.tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "nm-${text.hashCode()}") }
   }
 

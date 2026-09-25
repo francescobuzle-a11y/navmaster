@@ -22,7 +22,9 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     AppGraph.tts.statusObserver = this
-    AppGraph.ferrostar.spokenInstructionObserver = AppGraph.tts
+    // the voice says each thing once; how much it says is in the settings
+    AppGraph.ferrostar.spokenInstructionObserver =
+        app.navmaster.truck.nav.VoiceFilter(AppGraph.tts) { AppGraph.settings.settings.value.voiceLevel }
     createFerrostarLogger()
     enableEdgeToEdge()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false

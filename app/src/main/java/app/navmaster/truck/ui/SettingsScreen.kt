@@ -52,6 +52,7 @@ import app.navmaster.truck.settings.PoiGroup
 import app.navmaster.truck.settings.PoiSide
 import app.navmaster.truck.settings.Settings
 import app.navmaster.truck.settings.TollPolicy
+import app.navmaster.truck.settings.VoiceLevel
 
 /** The pages of the settings: a short list first, each page with its own things only. */
 private enum class SettingsPage(val id: String, val title: String, val icon: String) {
@@ -102,7 +103,8 @@ private fun summary(p: SettingsPage, s: Settings): String =
     when (p) {
       SettingsPage.ROUTE -> s.tollPolicy.label + if (s.tollPolicy == TollPolicy.ASK) " · fino a ${s.tollMaxExtraMin} min in più" else ""
       SettingsPage.DRIVING -> listOf(
-          if (s.voiceWarnings) "avvisi a voce" else "senza voce",
+          "voce " + s.voiceLevel.label.lowercase(),
+          if (s.junctionView) "vista svincoli" else null,
           if (s.askTightRamps) "domanda sugli svincoli stretti" else null,
           if (s.driveTimeReminder) "pause di guida" else null,
       ).filterNotNull().joinToString(" · ").replaceFirstChar { it.uppercase() }
@@ -185,7 +187,15 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
 @Composable
 private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Voce") {
-    ToggleRow("Avvisi a voce", "Limiti, criticità, caselli e pause letti dalla voce", s.voiceWarnings) { v -> set { it.copy(voiceWarnings = v) } }
+    Caption("Quanto parla la voce nelle indicazioni di guida", size = 14)
+    Spacer(Modifier.height(6.dp))
+    Pills { for (l in VoiceLevel.entries) Pill(l.label, s.voiceLevel == l) { set { it.copy(voiceLevel = l) } } }
+    Caption(s.voiceLevel.detail, Modifier.padding(top = 6.dp), size = 13)
+    ToggleRow("Avvisi a voce", "Limiti, criticità, caselli e pause (una volta sola)", s.voiceWarnings) { v -> set { it.copy(voiceWarnings = v) } }
+  }
+  Card("Incroci e svincoli") {
+    ToggleRow("Vista dello svincolo", "Agli svincoli e alle uscite: la strada con le corsie da prendere e i cartelli con le direzioni",
+        s.junctionView) { v -> set { it.copy(junctionView = v) } }
   }
   Card("Tempi di guida") {
     ToggleRow("Promemoria delle pause", "Pausa dopo 4 h 30 di guida (reg. CE 561/2006) con i parcheggi adatti", s.driveTimeReminder) { v ->

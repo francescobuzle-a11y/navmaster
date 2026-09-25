@@ -37,12 +37,33 @@ data class EdgeInfo(
     val maxUpGrade: Double?,
     val maxDownGrade: Double?,
     val roundabout: Boolean = false,
+    /** Every name of the road, road numbers included ("A14", "Autostrada Adriatica"). */
+    val names: List<String> = emptyList(),
+    /** What the direction signs say at the start of this road (from the OSM destination tags). */
+    val sign: EdgeSign? = null,
 ) {
+  /** Road numbers only: "A14", "SS16", "E45", "DN1". */
+  val refs: List<String>
+    get() = names.filter { REF.matches(it.trim()) }.map { it.trim() }
+
   val isRamp: Boolean
     get() = use == "ramp"
 
   val isMajor: Boolean
     get() = roadClass in setOf("motorway", "trunk", "primary")
+}
+
+private val REF = Regex("^(?:[A-Z]{1,3}[ -]?\\d{1,4}[a-z]?(?:[ -]?[A-Z]{1,2})?|[A-Z]{1,2}\\d{1,4}[a-z]?)$")
+
+/** A direction sign: exit number, road numbers of the branch, towns it leads to. */
+data class EdgeSign(
+    val exitNumbers: List<String>,
+    val branches: List<String>,
+    val towards: List<String>,
+    val exitNames: List<String>,
+) {
+  val isEmpty: Boolean
+    get() = exitNumbers.isEmpty() && branches.isEmpty() && towards.isEmpty() && exitNames.isEmpty()
 }
 
 /** A toll booth, a toll gantry or a border control on the route (at the end of an edge). */
@@ -136,6 +157,13 @@ class RouteAnalysis(
         }
       }
 
+  /**
+   * The direction sign of a junction: the first sign on the roads the route takes from shortly
+   * before the manoeuvre to a few hundred metres after it (where OSM puts the destination tags).
+   */
+  fun signNear(alongM: Double): Pair<EdgeInfo, EdgeSign>? =
+      edges.firstOrNull { it.sign != null && it.startM >= alongM - 40 && it.startM <= alongM + 300 }?.let { it to it.sign!! }
+
   fun edgeAt(alongM: Double): EdgeInfo? = edges.firstOrNull { alongM >= it.startM && alongM < it.endM }
 
   fun pointAt(alongM: Double): GeographicCoordinate = Geo.pointAt(route.geometry, cum, alongM)
@@ -193,7 +221,10 @@ class RouteAnalysis(
             val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
             Log.i(TAG, "$match: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
                 "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
-                "junctions ${p.junctions.size}")
+                "junctions ${p.junctions.size}, signs " +
+                p.edges.filter { it.sign != null }.joinToString(prefix = "[", postfix = "]") { e ->
+                  "${e.startM.toInt()}:${e.sign?.exitNumbers?.joinToString("/")} ${e.sign?.branches?.joinToString("/")} > ${e.sign?.towards?.joinToString("/")}"
+                })
             return a
           }
         } catch (e: Exception) {
@@ -207,7 +238,8 @@ class RouteAnalysis(
         listOf(
             "edge.way_id", "edge.road_class", "edge.use", "edge.toll", "edge.surface", "edge.lane_count",
             "edge.length", "edge.begin_shape_index", "edge.end_shape_index", "edge.names", "edge.tunnel",
-            "edge.bridge", "edge.roundabout", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
+            "edge.bridge", "edge.roundabout", "edge.sign.exit_number", "edge.sign.exit_branch", "edge.sign.exit_toward",
+            "edge.sign.exit_name", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
             "node.admin_index", "node.type", "node.intersecting_edge.driveability", "node.intersecting_edge.use",
             "admin.country_code", "admin.country_text", "shape",
         )
@@ -232,6 +264,11 @@ class RouteAnalysis(
         val adminIdx = endNode?.int("admin_index")
         endNode?.str("type")?.takeIf { it in NODE_TYPES }?.let { nodes += RouteNode(cum[en], it) }
         // a crossing: another road a vehicle can drive leaves this node (footways and the like do not count)
+        val signObj = e["sign"] as? JsonObject
+        fun texts(k: String): List<String> =
+            (signObj?.get(k) as? JsonArray)?.mapNotNull { (it as? JsonObject)?.str("text")?.takeIf { t -> t.isNotBlank() } } ?: emptyList()
+        val sign = signObj?.let { EdgeSign(texts("exit_number"), texts("exit_branch"), texts("exit_toward"), texts("exit_name")) }
+            ?.takeIf { !it.isEmpty }
         val crossing = (endNode?.get("intersecting_edges") as? JsonArray)?.any { x ->
           val o = x as? JsonObject ?: return@any false
           o.str("driveability") in DRIVABLE && o.str("use") !in NOT_ROADS
@@ -253,6 +290,8 @@ class RouteAnalysis(
             maxUpGrade = e["max_upward_grade"]?.jsonPrimitive?.doubleOrNull,
             maxDownGrade = e["max_downward_grade"]?.jsonPrimitive?.doubleOrNull,
             roundabout = e.bool("roundabout") ?: false,
+            names = e["names"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
+            sign = sign,
         )
       }
       return Parsed(list, nodes, junctions.sorted().toDoubleArray())

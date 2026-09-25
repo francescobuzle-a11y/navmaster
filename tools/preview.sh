@@ -54,6 +54,8 @@ start --es nm_sheet search_guided; sleep 9; shot 04b_ricerca_guidata
 # route choice: variants, tolls advice, difficulties
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
 sleep 30; shot 05_scelta_percorso
+# long press on the map with a route on screen: go / pass here / avoid this zone
+adb shell input swipe 1900 700 1900 700 1600; sleep 3; shot 05i_punto_sulla_mappa
 # detail of the first difficulty: swept path, satellite, street photos, choices
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ei nm_crit 0
 sleep 40; shot 05b_criticita

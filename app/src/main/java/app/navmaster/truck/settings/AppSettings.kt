@@ -94,6 +94,14 @@ object PoiCategories {
   fun byId(id: String) = all.firstOrNull { it.id == id }
 }
 
+/** How much the voice talks. */
+@Serializable
+enum class VoiceLevel(val label: String, val detail: String) {
+  ESSENTIAL("Essenziale", "Una volta prima della manovra e alla manovra; il resto lo mostra lo schermo"),
+  NORMAL("Normale", "Anche il preavviso da lontano, senza i \"prosegui per…\""),
+  FULL("Completa", "Tutte le indicazioni del percorso"),
+}
+
 /** How the map looks while driving. */
 @Serializable
 enum class DriveView(val label: String) {
@@ -108,6 +116,9 @@ data class Settings(
     val tollMaxExtraMin: Int = 5,
     val askTightRamps: Boolean = true,
     val voiceWarnings: Boolean = true,
+    val voiceLevel: VoiceLevel = VoiceLevel.ESSENTIAL,
+    /** The picture of the junction with lanes and direction signs, at exits and complex turns. */
+    val junctionView: Boolean = true,
     val nightMode: NightMode = NightMode.AUTO,
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,

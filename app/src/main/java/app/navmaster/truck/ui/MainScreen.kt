@@ -29,6 +29,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.Navigation
+import androidx.compose.material.icons.rounded.AddLocationAlt
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LocalShipping
 import androidx.compose.material.icons.rounded.MyLocation
@@ -159,21 +163,35 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var countryHintClosed by remember { mutableStateOf(false) }
   val styleUri = remember(installed, night, satellite) { MapStyles.styleUri(context, installed, night, satellite) }
 
-  // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible
+  // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible. Near a
+  // turn in town it comes closer and leans a little more, smoothly, and goes back after it
   val h = configuration.screenHeightDp
   val w = configuration.screenWidthDp
+  val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
+  val toManeuver = if (navigating) ui.progress?.distanceToNextManeuver else null
+  val fastRoad = nav.analysis?.edgeAt((if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)) else 0.0).coerceAtLeast(0.0))
+      ?.roadClass in setOf("motorway", "trunk")
+  val closeUp = toManeuver != null && toManeuver < (if (fastRoad) 0.0 else 260.0)
+  val zoom by androidx.compose.animation.core.animateFloatAsState(
+      (if (is3d) 16.6f else 16.0f) + (if (closeUp) 0.9f else 0f), androidx.compose.animation.core.tween(1500), label = "zoom")
+  val tilt by androidx.compose.animation.core.animateFloatAsState(
+      if (is3d) settings.tiltDeg.toFloat() + (if (closeUp) 5f else 0f) else 0f, androidx.compose.animation.core.tween(1500), label = "tilt")
   val cameraOptions =
       NavigationCameraOptions(
           browsingZoom = 15.0,
-          navigationZoom = if (settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D) 16.6 else 16.0,
+          navigationZoom = zoom.toDouble(),
           // 2D: straight from above, a little farther to see more around
-          navigationTilt = if (settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D) settings.tiltDeg.toDouble() else 0.0,
+          navigationTilt = tilt.toDouble().coerceAtMost(65.0),
           browsingPadding = PaddingValues(0.dp),
           navigationPadding =
               if (landscape) PaddingValues(top = (h * 0.30f).dp, end = (w * 0.42f).dp)
               else PaddingValues(top = (h * 0.40f).dp),
       )
   val mapState = rememberNavigationMapState()
+  // the buttons show up when the map is touched and go away by themselves
+  var lastMapTap by remember { mutableStateOf(System.currentTimeMillis()) }
+  // a point long-pressed on the map, waiting for "go / pass here / avoid"
+  var pendingPoint by remember { mutableStateOf<GeographicCoordinate?>(null) }
 
   val traveled = if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0) else 0.0
   val nextLimit = nav.limits.firstOrNull { it.alongM - traveled > -15 }
@@ -220,8 +238,17 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
                 dotRadius = 11.dp,
                 dotStrokeWidth = 4.dp,
             ),
+        onMapClick = { _, _ ->
+          lastMapTap = System.currentTimeMillis()
+          NavigationMapClickResult.Pass
+        },
         onMapLongClick = { coordinate, _ ->
-          if (!navigating) vm.selectDestination(coordinate, if (plan.addingStop) "Tappa sulla mappa" else "Punto sulla mappa")
+          lastMapTap = System.currentTimeMillis()
+          when {
+            !navigating && plan.addingStop -> vm.addVia(coordinate, "Tappa sulla mappa")
+            !navigating && plan.stops.isEmpty() -> vm.selectDestination(coordinate, "Punto sulla mappa")
+            else -> pendingPoint = coordinate
+          }
           NavigationMapClickResult.Consume
         },
     ) { _ ->
@@ -242,7 +269,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           ?.let { b -> Triple(b, nav.analysis?.boothRole(b), b.alongM - traveled) }
           ?.takeIf { it.third <= 2500 }
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
-          settings, onCrit = { openCrit = it }, onPoi = { openPoi = it })
+          settings, nav.analysis, night, lastMapTap, onCrit = { openCrit = it }, onPoi = { openPoi = it })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -266,8 +293,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onRegions = { sheet = Sheet.REGIONS },
           onSatellite = { satellite = !satellite },
           satellite = satellite,
-          onRecenter = { mapState.recenter(true) },
+          onRecenter = { mapState.recenter(false) },
           onCrit = { openCrit = it },
+          tracking = mapState.isTrackingUser,
       )
       // in a country whose map is not on the tablet: offer it
       // the hint goes away by itself after a while and never covers a route being chosen
@@ -295,6 +323,17 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           Icon(Icons.Rounded.Close, "Chiudi", tint = Nm.Muted, modifier = Modifier.size(36.dp).clip(CircleShape).clickable { countryHintClosed = true }.padding(6.dp))
         }
       }
+    }
+
+    pendingPoint?.let { pt ->
+      PointChooser(
+          navigating = navigating,
+          modifier = Modifier.align(Alignment.Center),
+          onVia = { if (navigating) vm.addStopDuringNav(pt, "Passa di qui") else vm.addVia(pt); pendingPoint = null },
+          onGo = { vm.selectDestination(pt, "Punto sulla mappa"); pendingPoint = null },
+          onAvoid = { vm.avoidArea(pt); pendingPoint = null },
+          onDismiss = { pendingPoint = null },
+      )
     }
 
     if (installed.isEmpty() && sheet != Sheet.REGIONS) {
@@ -346,6 +385,7 @@ private fun BrowsingOverlay(
     satellite: Boolean,
     onRecenter: () -> Unit,
     onCrit: (Criticality) -> Unit,
+    tracking: Boolean = false,
 ) {
   Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(12.dp)) {
     // search bar
@@ -369,13 +409,13 @@ private fun BrowsingOverlay(
       }
     }
     // map buttons
+    // map buttons: only what is useful now (the vehicle is already in the search bar, the countries
+    // are in the settings); with a route on screen, only the satellite view
     Column(Modifier.align(Alignment.TopEnd), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-      RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
-      RoundAction(Icons.Rounded.LocalShipping, "Mezzo", onClick = onVehicle)
+      if (plan.stops.isEmpty()) RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
       RoundAction(Icons.Rounded.Layers, "Satellite", container = if (satellite) Nm.Accent else Nm.Panel, onClick = onSatellite)
-      RoundAction(Icons.Rounded.Public, "Mappe", onClick = onRegions)
     }
-    RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
+    if (!tracking) RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
 
     if (plan.stops.isNotEmpty()) {
       PlanPanel(
@@ -387,6 +427,7 @@ private fun BrowsingOverlay(
           onUnavoid = vm::unavoid,
           onAddStop = { if (plan.addingStop) vm.cancelAddingStop() else vm.startAddingStop() },
           onRemoveStop = vm::removeStop,
+          onRemoveArea = vm::removeAvoidArea,
           onStart = { vm.start(false) },
           onSimulate = { vm.start(true) },
           onCancel = vm::clearPlan,
@@ -412,10 +453,22 @@ private fun NavigatingOverlay(
     landscape: Boolean,
     mapState: com.stadiamaps.ferrostar.maplibreui.runtime.NavigationMapState,
     settings: app.navmaster.truck.settings.Settings,
+    analysis: app.navmaster.truck.routing.RouteAnalysis?,
+    night: Boolean,
+    lastMapTap: Long,
     onCrit: (Criticality) -> Unit,
     onPoi: (RoutePoi) -> Unit,
 ) {
   val simulating by vm.simulating.collectAsState()
+  // buttons: shown for a few seconds after the map is touched (and at the start), then only the
+  // ones that are needed right now (the "centre" one when the map was moved by hand)
+  var controls by remember { mutableStateOf(true) }
+  LaunchedEffect(lastMapTap) {
+    controls = true
+    delay(8_000)
+    controls = false
+  }
+  val jv = if (settings.junctionView) junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled) else null
   val speedKmh = ui.location?.speed?.value?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
@@ -428,14 +481,25 @@ private fun NavigatingOverlay(
       }
       if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
     }
+    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp))
     Box(Modifier.weight(1f).fillMaxWidth()) {
+      if (jv != null && landscape) {
+        JunctionView(jv, night, Modifier.align(Alignment.TopEnd).fillMaxWidth(0.44f).padding(top = 4.dp))
+      }
       SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
       // places along the route: a narrow panel at the edge (the right one unless the driver chose
       // the left), under the manoeuvre bar, never in the middle of the road ahead
       val atRight = settings.poiRailSide != app.navmaster.truck.settings.PoiSide.LEFT
-      PoiRail(pois, traveled, settings.poiRailCount, settings.poiRailSeconds, settings.poiRailOpacity, atRight, narrow = !landscape,
-          modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi)
-      Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+      if (jv == null) {
+        PoiRail(pois, traveled, settings.poiRailCount, settings.poiRailSeconds, settings.poiRailOpacity, atRight, narrow = !landscape,
+            modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi)
+      }
+      Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
+          horizontalAlignment = Alignment.End) {
+        // the map was moved by hand: "centre" stays until the driver uses it
+        if (!mapState.isTrackingUser) RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
+        androidx.compose.animation.AnimatedVisibility(controls, enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // 2D / 3D in one touch: the label says the view it switches to
         val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
         Box(
@@ -449,8 +513,11 @@ private fun NavigatingOverlay(
             contentAlignment = Alignment.Center,
         ) { Text(if (is3d) "2D" else "3D", color = Nm.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
         RoundAction(if (ui.isMuted == true) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, "Voce") { vm.toggleMute() }
-        RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
         RoundAction(Icons.Rounded.Close, "Termina", container = Nm.Red) { vm.stopNavigation() }
+        }
+        }
+        // muted: a small reminder stays even when the buttons are away
+        if (!controls && ui.isMuted == true) RoundAction(Icons.Rounded.VolumeOff, "Voce", size = 48.dp, container = Nm.Red) { vm.toggleMute() }
       }
       if (simulating) {
         Text("SIMULAZIONE", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp,
@@ -500,4 +567,30 @@ private fun CritMarkers(list: List<Criticality>) {
 private fun StopMarkers(stops: List<GeographicCoordinate>) {
   val src = rememberGeoJsonSource(GeoJsonData.JsonString(points(stops.map { it.lat to it.lng })))
   CircleLayer(id = "nm-stops", source = src, color = const(Color(0xFFD50000)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
+}
+
+/** What to do with a point long-pressed on the map. */
+@Composable
+private fun PointChooser(
+    navigating: Boolean,
+    modifier: Modifier,
+    onVia: () -> Unit,
+    onGo: () -> Unit,
+    onAvoid: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+  Panel(modifier.widthIn(max = 420.dp).padding(16.dp), padding = 16.dp) {
+    Title("Punto sulla mappa", size = 20)
+    Caption("Il passaggio va da solo nel punto del viaggio dove allunga meno.", size = 13)
+    Spacer(Modifier.height(10.dp))
+    BigButton("Passa di qui", Modifier.fillMaxWidth(), Icons.Rounded.AddLocationAlt, onClick = onVia)
+    if (!navigating) {
+      Spacer(Modifier.height(8.dp))
+      BigButton("Vai qui (nuova destinazione)", Modifier.fillMaxWidth(), Icons.Rounded.Navigation, BtnStyle.SECONDARY, onClick = onGo)
+      Spacer(Modifier.height(8.dp))
+      BigButton("Evita questa zona", Modifier.fillMaxWidth(), Icons.Rounded.Block, BtnStyle.SECONDARY, onClick = onAvoid)
+    }
+    Spacer(Modifier.height(8.dp))
+    BigButton("Annulla", Modifier.fillMaxWidth(), style = BtnStyle.GHOST, onClick = onDismiss)
+  }
 }

@@ -64,6 +64,7 @@ fun PlanPanel(
     onUnavoid: (Criticality) -> Unit,
     onAddStop: () -> Unit,
     onRemoveStop: (Int) -> Unit,
+    onRemoveArea: (Int) -> Unit = {},
     onStart: () -> Unit,
     onSimulate: () -> Unit,
     onCancel: () -> Unit,
@@ -75,12 +76,16 @@ fun PlanPanel(
       for ((i, s) in plan.stops.withIndex()) {
         val last = i == plan.stops.size - 1
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
-          Box(Modifier.size(28.dp).clip(CircleShape).background(if (last) Nm.Red else Nm.Blue), contentAlignment = Alignment.Center) {
-            Text(if (last) "🏁" else "${i + 1}", fontSize = 13.sp, color = Color.White)
+          Box(Modifier.size(28.dp).clip(CircleShape).background(if (last) Nm.Red else if (s.via) Nm.Accent else Nm.Blue),
+              contentAlignment = Alignment.Center) {
+            Text(if (last) "🏁" else if (s.via) "↪" else "${i + 1}", fontSize = 13.sp, color = Color.White)
           }
           Spacer(Modifier.width(10.dp))
-          Text(s.label, color = Nm.Text, fontSize = if (last) 20.sp else 16.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-              overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+          Column(Modifier.weight(1f)) {
+            Text(s.label, color = Nm.Text, fontSize = if (last) 20.sp else 16.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                overflow = TextOverflow.Ellipsis)
+            if (s.via && !last) Caption("Passaggio, senza fermata", size = 12)
+          }
           if (plan.stops.size > 1) {
             Icon(Icons.Rounded.Close, "Togli", tint = Nm.Muted, modifier = Modifier.size(40.dp).clip(CircleShape).clickable { onRemoveStop(i) }.padding(8.dp))
           }
@@ -90,7 +95,7 @@ fun PlanPanel(
           verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Rounded.AddLocationAlt, null, tint = if (plan.addingStop) Nm.Amber else Nm.Accent)
         Spacer(Modifier.width(6.dp))
-        Caption(if (plan.addingStop) "Tieni premuto sulla mappa dove vuoi passare" else "Aggiungi una tappa (passa di qui)",
+        Caption(if (plan.addingStop) "Tieni premuto sulla mappa dove vuoi passare" else "Aggiungi una tappa · oppure tieni premuto sulla mappa",
             color = if (plan.addingStop) Nm.Amber else Nm.Accent)
       }
 
@@ -123,6 +128,16 @@ fun PlanPanel(
           for (c in if (showAll) list else list.take(5)) CritRow(c) { onCrit(c) }
           if (list.size > 5) Caption(if (showAll) "Mostra meno" else "Mostra tutte (${list.size})", color = Nm.Accent,
               modifier = Modifier.clickable { showAll = !showAll }.padding(8.dp))
+          if (plan.avoidAreas.isNotEmpty()) {
+            SectionHeader("Zone che eviti")
+            for ((i, z) in plan.avoidAreas.withIndex()) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Caption("⛔ Zona segnata sulla mappa (${"%.4f".format(java.util.Locale.ROOT, z.lat)}, ${"%.4f".format(java.util.Locale.ROOT, z.lng)})",
+                    Modifier.weight(1f), color = Nm.Text)
+                Caption("Togli", color = Nm.Accent, modifier = Modifier.clickable { onRemoveArea(i) }.padding(8.dp))
+              }
+            }
+          }
           if (plan.avoided.isNotEmpty()) {
             SectionHeader("Punti che eviti")
             for (a in plan.avoided) {
