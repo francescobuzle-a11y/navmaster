@@ -22,11 +22,15 @@ jobs:
         run: |
           set -e
           shopt -s nullglob
-          files=(inbox/*.b64)
+          files=(inbox/*.b64 inbox/*.b85)
           [ ${#files[@]} -eq 0 ] && { echo "niente da scompattare"; exit 0; }
           msg=""
           for f in "${files[@]}"; do
-            tr -d ' \n\r' < "$f" | base64 -d | tar -xz -C .
+            case "$f" in
+              *.b64) tr -d ' \n\r' < "$f" | base64 -d > /tmp/bundle.bin ;;
+              *.b85) python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b85decode(''.join(open(sys.argv[1]).read().split())))" "$f" > /tmp/bundle.bin ;;
+            esac
+            tar -xf /tmp/bundle.bin -C .   # gzip or xz, recognised by tar
             git rm -q "$f"
           done
           if [ -f .delete-list ]; then
@@ -43,7 +47,7 @@ jobs:
           git commit -q -m "$msg" || { echo "nessuna modifica"; exit 0; }
           git push
           echo "app=$(echo "$changed" | grep -vqE '^(docs/|data/|inbox/|\.github/workflows/dati\.yml|[^/]*\.md$)' && echo 1 || echo 0)" >> $GITHUB_OUTPUT
-          echo "dati=$(echo "$changed" | grep -qE '^(data/(build_limits\.py)|\.github/workflows/dati\.yml)' && echo 1 || echo 0)" >> $GITHUB_OUTPUT
+          echo "dati=$(echo "$changed" | grep -qE '^(data/|\.github/workflows/dati\.yml)' && echo 1 || echo 0)" >> $GITHUB_OUTPUT
           echo "first=$( [ -f .first-run ] && echo 1 || echo 0)" >> $GITHUB_OUTPUT
       - name: Avvia la build dell'app
         if: steps.u.outputs.app == '1'
@@ -52,4 +56,4 @@ jobs:
       - name: Avvia la preparazione dei dati offline
         if: steps.u.outputs.dati == '1'
         env: {GH_TOKEN: "${{ github.token }}"}
-        run: gh workflow run dati.yml --ref main -f region=entrambe
+        run: gh workflow run dati.yml --ref main -f region=romania,italy,test
