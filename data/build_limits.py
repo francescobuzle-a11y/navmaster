@@ -146,6 +146,11 @@ def limits_of(tags):
                 cat = letter
     if cat[:1] in ("B", "C", "D", "E"):
         found.append(("adr_tunnel", float("BCDE".index(cat[:1]) + 2), cat[:1]))
+    # fixed speed cameras (OpenStreetMap highway=speed_camera): value = the speed they check (0 if
+    # not mapped), raw = the direction they face ("forward", "backward" or degrees) when mapped
+    if tags.get("highway") == "speed_camera" or tags.get("enforcement") == "maxspeed":
+        sp = re.match(r"\s*(\d+)", tags.get("maxspeed") or "")
+        found.append(("speed_camera", float(sp.group(1)) if sp else 0.0, tags.get("direction") or tags.get("camera:direction")))
     if tags.get("motorhome") == "no":
         found.append(("motorhome", 0.0, "no"))
     if tags.get("bus") == "no" or tags.get("psv") == "no":

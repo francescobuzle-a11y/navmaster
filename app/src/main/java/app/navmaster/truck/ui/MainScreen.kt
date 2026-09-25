@@ -194,7 +194,20 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var pendingPoint by remember { mutableStateOf<GeographicCoordinate?>(null) }
 
   val traveled = if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0) else 0.0
-  val nextLimit = nav.limits.firstOrNull { it.alongM - traveled > -15 }
+  val nextLimit = nav.limits.firstOrNull { it.kind != "speed_camera" && it.alongM - traveled > -15 }
+  // fixed speed cameras: only where warning about them is allowed, facing our way when the map says
+  val nextCamera = if (!navigating || !settings.speedCameras) null else nav.limits.firstOrNull { l ->
+    l.kind == "speed_camera" && l.alongM - traveled in -10.0..800.0 &&
+        nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED &&
+        cameraFacesUs(l, nav.analysis)
+  }
+  val cameraZoneOnly = nextCamera != null && nav.analysis?.edgeAt(nextCamera.alongM)?.country?.uppercase() in CAMERA_ZONE_ONLY
+  LaunchedEffect(nextCamera?.alongM, (nextCamera?.alongM?.minus(traveled) ?: 9999.0) < 600) {
+    val cam = nextCamera ?: return@LaunchedEffect
+    if (cam.alongM - traveled < 600) vm.say(if (cameraZoneOnly) "Zona di controllo della velocità" else
+      "Autovelox tra ${(((cam.alongM - traveled) / 50).roundToInt() * 50).coerceAtLeast(50)} metri" +
+          (if (cam.value > 0) ", limite ${cam.value.toInt()}" else ""))
+  }
   val nextLimitDist = nextLimit?.let { it.alongM - traveled }
   val nextCrit = nav.criticalities.firstOrNull { it.severity != Severity.INFO && it.endM - traveled > -10 && it.startM - traveled < 3000 }
 
@@ -259,7 +272,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         plan.current?.let { BorderedPolyline(points = it.route.geometry, idPrefix = "nm-preview", color = Nm.Route, lineWidth = 11f, borderWidth = 3f) }
       }
       CritMarkers(if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList())
-      LimitMarkers(if (navigating) nav.limits else plan.current?.limits ?: emptyList())
+      LimitMarkers((if (navigating) nav.limits else plan.current?.limits ?: emptyList()).filter { it.kind != "speed_camera" })
       StopMarkers(plan.stops.map { it.coordinate })
     }
     }
@@ -269,7 +282,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           ?.let { b -> Triple(b, nav.analysis?.boothRole(b), b.alongM - traveled) }
           ?.takeIf { it.third <= 2500 }
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
-          settings, nav.analysis, night, lastMapTap, onCrit = { openCrit = it }, onPoi = { openPoi = it })
+          settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, onCrit = { openCrit = it }, onPoi = { openPoi = it })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -456,6 +469,8 @@ private fun NavigatingOverlay(
     analysis: app.navmaster.truck.routing.RouteAnalysis?,
     night: Boolean,
     lastMapTap: Long,
+    camera: RouteLimit?,
+    cameraZoneOnly: Boolean,
     onCrit: (Criticality) -> Unit,
     onPoi: (RoutePoi) -> Unit,
 ) {
@@ -480,6 +495,7 @@ private fun NavigatingOverlay(
         CritBanner(nextCrit, (nextCrit.startM - traveled).coerceAtLeast(0.0)) { onCrit(nextCrit) }
       }
       if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
+      if (camera != null) CameraBanner(camera, (camera.alongM - traveled).coerceAtLeast(0.0), cameraZoneOnly)
     }
     if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp))
     Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -593,4 +609,22 @@ private fun PointChooser(
     Spacer(Modifier.height(8.dp))
     BigButton("Annulla", Modifier.fillMaxWidth(), style = BtnStyle.GHOST, onClick = onDismiss)
   }
+}
+
+/** Countries where a navigator may not warn about speed cameras (Germany, Switzerland). */
+private val CAMERA_WARNINGS_BANNED = setOf("DE", "CH")
+
+/** Countries where only a "control zone" may be shown, not the camera itself (France). */
+private val CAMERA_ZONE_ONLY = setOf("FR")
+
+/** A camera mapped with the direction it faces: only the ones that check our direction. */
+private fun cameraFacesUs(l: RouteLimit, a: app.navmaster.truck.routing.RouteAnalysis?): Boolean {
+  val raw = l.raw?.trim()?.uppercase() ?: return true
+  val deg = raw.toDoubleOrNull() ?: mapOf("N" to 0.0, "NE" to 45.0, "E" to 90.0, "SE" to 135.0, "S" to 180.0, "SW" to 225.0, "W" to 270.0, "NW" to 315.0)[raw]
+      ?: return true
+  a ?: return true
+  val heading = app.navmaster.truck.core.Geo.bearing(a.pointAt((l.alongM - 15).coerceAtLeast(0.0)), a.pointAt(l.alongM + 15))
+  // OSM gives the direction the camera looks at, i.e. towards the traffic it checks
+  val facing = kotlin.math.abs(app.navmaster.truck.core.Geo.angleDiff(heading, (deg + 180) % 360))
+  return facing < 70
 }

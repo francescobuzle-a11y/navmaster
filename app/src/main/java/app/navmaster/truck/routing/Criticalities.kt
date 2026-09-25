@@ -56,6 +56,10 @@ data class Criticality(
     val scene: TurnCheck.Scene? = null,
     /** Widths are estimated from the road type, not measured. */
     val estimated: Boolean = false,
+    /** The OpenStreetMap object it comes from ("w123", "n456"): what the sources check looks at. */
+    val osm: String? = null,
+    /** For a limit: its kind ("maxheight" ...), to look for the matching sign in the photos. */
+    val limitKind: String? = null,
 ) {
   /** Points the driver can ask to avoid (a ban on a whole country cannot be avoided this way). */
   val avoidable: Boolean
@@ -210,12 +214,12 @@ class CriticalityFinder(regions: RegionManager) {
         out += Criticality("limit:${l.kind}:${l.alongM.toLong()}", CritKind.LIMIT, Severity.CRITICAL,
             "${l.label} ${l.signValue ?: ""}".trim(),
             (l.name?.let { "$it: " } ?: "") + "il mezzo non rispetta questo limite." + (l.conditional?.let { " ($it)" } ?: ""),
-            l.alongM, l.alongM + 10, l.lat, l.lon, headingAt(l.alongM))
+            l.alongM, l.alongM + 10, l.lat, l.lon, headingAt(l.alongM), osm = l.osm, limitKind = l.kind)
       } else if (margin != null && margin >= 0 && margin < (if (l.kind == "maxweight") 1.0 else 0.15)) {
         out += Criticality("margin:${l.kind}:${l.alongM.toLong()}", CritKind.LIMIT, Severity.WARN,
             "${l.label} ${l.signValue ?: ""}: margine ridotto".trim(),
             "Passi con appena ${if (l.kind == "maxweight") Fmt.tonnes(margin) else Fmt.metres(margin)} di margine: verifica le misure reali.",
-            l.alongM, l.alongM + 10, l.lat, l.lon, headingAt(l.alongM))
+            l.alongM, l.alongM + 10, l.lat, l.lon, headingAt(l.alongM), osm = l.osm, limitKind = l.kind)
       }
     }
 
@@ -283,7 +287,7 @@ class CriticalityFinder(regions: RegionManager) {
     val where = r.name?.let { " ($it)" } ?: ""
     val p = a.pointAt(lo)
     fun c(kind: CritKind, sev: Severity, title: String, detail: String, scene: TurnCheck.Scene? = null, est: Boolean = false) =
-        Criticality("db:${r.id}", kind, sev, title + where, detail, lo, max(hi, lo + 10), p.lat, p.lng, headingAt(lo), scene, est)
+        Criticality("db:${r.id}", kind, sev, title + where, detail, lo, max(hi, lo + 10), p.lat, p.lng, headingAt(lo), scene, est, osm = r.osm)
     return when (r.kind) {
       "narrow" -> {
         val w = r.value

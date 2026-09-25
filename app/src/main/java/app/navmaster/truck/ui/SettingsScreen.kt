@@ -202,6 +202,10 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       set { it.copy(driveTimeReminder = v) }
     }
   }
+  Card("Autovelox") {
+    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap. In Germania e Svizzera l'avviso è vietato e non compare; " +
+        "in Francia si mostra solo la «zona di controllo».", s.speedCameras) { v -> set { it.copy(speedCameras = v) } }
+  }
   Card("Velocità") {
     Stepper("Avviso quando superi il limite di", s.speedWarningKmh.toDouble(), "km/h", 1.0, 0.0, 20.0, 0) { v ->
       set { it.copy(speedWarningKmh = v.toInt()) }
@@ -354,13 +358,24 @@ private fun PhotosPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
     )
+    if (s.mapillaryToken.isBlank()) {
+      val context = androidx.compose.ui.platform.LocalContext.current
+      Caption("Con il token si vedono anche le foto dei cartelli di limiti e divieti (riconosciuti da Mapillary) " +
+          "e l'affidabilità di ogni limite diventa più precisa. Registrazione gratuita, poi «Register application» e copia il «Client token».",
+          size = 13, lines = 5)
+      BigButton("Crea il token gratuito", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), style = BtnStyle.SECONDARY) {
+        app.navmaster.truck.photos.StreetPhotos.openPhoto(context, "https://www.mapillary.com/dashboard/developers")
+      }
+    }
   }
 }
 
 @Composable
 private fun AboutPage() {
   Card("Fonti dei dati") {
-    Caption("Mappe e dati © OpenStreetMap contributors (ODbL). Immagini satellitari © Esri (uso personale).", size = 14, lines = 4)
+    Caption("Mappe, limiti, divieti, autovelox e punti di interesse © OpenStreetMap contributors (ODbL). " +
+        "Punti di interesse aggiuntivi © Overture Maps Foundation (CDLA Permissive 2.0). " +
+        "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale).", size = 14, lines = 6)
   }
   Card("Avvertenze") {
     Caption("I divieti nazionali di circolazione sono indicativi: verifica sempre il calendario ufficiale. " +

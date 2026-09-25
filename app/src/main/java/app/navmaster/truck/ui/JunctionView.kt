@@ -127,7 +127,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
         val (mainBg, mainFg) = signColors(scene.country, scene.motorway)
         val branchMotorway = scene.branchRefs.any { it.uppercase().let { r -> (r.startsWith("A") || r.startsWith("E")) && r.getOrNull(1)?.isDigit() == true } } ||
             (scene.motorway && !scene.exit)
-        val (brBg, brFg) = signColors(scene.country, branchMotorway)
+        val (brBg, brFg) = signColors(scene.country, branchMotorway || scene.motorway)
         val main: @Composable (Modifier) -> Unit = { m ->
           if (scene.mainRefs.isNotEmpty() || scene.side != 0) {
             SignPanel(m, mainBg, mainFg, arrow = 0f, exitNumber = null, refs = scene.mainRefs, towns = emptyList(),
@@ -376,13 +376,24 @@ fun junctionSceneOf(
   if (distanceM > range) return null
   val at = traveled + distanceM
   val sign = a?.signNear(at)
+  // without the sign data of the graph, what the instruction says is the sign itself ("Riccione",
+  // "A1 / Roma / Firenze"): the road numbers go on plates, the rest are the towns
+  val parts = (listOf(p.text) + listOfNotNull(instruction.secondaryContent?.text))
+      .flatMap { it.split('/', ',', ';', '·') }.map { it.trim() }.filter { it.isNotEmpty() }
+  val refRe = Regex("^[A-Z]{1,3}[ -]?\\d{1,4}[a-z]?$")
+  val fallback = app.navmaster.truck.routing.EdgeSign(
+      exitNumbers = p.exitNumbers,
+      branches = parts.filter { refRe.matches(it) },
+      towards = parts.filterNot { refRe.matches(it) },
+      exitNames = emptyList(),
+  ).takeIf { !it.isEmpty }
   val after = a?.edgeAt(at + 80)
   return JunctionScene(
       side = side,
       lanes = lanes,
       distanceM = distanceM,
       rangeM = range,
-      sign = sign?.second,
+      sign = sign?.second ?: fallback,
       branchRefs = (sign?.first?.refs ?: emptyList()) + (after?.refs ?: emptyList()),
       mainRefs = here?.refs ?: emptyList(),
       motorway = motorway,

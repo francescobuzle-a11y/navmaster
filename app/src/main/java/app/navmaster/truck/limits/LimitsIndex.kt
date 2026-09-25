@@ -25,6 +25,8 @@ data class RouteLimit(
     val lat: Double,
     val lon: Double,
     val blocking: Boolean,
+    /** OpenStreetMap object ("w123" / "n456"). */
+    val osm: String? = null,
 ) {
   /** Short text for the banner: "Altezza max", "Divieto mezzi pesanti" ... */
   val label: String
@@ -40,6 +42,7 @@ data class RouteLimit(
           "motorhome" -> "Divieto camper"
           "hazmat" -> "Divieto merci pericolose"
           "adr_tunnel" -> "Galleria ADR cat. ${raw ?: ""}"
+          "speed_camera" -> "Autovelox"
           else -> "Divieto a orario"
         }
 
@@ -50,6 +53,7 @@ data class RouteLimit(
           "maxheight", "maxwidth", "maxlength" -> fmt(value) + "m"
           "maxweight", "maxaxleload" -> fmt(value) + "t"
           "adr_tunnel" -> raw
+          "speed_camera" -> if (value > 0) value.toInt().toString() else null
           else -> null
         }
 
@@ -105,13 +109,14 @@ class LimitsIndex(regions: RegionManager) {
                 lo = a.wayExtent(wayId)?.startM ?: continue
                 p = a.pointAt(lo)
               } else {
-                lo = m.span(pts, if (pts.size <= 1) 3.0 else 9.0)?.first ?: continue
+                // a camera stands beside the road; a barrier or a sign on a point is on it
+                lo = m.span(pts, if (kind == "speed_camera") 25.0 else if (pts.size <= 1) 3.0 else 9.0)?.first ?: continue
                 p = pts.minByOrNull { pt -> m.nearest(pt)?.first ?: 1e9 } ?: continue
               }
               val cond = c.getString(4)
               val at = departure.plusSeconds((lo / avgSpeedMs).toLong())
               out += RouteLimit(kind, value, c.getString(3), c.getString(5), cond, lo, p.lat, p.lng,
-                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)))
+                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)), osm.ifBlank { null })
             }
           }
       out
@@ -139,6 +144,9 @@ class LimitsIndex(regions: RegionManager) {
         "adr_tunnel" -> v.adr != AdrTunnel.NONE
         else -> true
       }
+
+  /** Speed cameras on the route, for the ones who want the warning (legal in the country). */
+  fun cameras(all: List<RouteLimit>): List<RouteLimit> = all.filter { it.kind == "speed_camera" }
 
   private fun blocks(kind: String, value: Double, v: VehicleProfile, weightT: Double): Boolean =
       when (kind) {

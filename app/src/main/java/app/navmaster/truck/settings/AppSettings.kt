@@ -119,6 +119,8 @@ data class Settings(
     val voiceLevel: VoiceLevel = VoiceLevel.ESSENTIAL,
     /** The picture of the junction with lanes and direction signs, at exits and complex turns. */
     val junctionView: Boolean = true,
+    /** Fixed speed cameras (where the law allows the warning). */
+    val speedCameras: Boolean = true,
     val nightMode: NightMode = NightMode.AUTO,
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,

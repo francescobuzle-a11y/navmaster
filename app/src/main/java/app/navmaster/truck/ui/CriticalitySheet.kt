@@ -102,6 +102,52 @@ fun CriticalitySheet(
       Caption("Raggio seguito ${s.radiusM.toInt().takeIf { s.radiusM < 999 } ?: "—"} m · raggio minimo del mezzo ${s.vehicleMinRadiusM.toInt()} m", size = 13)
     }
 
+    // where it comes from and how sure it is, with the links to check it
+    if (c.osm != null || c.limitKind != null) {
+      SectionHeader("Fonti e affidabilità")
+      val report by produceState<app.navmaster.truck.photos.EvidenceReport?>(null, c.id) {
+        value = app.navmaster.truck.photos.Evidence.check(c.osm, c.lat, c.lon, c.limitKind, settings.mapillaryToken)
+      }
+      val r = report
+      if (r == null) {
+        Caption("Controllo la fonte su OpenStreetMap e i cartelli nelle foto…")
+      } else {
+        Badge(r.reliability.label, when (r.reliability) {
+          app.navmaster.truck.photos.Reliability.HIGH -> Nm.Accent
+          app.navmaster.truck.photos.Reliability.MEDIUM -> Nm.Amber
+          app.navmaster.truck.photos.Reliability.LOW -> Nm.Red
+        })
+        Spacer(Modifier.height(6.dp))
+        for (reason in r.reasons) Caption("• $reason", color = Nm.Text, size = 14, lines = 3)
+        if (r.signs.isNotEmpty()) {
+          Spacer(Modifier.height(8.dp))
+          Caption("Il cartello nelle foto stradali (Mapillary)", size = 13)
+          Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            for (sg in r.signs) {
+              Column(Modifier.width(220.dp).clickable { sg.thumbUrl?.let { StreetPhotos.openPhoto(context, it) } }) {
+                if (sg.thumbUrl != null) NetImage(sg.thumbUrl, Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)))
+                Caption("${sg.type.substringAfter("--").substringBeforeLast("--").replace('-', ' ')} · ${sg.distanceM.toInt()} m" +
+                    (sg.firstSeen?.let { " · dal $it" } ?: ""), size = 12, lines = 2)
+              }
+            }
+          }
+        }
+        if (r.tags.isNotEmpty()) {
+          Spacer(Modifier.height(8.dp))
+          Caption("Dati OpenStreetMap" + (r.lastEdit?.let { " (ultima modifica $it" + (r.version?.let { v -> ", versione $v" } ?: "") + ")" } ?: ""), size = 13)
+          for ((k, v) in r.tags.take(12)) Caption("$k = $v", color = Nm.Text, size = 13, lines = 2)
+        }
+        Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          r.osmUrl?.let { u -> BigButton("OpenStreetMap", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openPhoto(context, u) } }
+          r.historyUrl?.let { u -> BigButton("Storico", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openPhoto(context, u) } }
+        }
+        BigButton("Segnala un errore sulla mappa", Modifier.fillMaxWidth().padding(top = 8.dp), style = BtnStyle.GHOST) {
+          StreetPhotos.openPhoto(context, app.navmaster.truck.photos.Evidence.noteUrl(c.lat, c.lon))
+        }
+        Caption("Il cartello sulla strada vale sempre più della mappa.", size = 12)
+      }
+    }
+
     SectionHeader("Vista dal satellite")
     SatelliteView(c.lat, c.lon, route, Modifier.fillMaxWidth().height(260.dp))
     Caption(MapStyles.ESRI_ATTRIBUTION + " · serve la connessione", size = 11)

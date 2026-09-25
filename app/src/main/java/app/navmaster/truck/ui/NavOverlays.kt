@@ -260,3 +260,23 @@ fun BottomTripBar(road: String?, remainingM: Double?, remainingS: Double?, modif
     }
   }
 }
+
+/** Fixed speed camera ahead (or a speed "control zone" where only that may be shown). */
+@Composable
+fun CameraBanner(camera: RouteLimit, distanceM: Double, zoneOnly: Boolean, modifier: Modifier = Modifier) {
+  Row(
+      modifier.shadow(6.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)).background(NmPanel).padding(6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(Modifier.size(46.dp).clip(CircleShape).background(if (zoneOnly) NmAmber else Color(0xFF1565C0)), contentAlignment = Alignment.Center) {
+      Text(if (zoneOnly) "⚠" else "📷", fontSize = 22.sp)
+    }
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.padding(end = 12.dp)) {
+      Text(if (zoneOnly) "Zona di controllo" else "Autovelox" + (if (camera.value > 0) " · ${camera.value.toInt()} km/h" else ""),
+          color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+      if (!zoneOnly) Text(if (distanceM < 30) "qui" else "tra " + Fmt.distanceText(distanceM), color = Color(0xFF90CAF9), fontSize = 20.sp,
+          fontWeight = FontWeight.Bold)
+    }
+  }
+}
