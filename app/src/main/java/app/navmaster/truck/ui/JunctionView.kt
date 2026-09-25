@@ -443,7 +443,7 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
   // The view is anchored a little before the junction while the vehicle is still far, so the
   // junction is always seen large; from there on it follows the vehicle, live.
   val m = scene.maneuverAtM
-  val lead = if (scene.turn) 60.0 else 110.0
+  val lead = if (scene.turn) 45.0 else 60.0
   val anchor = max(pos, m - lead).coerceAtMost(a.length)
   // local frame at the anchor: x to the right, y ahead (metres)
   val here = a.pointAt(anchor)
@@ -455,13 +455,13 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
     return app.navmaster.truck.core.XY(p.x * hv.y - p.y * hv.x, p.x * hv.x + p.y * hv.y)
   }
   // pseudo-3D like the dedicated navigators: far things shrink and rise towards the horizon
-  val zMax = (m - anchor) + if (scene.turn) 50.0 else 90.0
-  val k = 0.012
+  val zMax = (m - anchor) + if (scene.turn) 45.0 else 80.0
+  val k = 0.006
   fun persp(z: Double) = 1.0 / (1.0 + max(z, -12.0) * k)
   val bottomY = h * 0.97
   val topY = horizon + (h - horizon) * 0.04
   val span = 1.0 - persp(zMax)
-  val xs = w / (if (scene.turn) 34.0 else 44.0)
+  val xs = w / (if (scene.turn) 28.0 else 34.0)
   val cx = w / 2.0
   fun proj(p: app.navmaster.truck.core.XY): Offset? {
     if (p.y > zMax + 5 || p.y < -14) return null
