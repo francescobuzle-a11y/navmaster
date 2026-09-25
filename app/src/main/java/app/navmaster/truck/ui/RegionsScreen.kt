@@ -2,6 +2,7 @@ package app.navmaster.truck.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +20,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -56,6 +60,16 @@ fun rememberCurrentCountry(lat: Double?, lon: Double?): CountryInfo? {
   }
 }
 
+/** The countries by area, so the list of 48 stays short. */
+private val AREAS = linkedMapOf(
+    "Europa meridionale" to setOf("IT", "SM", "VA", "MT", "ES", "PT", "AD", "MC", "GR", "CY", "TR"),
+    "Europa occidentale" to setOf("FR", "BE", "NL", "LU", "GB", "IE", "IM", "GG", "JE"),
+    "Europa centrale" to setOf("DE", "AT", "CH", "LI", "PL", "CZ", "SK", "HU"),
+    "Balcani" to setOf("SI", "HR", "BA", "RS", "ME", "MK", "AL", "XK"),
+    "Europa orientale" to setOf("RO", "BG", "MD", "UA", "BY", "GE"),
+    "Nord Europa e Baltici" to setOf("DK", "NO", "SE", "FI", "IS", "FO", "EE", "LV", "LT"),
+)
+
 @Composable
 fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
   val catalog by AppGraph.catalog.catalog.collectAsState()
@@ -87,9 +101,38 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
     Spacer(Modifier.height(8.dp))
     val list = catalog?.countries.orEmpty().filter { TextNorm.norm(it.name).contains(TextNorm.norm(query)) }.sortedBy { it.name }
     if (catalog == null) Caption("Collegati a internet per vedere l'elenco dei Paesi.", color = Nm.Amber)
-    for (c in list) {
-      if (c.id == here?.id) continue
-      CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+    if (query.isNotBlank()) {
+      for (c in list) {
+        if (c.id == here?.id) continue
+        CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+      }
+    } else {
+      // by area, folded: only the area you are in starts open
+      for ((area, isos) in AREAS) {
+        val inArea = list.filter { it.iso in isos && it.id != here?.id }
+        if (inArea.isEmpty()) continue
+        var open by remember(area) { mutableStateOf(here?.iso in isos) }
+        val got = inArea.count { c -> installed.any { it.id == c.id } }
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(14.dp)).background(Nm.Raised)
+                .clickable { open = !open }.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(Modifier.weight(1f)) {
+            Text(area, color = Nm.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Caption("${inArea.size} Paesi" + if (got > 0) " · $got scaricati" else "", size = 13)
+          }
+          Icon(if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null, tint = Nm.Muted)
+        }
+        if (open) {
+          Column(Modifier.padding(start = 8.dp)) {
+            for (c in inArea) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+          }
+        }
+      }
+      // anything the catalog has that no area lists
+      val known = AREAS.values.flatten().toSet()
+      for (c in list) if (c.iso !in known && c.id != here?.id) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
     }
     catalog?.europeGraph?.let {
       Spacer(Modifier.height(10.dp))

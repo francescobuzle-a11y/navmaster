@@ -6,6 +6,7 @@ import app.navmaster.truck.data.RegionDbs
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.data.RouteMatcher
 import app.navmaster.truck.search.TextNorm
+import app.navmaster.truck.settings.PoiCategories
 import uniffi.ferrostar.GeographicCoordinate
 
 data class Poi(
@@ -50,7 +51,7 @@ class PoiIndex(regions: RegionManager) {
 
   private val cols = "p.id, p.cat, p.name, p.brand, p.lat, p.lon, p.flags, p.hours, p.phone, p.extra"
 
-  fun alongRoute(m: RouteMatcher, categories: Set<String>, truckOnly: Boolean, maxOffM: Int): List<RoutePoi> {
+  fun alongRoute(m: RouteMatcher, categories: Set<String>, truckOnly: Boolean, maxOffM: Int, subs: Set<String> = emptySet()): List<RoutePoi> {
     if (categories.isEmpty() || m.route.size < 2) return emptyList()
     val inCats = categories.joinToString(",") { "'${it.replace("'", "")}'" }
     val out = HashMap<String, RoutePoi>()
@@ -61,6 +62,7 @@ class PoiIndex(regions: RegionManager) {
           while (c.moveToNext()) {
             val p = read(c, region.id)
             if (truckOnly && p.cat == "fuel" && "hgv" !in p.flags) continue
+            if (!passes(p, subs)) continue
             val (d, along) = m.nearest(p.coordinate) ?: continue
             val limit = if (p.cat in setOf("services", "rest_area")) maxOf(maxOffM, 400) else maxOffM
             if (d <= limit) out.putIfAbsent(p.key, RoutePoi(p, along, d))
@@ -69,6 +71,21 @@ class PoiIndex(regions: RegionManager) {
       }
     }
     return out.values.sortedBy { it.alongM }
+  }
+
+  /** The finer choices of the driver (restaurants only, AdBlue, free ...) for this place. */
+  private fun passes(p: Poi, subs: Set<String>): Boolean {
+    if (subs.isEmpty()) return true
+    val prefix = p.cat + ":"
+    val chosen = subs.filter { it.startsWith(prefix) }.map { it.substring(prefix.length) }
+    if (chosen.isEmpty()) return true
+    val def = PoiCategories.byId(p.cat)?.subs ?: return true
+    val kinds = def.filter { it.kind }.map { it.flag }.toSet()
+    // one of the chosen kinds (a place from older data, without its kind, is kept)
+    val chosenKinds = chosen.filter { it in kinds }
+    if (chosenKinds.isNotEmpty() && p.flags.any { it in kinds } && p.flags.none { it in chosenKinds }) return false
+    // and every chosen feature
+    return chosen.filter { it !in kinds }.all { it in p.flags }
   }
 
   fun near(lat: Double, lon: Double, radiusM: Double, categories: Set<String>? = null, limit: Int = 50): List<Pair<Poi, Double>> {

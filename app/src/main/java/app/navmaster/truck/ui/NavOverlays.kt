@@ -199,9 +199,9 @@ fun LimitSign(limit: RouteLimit, modifier: Modifier) {
 
 /** Speed limit sign of the road and the current speed; both turn red above the limit. */
 @Composable
-fun SpeedPanel(speedKmh: Int?, limitKmh: Int?, vehicleMaxKmh: Int, modifier: Modifier = Modifier) {
+fun SpeedPanel(speedKmh: Int?, limitKmh: Int?, vehicleMaxKmh: Int, modifier: Modifier = Modifier, toleranceKmh: Int = 3) {
   val effective = limitKmh?.let { minOf(it, vehicleMaxKmh) }
-  val over = speedKmh != null && effective != null && speedKmh > effective + 3
+  val over = speedKmh != null && effective != null && speedKmh > effective + toleranceKmh
   val blink by rememberInfiniteTransition(label = "over").animateFloat(
       initialValue = 1f,
       targetValue = 0.35f,

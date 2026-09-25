@@ -138,7 +138,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var sheet by remember {
     mutableStateOf(when (initialSheet) {
       "vehicle" -> Sheet.VEHICLE
-      "settings" -> Sheet.SETTINGS
+      "settings", "settings_poi", "settings_map" -> Sheet.SETTINGS
       "regions" -> Sheet.REGIONS
       "search", "search_guided" -> Sheet.SEARCH
       else -> Sheet.NONE
@@ -165,8 +165,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val cameraOptions =
       NavigationCameraOptions(
           browsingZoom = 15.0,
-          navigationZoom = 16.6,
-          navigationTilt = settings.tiltDeg.toDouble(),
+          navigationZoom = if (settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D) 16.6 else 16.0,
+          // 2D: straight from above, a little farther to see more around
+          navigationTilt = if (settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D) settings.tiltDeg.toDouble() else 0.0,
           browsingPadding = PaddingValues(0.dp),
           navigationPadding =
               if (landscape) PaddingValues(top = (h * 0.30f).dp, end = (w * 0.42f).dp)
@@ -309,7 +310,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         sheet = Sheet.NONE
         if (plan.stops.isNotEmpty()) vm.planRoutes()
       })
-      Sheet.SETTINGS -> SettingsScreen(onClose = { sheet = Sheet.NONE; vm.refreshPois() }, onRegions = { sheet = Sheet.REGIONS })
+      Sheet.SETTINGS -> SettingsScreen(onClose = { sheet = Sheet.NONE; vm.refreshPois() }, onRegions = { sheet = Sheet.REGIONS },
+          initialPage = initialSheet?.takeIf { it.startsWith("settings_") }?.substringAfter("settings_"))
       Sheet.REGIONS -> RegionsScreen(here, onClose = { sheet = Sheet.NONE })
       Sheet.NONE -> {}
     }
@@ -427,13 +429,25 @@ private fun NavigatingOverlay(
       if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
     }
     Box(Modifier.weight(1f).fillMaxWidth()) {
-      SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp))
+      SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
       // places along the route: a narrow panel at the edge (the right one unless the driver chose
       // the left), under the manoeuvre bar, never in the middle of the road ahead
       val atRight = settings.poiRailSide != app.navmaster.truck.settings.PoiSide.LEFT
       PoiRail(pois, traveled, settings.poiRailCount, settings.poiRailSeconds, settings.poiRailOpacity, atRight, narrow = !landscape,
           modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi)
       Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // 2D / 3D in one touch: the label says the view it switches to
+        val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
+        Box(
+            Modifier.size(64.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.Panel).border(1.dp, Nm.Line, CircleShape)
+                .clickable {
+                  AppGraph.settings.update {
+                    it.copy(driveView = if (is3d) app.navmaster.truck.settings.DriveView.VIEW_2D else app.navmaster.truck.settings.DriveView.VIEW_3D)
+                  }
+                  mapState.recenter(true)
+                },
+            contentAlignment = Alignment.Center,
+        ) { Text(if (is3d) "2D" else "3D", color = Nm.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
         RoundAction(if (ui.isMuted == true) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, "Voce") { vm.toggleMute() }
         RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
         RoundAction(Icons.Rounded.Close, "Termina", container = Nm.Red) { vm.stopNavigation() }

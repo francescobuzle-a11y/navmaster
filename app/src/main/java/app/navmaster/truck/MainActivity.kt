@@ -54,6 +54,10 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     intent?.getStringExtra("nm_tolls")?.let { t ->
       app.navmaster.truck.settings.TollPolicy.entries.firstOrNull { it.name.equals(t, true) }?.let { p -> AppGraph.settings.update { it.copy(tollPolicy = p) } }
     }
+    intent?.getStringExtra("nm_view")?.let { v ->
+      val view = if (v.equals("2d", true)) app.navmaster.truck.settings.DriveView.VIEW_2D else app.navmaster.truck.settings.DriveView.VIEW_3D
+      AppGraph.settings.update { it.copy(driveView = view) }
+    }
     intent?.getIntExtra("nm_poicount", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailCount = v) } }
     intent?.getIntExtra("nm_poisec", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailSeconds = v) } }
     val dest = intent?.getStringExtra("nm_dest") ?: return

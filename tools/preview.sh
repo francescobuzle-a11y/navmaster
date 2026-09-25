@@ -83,13 +83,19 @@ sleep 15; shot 07_guida_camion_2
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1; sleep 8; shot 08_guida_verticale
 adb shell settings put system user_rotation 0; sleep 4
+# the same trip seen in 2D, from above
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --es nm_view 2d --ez nm_sim true
+sleep 28; shot 07b_guida_2d
 
 # same trip for the camper: the route may differ where the lorry is not allowed
-start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camper --es nm_load 0.4 --ei nm_poisec 0 --ez nm_sim true
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camper --es nm_load 0.4 --ei nm_poisec 0 --es nm_view 3d --ez nm_sim true
 sleep 28; shot 09_guida_camper
 
+# settings: the list of pages, then the places page (groups, categories, finer choices) and the map page
 start --es nm_sheet settings; sleep 8; shot 10_impostazioni
-adb shell input swipe 1800 1500 1800 250 600; sleep 2; adb shell input swipe 1800 1500 1800 700 600; sleep 3; shot 10b_impostazioni_poi
+start --es nm_sheet settings_poi; sleep 8; shot 10b_impostazioni_poi
+adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10c_impostazioni_poi_2
+start --es nm_sheet settings_map; sleep 8; shot 10d_impostazioni_mappa
 start --es nm_sheet regions; sleep 12; shot 11_paesi
 log
 grep -E "route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"

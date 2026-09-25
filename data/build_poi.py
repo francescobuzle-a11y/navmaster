@@ -21,7 +21,7 @@ def truthy(v):
 
 
 def category(t):
-    """(category, flags) or None. Flags: hgv, adblue, lpg, h24, fee."""
+    """(category, flags) or None. Flags: hgv, adblue, lpg, h24, free, guarded, restaurant/fast_food/cafe."""
     amenity = t.get("amenity")
     highway = t.get("highway")
     shop = t.get("shop")
@@ -31,7 +31,7 @@ def category(t):
         return "fuel", {"hgv": hgv, "adblue": truthy(t.get("fuel:adblue")), "lpg": truthy(t.get("fuel:lpg"))}
     if amenity == "parking":
         if hgv or t.get("parking") in ("truck", "lorry") or t.get("capacity:hgv") not in (None, "0"):
-            return "truck_parking", {"hgv": True}
+            return "truck_parking", {"hgv": True, "guarded": truthy(t.get("supervised")) or t.get("surveillance") == "guard"}
         if truthy(t.get("motorhome")) or truthy(t.get("caravan")):
             return "camper_parking", {}
         return None
@@ -44,7 +44,8 @@ def category(t):
     if amenity == "sanitary_dump_station":
         return "camper_service", {}
     if amenity in ("restaurant", "fast_food", "cafe"):
-        return "food", {}
+        # the kind is a flag too: the driver may want only restaurants, or only a quick coffee
+        return "food", {amenity: True}
     if shop == "supermarket":
         return "supermarket", {}
     if amenity == "toilets":

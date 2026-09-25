@@ -343,7 +343,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val s = AppGraph.settings.settings.value
     return runCatching {
       AppGraph.poi.alongRoute(RouteMatcher(r.geometry), s.poiCategories, s.poiOnlyTruckFriendly && AppGraph.profiles.garage.value.active.type.heavy,
-          s.poiMaxDetourM)
+          s.poiMaxDetourM, s.poiSubs)
     }.getOrDefault(emptyList())
   }
 

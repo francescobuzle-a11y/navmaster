@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Remove
@@ -243,7 +244,8 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
  */
 @Composable
 fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modifier, wide: Boolean = false,
-                  scroll: Boolean = true, actions: @Composable () -> Unit = {}, content: @Composable ColumnScope.() -> Unit) {
+                  scroll: Boolean = true, onBack: (() -> Unit)? = null, actions: @Composable () -> Unit = {},
+                  content: @Composable ColumnScope.() -> Unit) {
   val cfg = LocalConfiguration.current
   val landscape = cfg.screenWidthDp > cfg.screenHeightDp
   Box(
@@ -261,6 +263,10 @@ fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modif
             .statusBarsPadding().navigationBarsPadding().imePadding().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 12.dp),
     ) {
       Row(verticalAlignment = Alignment.CenterVertically) {
+        if (onBack != null) {
+          RoundAction(Icons.AutoMirrored.Rounded.ArrowBack, "Indietro", size = 52.dp, container = Nm.Raised, onClick = onBack)
+          Spacer(Modifier.size(12.dp))
+        }
         Title(title, Modifier.weight(1f))
         actions()
         RoundAction(Icons.Rounded.Close, "Chiudi", size = 52.dp, container = Nm.Raised, onClick = onClose)
