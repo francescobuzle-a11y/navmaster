@@ -6,6 +6,9 @@ name: Grafo Europa
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/grafo-europa.yml"]
   schedule:
     - cron: "0 1 3 * *"   # every month, after the country packages
 
@@ -15,6 +18,9 @@ permissions:
 
 env:
   VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:3.6.3
+  # only what a lorry, a bus or a camper can drive on: footways, paths, cycleways and steps are
+  # half of the European ways and would not fit on the runner's disk
+  VEHICLE_ROADS: motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway
 
 jobs:
   graph:
@@ -39,11 +45,14 @@ jobs:
           cd $HOME/big
           date; curl -fsSL -o europe.osm.pbf https://download.geofabrik.de/europe-latest.osm.pbf; date
           ls -la europe.osm.pbf
-          osmium tags-filter europe.osm.pbf w/highway w/route=ferry r/type=restriction r/route=road,ferry \
-            -o /mnt/w/roads.osm.pbf --overwrite
-          osmium tags-filter europe.osm.pbf r/admin_level=2,4 -o /mnt/w/admins.osm.pbf --overwrite
+          # one pass: vehicle roads, ferries, turn restrictions and the national / regional borders
+          osmium tags-filter europe.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry r/type=restriction \
+            r/route=road,ferry r/admin_level=2,4 -o /mnt/w/all.osm.pbf --overwrite
           rm europe.osm.pbf
-          mv /mnt/w/roads.osm.pbf /mnt/w/admins.osm.pbf $HOME/big/
+          # private driveways and very rough tracks are no use to a lorry or a camper
+          osmium tags-filter -i /mnt/w/all.osm.pbf w/service=driveway,drive-through,emergency_access \
+            w/tracktype=grade3,grade4,grade5 -o $HOME/big/roads.osm.pbf --overwrite
+          rm /mnt/w/all.osm.pbf
           ls -la $HOME/big; date; df -h / /mnt
       - name: Grafo Valhalla dell'Europa
         run: |
@@ -53,7 +62,7 @@ jobs:
             valhalla_build_config --mjolnir-tile-dir /data/tiles --mjolnir-admin /data/admins.sqlite \
               --mjolnir-concurrency $(nproc) > /data/valhalla.json
             cd /data
-            date; valhalla_build_admins -c /data/valhalla.json /src/admins.osm.pbf
+            date; valhalla_build_admins -c /data/valhalla.json /src/roads.osm.pbf
             date; valhalla_build_tiles -c /data/valhalla.json /src/roads.osm.pbf
             date
           "
