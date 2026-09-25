@@ -97,6 +97,8 @@ jobs:
       - name: Pubblica (release grafo-europa)
         env:
           GH_TOKEN: ${{ github.token }}
+          # the step runs outside the checkout: tell gh which repository
+          GH_REPO: ${{ github.repository }}
         run: |
           cd $HOME/big/out
           gh release delete grafo-europa --yes --cleanup-tag 2>/dev/null || true
