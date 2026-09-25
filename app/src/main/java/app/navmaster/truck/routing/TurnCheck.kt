@@ -140,10 +140,18 @@ object TurnCheck {
     val run = SweptPath.drive(path, v)
     val line = SweptPath.resample(path, 0.5)
     var worst = 0.0
+    // every wheel is near the part of the centre line the vehicle is on: from a vehicle length
+    // behind the front axle to a little ahead (keeps long ramps fast)
+    val back = ((v.lengthM + 12) / 0.5).toInt()
+    val ahead = (12 / 0.5).toInt()
     for ((i, pose) in run.poses.withIndex()) {
       if (i * 0.25 < v.lengthM + 10) continue // still on the straight lead-in
+      val k = i / 2
+      val from = (k - back).coerceAtLeast(0)
+      val to = (k + ahead).coerceAtMost(line.size - 1)
+      if (to - from < 1) continue
       for (s in listOf(1.0, -1.0)) for (w in SweptPath.sideWheels(pose, v, s)) {
-        worst = max(worst, distance(w, line) - width / 2)
+        worst = max(worst, distance(w, line, from, to) - width / 2)
       }
     }
     val rCurve = minRadius(centre)
@@ -178,9 +186,9 @@ object TurnCheck {
     return if (area2 < 1e-6) Double.MAX_VALUE else ab * bc * ac / (2 * area2)
   }
 
-  private fun distance(p: XY, line: List<XY>): Double {
+  private fun distance(p: XY, line: List<XY>, from: Int = 0, to: Int = line.size - 1): Double {
     var best = Double.MAX_VALUE
-    for (i in 0 until line.size - 1) {
+    for (i in from until to) {
       val a = line[i]
       val ab = line[i + 1] - a
       val len2 = dot(ab, ab)

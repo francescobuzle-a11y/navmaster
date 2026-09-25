@@ -82,6 +82,8 @@ class CriticalityFinder(regions: RegionManager) {
       departure: LocalDateTime,
   ): List<Criticality> {
     val started = System.currentTimeMillis()
+    // the swept-path checks never hold up the route choice for long: after this they are skipped
+    val deadline = started + 8_000
     val out = mutableListOf<Criticality>()
     val line = a.route.geometry
     val heavy = v.type != VehicleType.FURGONE && (v.type != VehicleType.CAMPER || v.lengthM > 8)
@@ -105,14 +107,14 @@ class CriticalityFinder(regions: RegionManager) {
       if (!seen.add(r.id)) continue
       val (lo, hi) = m.span(r.pts, 12.0) ?: continue
       val info = runCatching { json.parseToJsonElement(r.info).jsonObject }.getOrNull()
-      judge(r, lo, hi, info, v, heavy, a, ::headingAt)?.let { out += it }
+      judge(r, lo, hi, info, v, heavy, a, m, deadline, ::headingAt)?.let { out += it }
     }
 
     // 2. exit ramps with the swept path of this vehicle
     if (heavy) {
       for ((span, edges) in a.ramps) {
         if (out.any { it.kind == CritKind.RAMP && it.startM < span.endM && it.endM > span.startM }) continue
-        if (span.length < 25) continue
+        if (span.length < 25 || System.currentTimeMillis() > deadline) continue
         val lanes = edges.maxOf { it.lanes }.coerceAtLeast(1)
         val width = lanes * 3.5 + 1.0
         val pts = Geo.slice(line, a.cum, span.startM, span.endM)
@@ -149,7 +151,7 @@ class CriticalityFinder(regions: RegionManager) {
         val hIn = Geo.bearing(a.pointAt(at - 25), a.pointAt(at - 3))
         val hOut = Geo.bearing(a.pointAt(at + 3), a.pointAt(at + 25))
         val turn = Geo.angleDiff(hIn, hOut)
-        if (abs(turn) < 50) continue
+        if (abs(turn) < 50 || System.currentTimeMillis() > deadline) continue
         val wIn = roadWidth(before)
         val wOut = roadWidth(after)
         val kerb = minOf(kerbRadius(before), kerbRadius(after))
@@ -239,7 +241,7 @@ class CriticalityFinder(regions: RegionManager) {
 
   private fun judge(
       r: DbRow, lo: Double, hi: Double, info: JsonObject?, v: VehicleProfile, heavy: Boolean, a: RouteAnalysis,
-      headingAt: (Double) -> Double,
+      m: RouteMatcher, deadline: Long, headingAt: (Double) -> Double,
   ): Criticality? {
     val len = max(hi - lo, 0.0)
     val oneway = info?.get("ow")?.jsonPrimitive?.booleanOrNull ?: false
@@ -287,11 +289,16 @@ class CriticalityFinder(regions: RegionManager) {
       }
       "ford" -> c(CritKind.FORD, Severity.CRITICAL, "Guado", "La strada attraversa un corso d'acqua.")
       "curve" -> {
-        if (!heavy) return null
-        val forward = r.pts.let { pts ->
-          val first = a.pointAt(lo)
-          if (Geo.dist(pts.first(), first) <= Geo.dist(pts.last(), first)) pts else pts.reversed()
-        }
+        if (!heavy || System.currentTimeMillis() > deadline) return null
+        val (dist, at) = m.nearest(GeographicCoordinate(r.lat, r.lon)) ?: return null
+        if (dist > 15) return null
+        // the route must really drive through the curve (not just touch the road where it ends)
+        val onCurve = r.pts.count { q -> m.nearest(q)?.let { (d, along) -> d <= 8 && abs(along - at) <= 45 } == true }
+        if (onCurve < 3) return null
+        // the curve as the route drives it (full detail), a vehicle length and a bit around the
+        // tightest point: the whole mapped road can be kilometres long
+        val forward = Geo.slice(a.route.geometry, a.cum, (at - 70).coerceAtLeast(0.0), (at + 70).coerceAtMost(a.length))
+        if (forward.size < 3) return null
         val plane = LocalPlane(forward.first().lat, forward.first().lng)
         val lanes = info?.get("lanes")?.jsonPrimitive?.doubleOrNull?.toInt()
         val wTag = info?.get("w")?.jsonPrimitive?.doubleOrNull
@@ -300,8 +307,10 @@ class CriticalityFinder(regions: RegionManager) {
         val scene = TurnCheck.curve(forward.map { plane.toXY(it) }, width, v, if (isLink) 0.6 else 0.3) ?: return null
         if (scene.verdict == TurnCheck.Verdict.OK) return null
         val sev = if (scene.verdict == TurnCheck.Verdict.NO && wTag != null) Severity.CRITICAL else Severity.WARN
-        if (isLink) c(CritKind.RAMP, sev, "Svincolo con curva stretta", rampText(scene, v), scene, wTag == null)
-        else c(CritKind.CURVE, sev, "Tornante / curva stretta", rampText(scene, v), scene, wTag == null)
+        val here = a.pointAt(at)
+        (if (isLink) c(CritKind.RAMP, sev, "Svincolo con curva stretta", rampText(scene, v), scene, wTag == null)
+        else c(CritKind.CURVE, sev, "Tornante / curva stretta", rampText(scene, v), scene, wTag == null))
+            .copy(startM = (at - 30).coerceAtLeast(0.0), endM = at + 30, lat = here.lat, lon = here.lng, headingDeg = headingAt(at))
       }
       else -> null
     }

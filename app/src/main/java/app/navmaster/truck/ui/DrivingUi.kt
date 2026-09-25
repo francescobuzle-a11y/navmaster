@@ -126,7 +126,10 @@ fun CritBanner(c: Criticality, distanceM: Double, modifier: Modifier = Modifier,
 /** Places ahead on the route (the categories chosen by the driver). */
 @Composable
 fun PoiRail(pois: List<RoutePoi>, traveledM: Double, modifier: Modifier = Modifier, onPoi: (RoutePoi) -> Unit) {
-  val ahead = pois.filter { it.alongM > traveledM + 50 }.take(4)
+  // the nearest of each kind ahead (a parking, a fuel station, a service area...) rather than four
+  // restaurants in the same street
+  val ahead = pois.filter { it.alongM > traveledM + 50 && it.alongM < traveledM + 80_000 }
+      .groupBy { it.poi.cat }.values.map { it.first() }.sortedBy { it.alongM }.take(4)
   if (ahead.isEmpty()) return
   Column(modifier.widthIn(max = 330.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
     for (p in ahead) PoiRow(p, traveledM) { onPoi(p) }
