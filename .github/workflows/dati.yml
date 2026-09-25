@@ -152,6 +152,12 @@ jobs:
         if: matrix.part == 'dati'
         run: |
           mkdir -p v && mv region.osm.pbf v/
+          # the graph only needs what a lorry, a bus or a camper can drive on (a much smaller download)
+          osmium tags-filter v/region.osm.pbf w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway \
+            w/route=ferry r/type=restriction r/route=road,ferry -o v/all.osm.pbf --overwrite
+          osmium tags-filter -i v/all.osm.pbf w/service=driveway,drive-through,emergency_access w/tracktype=grade3,grade4,grade5 \
+            -o v/roads.osm.pbf --overwrite
+          rm v/all.osm.pbf; ls -la v
           docker pull -q "$VALHALLA_IMAGE"
           docker run --rm -v "$PWD/v:/data" "$VALHALLA_IMAGE" bash -c "
             set -e
@@ -160,7 +166,7 @@ jobs:
               --mjolnir-timezone /data/tz.sqlite --mjolnir-admin /data/admins.sqlite > valhalla.json
             valhalla_build_timezones > /data/tz.sqlite || echo 'timezones not available, continuing'
             valhalla_build_admins -c valhalla.json /data/region.osm.pbf
-            valhalla_build_tiles -c valhalla.json /data/region.osm.pbf
+            valhalla_build_tiles -c valhalla.json /data/roads.osm.pbf
             valhalla_build_extract -c valhalla.json -v --overwrite
           "
           sudo mv v/valhalla_tiles.tar out/percorsi.tar
