@@ -1,16 +1,16 @@
 package app.navmaster.truck.limits
 
-import android.database.sqlite.SQLiteDatabase
 import android.util.Log
+import app.navmaster.truck.data.RegionDbs
 import app.navmaster.truck.data.RegionManager
+import app.navmaster.truck.data.RouteMatcher
+import app.navmaster.truck.vehicle.AdrTunnel
 import app.navmaster.truck.vehicle.VehicleProfile
 import app.navmaster.truck.vehicle.VehicleType
-import java.io.File
+import java.time.DayOfWeek
+import java.time.LocalDateTime
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.floor
-import kotlin.math.hypot
-import uniffi.ferrostar.GeographicCoordinate
 
 /** A limit found on the route, with where it is along the route and whether this vehicle passes. */
 data class RouteLimit(
@@ -37,6 +37,7 @@ data class RouteLimit(
           "bus" -> "Divieto autobus"
           "motorhome" -> "Divieto camper"
           "hazmat" -> "Divieto merci pericolose"
+          "adr_tunnel" -> "Galleria ADR cat. ${raw ?: ""}"
           else -> "Divieto a orario"
         }
 
@@ -46,6 +47,7 @@ data class RouteLimit(
         when (kind) {
           "maxheight", "maxwidth", "maxlength" -> fmt(value) + "m"
           "maxweight", "maxaxleload" -> fmt(value) + "t"
+          "adr_tunnel" -> raw
           else -> null
         }
 
@@ -54,55 +56,21 @@ data class RouteLimit(
 }
 
 /**
- * Reads limiti.sqlite (built from OSM by data/build_limits.py) and finds every limit lying on a
- * route. The routing engine already avoids what the vehicle cannot pass; this is what lets the
- * driver see and hear about it in advance, and what catches data the engine cannot use.
+ * Reads limiti.sqlite of every installed country (built from OSM by data/build_limits.py) and finds
+ * every limit lying on a route. The routing engine already avoids what the vehicle cannot pass;
+ * this is what lets the driver see and hear about it in advance, and what catches data the engine
+ * cannot use (ADR tunnel categories, restrictions valid only at some hours).
  */
-class LimitsIndex(private val regions: RegionManager) {
-  private var db: SQLiteDatabase? = null
-  private var dbPath: String? = null
+class LimitsIndex(regions: RegionManager) {
+  private val dbs = RegionDbs(regions) { it.limits }
 
-  @Synchronized
-  private fun open(): SQLiteDatabase? {
-    val file: File = regions.active()?.limits ?: return null
-    if (!file.exists()) return null
-    if (file.absolutePath != dbPath) {
-      db?.close()
-      db = SQLiteDatabase.openDatabase(file.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-      dbPath = file.absolutePath
-    }
-    return db
-  }
-
-  fun scan(route: List<GeographicCoordinate>, vehicle: VehicleProfile, weightT: Double): List<RouteLimit> {
-    val db = open() ?: return emptyList()
-    if (route.size < 2) return emptyList()
+  fun scan(m: RouteMatcher, vehicle: VehicleProfile, weightT: Double, departure: LocalDateTime = LocalDateTime.now(),
+           avgSpeedMs: Double = 16.0): List<RouteLimit> {
+    if (m.route.size < 2) return emptyList()
     val started = System.currentTimeMillis()
-
-    // cumulative distance of every route vertex, and the route segments falling in each cell
-    val cum = DoubleArray(route.size)
-    for (i in 1 until route.size) cum[i] = cum[i - 1] + dist(route[i - 1], route[i])
-    val segsByCell = HashMap<Long, MutableList<Int>>()
-    for (i in 0 until route.size - 1) {
-      val a = route[i]
-      val b = route[i + 1]
-      val steps = (dist(a, b) / 60.0).toInt() + 1
-      for (s in 0..steps) {
-        val t = s.toDouble() / steps
-        val lat = a.lat + (b.lat - a.lat) * t
-        val lon = a.lng + (b.lng - a.lng) * t
-        for (dy in -1..1) for (dx in -1..1) {
-          segsByCell.getOrPut(cell(lat + dy * CELL, lon + dx * CELL)) { mutableListOf() }.let {
-            if (it.isEmpty() || it.last() != i) it += i
-          }
-        }
-      }
-    }
-
-    // candidate limits from the cells the route crosses
-    val found = HashMap<Long, RouteLimit>()
-    segsByCell.keys.chunked(400).forEach { chunk ->
-      val inList = chunk.joinToString(",")
+    val found = HashMap<String, RouteLimit>()
+    dbs.perCells(m.cells) { db, inList ->
+      val out = mutableListOf<RouteLimit>()
       db.rawQuery(
               "SELECT DISTINCT l.id, l.kind, l.value, l.raw, l.cond, l.name, l.pts FROM cells c " +
                   "JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList)",
@@ -110,45 +78,37 @@ class LimitsIndex(private val regions: RegionManager) {
           )
           .use { c ->
             while (c.moveToNext()) {
-              val id = c.getLong(0)
-              if (found.containsKey(id)) continue
-              val pts = parsePts(c.getString(6))
-              val hit = matchOnRoute(pts, route, cum, segsByCell) ?: continue
+              val pts = RouteMatcher.parsePts(c.getString(6))
+              val (lo, _) = m.span(pts, 9.0) ?: continue
+              val p = pts.minByOrNull { pt -> m.nearest(pt)?.first ?: 1e9 } ?: continue
               val kind = c.getString(1)
               val value = c.getDouble(2)
-              found[id] =
-                  RouteLimit(
-                      kind = kind,
-                      value = value,
-                      raw = c.getString(3),
-                      name = c.getString(5),
-                      conditional = c.getString(4),
-                      alongM = hit.first,
-                      lat = hit.second.lat,
-                      lon = hit.second.lng,
-                      blocking = blocks(kind, value, vehicle, weightT),
-                  )
+              val cond = c.getString(4)
+              val at = departure.plusSeconds((lo / avgSpeedMs).toLong())
+              out += RouteLimit(kind, value, c.getString(3), c.getString(5), cond, lo, p.lat, p.lng,
+                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)))
             }
           }
-    }
-    // the same bridge is often mapped on both carriageways: keep one per kind every 60 m
+      out
+    }.forEach { l -> found.putIfAbsent("${l.kind}:${(l.alongM / 30).toLong()}", l) }
     val out = mutableListOf<RouteLimit>()
     for (l in found.values.sortedBy { it.alongM }) {
       if (out.any { it.kind == l.kind && abs(it.alongM - l.alongM) < 60 }) continue
       if (!relevant(l, vehicle)) continue
       out += l
     }
-    Log.i("NavMasterLimits", "scan: ${route.size} pts, ${segsByCell.size} cells, ${out.size} limits " +
+    Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
         "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms")
     return out
   }
 
   private fun relevant(l: RouteLimit, v: VehicleProfile): Boolean =
       when (l.kind) {
-        "hgv" -> v.type == VehicleType.CAMION
+        "hgv" -> v.isHgv
         "bus" -> v.type == VehicleType.AUTOBUS
         "motorhome" -> v.type == VehicleType.CAMPER
         "hazmat" -> v.hazmat
+        "adr_tunnel" -> v.adr != AdrTunnel.NONE
         else -> true
       }
 
@@ -159,76 +119,72 @@ class LimitsIndex(private val regions: RegionManager) {
         "maxlength" -> v.lengthM > value
         "maxweight" -> weightT > value
         "maxaxleload" -> v.axleLoadT > value
-        "hgv" -> v.type == VehicleType.CAMION
+        "hgv" -> v.isHgv
         "bus" -> v.type == VehicleType.AUTOBUS
         "motorhome" -> v.type == VehicleType.CAMPER
         "hazmat" -> v.hazmat
+        // a tunnel of category X is closed to loads with tunnel code X or stricter (B < C < D < E)
+        "adr_tunnel" -> v.adr != AdrTunnel.NONE && adrRank(v.adr) <= value.toInt()
         else -> false
       }
 
-  /**
-   * Distance along the route of the first point of a limit that lies on it. A way counts when two of
-   * its points (or its only point) are within a few metres of the route, so a road merely crossing
-   * or running close to the route is not taken for it.
-   */
-  private fun matchOnRoute(
-      pts: List<GeographicCoordinate>,
-      route: List<GeographicCoordinate>,
-      cum: DoubleArray,
-      segsByCell: Map<Long, List<Int>>,
-  ): Pair<Double, GeographicCoordinate>? {
-    val need = if (pts.size <= 1) 1 else 2
-    var hits = 0
-    var first: Pair<Double, GeographicCoordinate>? = null
-    for (p in pts) {
-      val segs = segsByCell[cell(p.lat, p.lng)] ?: continue
-      var best = Double.MAX_VALUE
-      var bestAlong = 0.0
-      for (i in segs) {
-        val (d, t) = pointToSegment(p, route[i], route[i + 1])
-        if (d < best) {
-          best = d
-          bestAlong = cum[i] + (cum[i + 1] - cum[i]) * t
-        }
-      }
-      if (best <= MATCH_M) {
-        hits++
-        if (first == null || bestAlong < first.first) first = bestAlong to p
-      }
-    }
-    return if (hits >= need) first else null
-  }
-
-  private fun parsePts(s: String): List<GeographicCoordinate> =
-      s.split(';').mapNotNull { pair ->
-        val k = pair.indexOf(',')
-        if (k <= 0) null else GeographicCoordinate(pair.substring(0, k).toDouble(), pair.substring(k + 1).toDouble())
+  private fun adrRank(a: AdrTunnel): Int =
+      when (a) {
+        AdrTunnel.B -> 2
+        AdrTunnel.C -> 3
+        AdrTunnel.D -> 4
+        AdrTunnel.E -> 5
+        AdrTunnel.NONE -> 99
       }
 
   companion object {
-    private const val CELL = 0.01
-    private const val MATCH_M = 9.0
+    private val DAYS = mapOf("Mo" to DayOfWeek.MONDAY, "Tu" to DayOfWeek.TUESDAY, "We" to DayOfWeek.WEDNESDAY,
+        "Th" to DayOfWeek.THURSDAY, "Fr" to DayOfWeek.FRIDAY, "Sa" to DayOfWeek.SATURDAY, "Su" to DayOfWeek.SUNDAY)
 
-    fun cell(lat: Double, lon: Double): Long =
-        floor(lat / CELL).toLong() * 100000L + floor(lon / CELL).toLong() + 50000L
-
-    fun dist(a: GeographicCoordinate, b: GeographicCoordinate): Double {
-      val k = cos(Math.toRadians((a.lat + b.lat) / 2))
-      return hypot((b.lng - a.lng) * 111320.0 * k, (b.lat - a.lat) * 110540.0)
+    /**
+     * Whether a restriction written as "hgv=no @ (Mo-Fr 07:00-19:00)" applies at [at]. Only the
+     * common day/hour forms are understood; anything else counts as always valid (safe side).
+     */
+    fun conditionalActive(cond: String, at: LocalDateTime): Boolean {
+      val m = Regex("@\\s*\\(?([^)]*)\\)?").find(cond) ?: return true
+      val spec = m.groupValues[1].trim()
+      if (spec.isEmpty()) return true
+      for (part in spec.split(';').map { it.trim() }) {
+        var days: Set<DayOfWeek>? = null
+        var rest = part
+        val dm = Regex("^((?:Mo|Tu|We|Th|Fr|Sa|Su)(?:\\s*[-,]\\s*(?:Mo|Tu|We|Th|Fr|Sa|Su))*)\\s*").find(part)
+        if (dm != null) {
+          days = parseDays(dm.groupValues[1])
+          rest = part.substring(dm.range.last + 1).trim()
+        }
+        if (days != null && at.dayOfWeek !in days) continue
+        if (rest.isEmpty()) return true
+        val hm = Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})").findAll(rest).toList()
+        if (hm.isEmpty()) return true
+        val minute = at.hour * 60 + at.minute
+        for (h in hm) {
+          val from = h.groupValues[1].toInt() * 60 + h.groupValues[2].toInt()
+          val to = h.groupValues[3].toInt() * 60 + h.groupValues[4].toInt()
+          if (if (from <= to) minute in from until to else minute >= from || minute < to) return true
+        }
+      }
+      return false
     }
 
-    /** Distance in metres from p to the segment ab, and where along ab (0..1) the closest point is. */
-    fun pointToSegment(p: GeographicCoordinate, a: GeographicCoordinate, b: GeographicCoordinate): Pair<Double, Double> {
-      val k = cos(Math.toRadians(a.lat))
-      val ax = 0.0
-      val ay = 0.0
-      val bx = (b.lng - a.lng) * 111320.0 * k
-      val by = (b.lat - a.lat) * 110540.0
-      val px = (p.lng - a.lng) * 111320.0 * k
-      val py = (p.lat - a.lat) * 110540.0
-      val len2 = bx * bx + by * by
-      val t = if (len2 <= 0.0) 0.0 else (((px - ax) * bx + (py - ay) * by) / len2).coerceIn(0.0, 1.0)
-      return hypot(px - bx * t, py - by * t) to t
+    private fun parseDays(s: String): Set<DayOfWeek> {
+      val out = mutableSetOf<DayOfWeek>()
+      for (piece in s.split(',')) {
+        val r = piece.split('-').map { it.trim() }
+        val a = DAYS[r[0]] ?: continue
+        val b = if (r.size > 1) DAYS[r[1]] ?: a else a
+        var d = a
+        while (true) {
+          out += d
+          if (d == b) break
+          d = d.plus(1)
+        }
+      }
+      return out
     }
   }
 }

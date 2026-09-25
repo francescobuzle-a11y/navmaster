@@ -31,7 +31,8 @@ class ProfileStore(context: Context) {
 
   private fun load(): Garage =
       try {
-        if (file.exists()) json.decodeFromString(Garage.serializer(), file.readText()) else Garage()
+        if (file.exists()) json.decodeFromString(Garage.serializer(), file.readText()).takeIf { it.profiles.isNotEmpty() } ?: Garage()
+        else Garage()
       } catch (e: Exception) {
         Garage()
       }
@@ -47,7 +48,14 @@ class ProfileStore(context: Context) {
   fun setLoad(loadT: Double) = update { it.copy(loadT = loadT.coerceIn(0.0, 60.0)) }
 
   fun save(profile: VehicleProfile) = update { g ->
-    val others = g.profiles.filterNot { it.id == profile.id }
-    g.copy(profiles = others + profile)
+    val i = g.profiles.indexOfFirst { it.id == profile.id }
+    g.copy(profiles = if (i < 0) g.profiles + profile else g.profiles.toMutableList().also { it[i] = profile })
   }
+
+  fun delete(id: String) = update { g ->
+    val left = g.profiles.filterNot { it.id == id }.ifEmpty { VehicleProfile.defaults() }
+    g.copy(profiles = left, activeId = if (g.activeId == id) left.first().id else g.activeId)
+  }
+
+  fun newId(): String = "v" + System.currentTimeMillis().toString(36)
 }

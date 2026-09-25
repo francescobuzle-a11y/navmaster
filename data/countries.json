@@ -1,0 +1,242 @@
+[
+ {
+  "id": "albania",
+  "iso": "AL",
+  "name": "Albania"
+ },
+ {
+  "id": "andorra",
+  "iso": "AD",
+  "name": "Andorra"
+ },
+ {
+  "id": "austria",
+  "iso": "AT",
+  "name": "Austria"
+ },
+ {
+  "id": "belarus",
+  "iso": "BY",
+  "name": "Bielorussia"
+ },
+ {
+  "id": "belgium",
+  "iso": "BE",
+  "name": "Belgio"
+ },
+ {
+  "id": "bosnia-herzegovina",
+  "iso": "BA",
+  "name": "Bosnia ed Erzegovina"
+ },
+ {
+  "id": "bulgaria",
+  "iso": "BG",
+  "name": "Bulgaria"
+ },
+ {
+  "id": "croatia",
+  "iso": "HR",
+  "name": "Croazia"
+ },
+ {
+  "id": "cyprus",
+  "iso": "CY",
+  "name": "Cipro"
+ },
+ {
+  "id": "czech-republic",
+  "iso": "CZ",
+  "name": "Repubblica Ceca"
+ },
+ {
+  "id": "denmark",
+  "iso": "DK",
+  "name": "Danimarca"
+ },
+ {
+  "id": "estonia",
+  "iso": "EE",
+  "name": "Estonia"
+ },
+ {
+  "id": "faroe-islands",
+  "iso": "FO",
+  "name": "Isole Fær Øer"
+ },
+ {
+  "id": "finland",
+  "iso": "FI",
+  "name": "Finlandia"
+ },
+ {
+  "id": "france",
+  "iso": "FR",
+  "name": "Francia"
+ },
+ {
+  "id": "georgia",
+  "iso": "GE",
+  "name": "Georgia"
+ },
+ {
+  "id": "germany",
+  "iso": "DE",
+  "name": "Germania"
+ },
+ {
+  "id": "great-britain",
+  "iso": "GB",
+  "name": "Gran Bretagna"
+ },
+ {
+  "id": "greece",
+  "iso": "GR",
+  "name": "Grecia"
+ },
+ {
+  "id": "guernsey-jersey",
+  "iso": "GG",
+  "name": "Guernsey e Jersey"
+ },
+ {
+  "id": "hungary",
+  "iso": "HU",
+  "name": "Ungheria"
+ },
+ {
+  "id": "iceland",
+  "iso": "IS",
+  "name": "Islanda"
+ },
+ {
+  "id": "ireland-and-northern-ireland",
+  "iso": "IE",
+  "name": "Irlanda e Irlanda del Nord"
+ },
+ {
+  "id": "isle-of-man",
+  "iso": "IM",
+  "name": "Isola di Man"
+ },
+ {
+  "id": "italy",
+  "iso": "IT",
+  "name": "Italia"
+ },
+ {
+  "id": "kosovo",
+  "iso": "XK",
+  "name": "Kosovo"
+ },
+ {
+  "id": "latvia",
+  "iso": "LV",
+  "name": "Lettonia"
+ },
+ {
+  "id": "liechtenstein",
+  "iso": "LI",
+  "name": "Liechtenstein"
+ },
+ {
+  "id": "lithuania",
+  "iso": "LT",
+  "name": "Lituania"
+ },
+ {
+  "id": "luxembourg",
+  "iso": "LU",
+  "name": "Lussemburgo"
+ },
+ {
+  "id": "macedonia",
+  "iso": "MK",
+  "name": "Macedonia del Nord"
+ },
+ {
+  "id": "malta",
+  "iso": "MT",
+  "name": "Malta"
+ },
+ {
+  "id": "moldova",
+  "iso": "MD",
+  "name": "Moldavia"
+ },
+ {
+  "id": "monaco",
+  "iso": "MC",
+  "name": "Monaco"
+ },
+ {
+  "id": "montenegro",
+  "iso": "ME",
+  "name": "Montenegro"
+ },
+ {
+  "id": "netherlands",
+  "iso": "NL",
+  "name": "Paesi Bassi"
+ },
+ {
+  "id": "norway",
+  "iso": "NO",
+  "name": "Norvegia"
+ },
+ {
+  "id": "poland",
+  "iso": "PL",
+  "name": "Polonia"
+ },
+ {
+  "id": "portugal",
+  "iso": "PT",
+  "name": "Portogallo"
+ },
+ {
+  "id": "romania",
+  "iso": "RO",
+  "name": "Romania"
+ },
+ {
+  "id": "serbia",
+  "iso": "RS",
+  "name": "Serbia"
+ },
+ {
+  "id": "slovakia",
+  "iso": "SK",
+  "name": "Slovacchia"
+ },
+ {
+  "id": "slovenia",
+  "iso": "SI",
+  "name": "Slovenia"
+ },
+ {
+  "id": "spain",
+  "iso": "ES",
+  "name": "Spagna"
+ },
+ {
+  "id": "sweden",
+  "iso": "SE",
+  "name": "Svezia"
+ },
+ {
+  "id": "switzerland",
+  "iso": "CH",
+  "name": "Svizzera"
+ },
+ {
+  "id": "turkey",
+  "iso": "TR",
+  "name": "Turchia"
+ },
+ {
+  "id": "ukraine",
+  "iso": "UA",
+  "name": "Ucraina"
+ }
+]

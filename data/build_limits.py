@@ -139,6 +139,13 @@ def limits_of(tags):
         found.append(("hgv", 0.0, hgv))
     if tags.get("hazmat") == "no" or tags.get("hazmat:water") == "no":
         found.append(("hazmat", 0.0, tags.get("hazmat") or tags.get("hazmat:water")))
+    cat = (tags.get("hazmat:adr_tunnel_cat") or tags.get("hazmat:tunnel_cat") or tags.get("tunnel:adr_category") or "").strip().upper()
+    if not cat:
+        for letter in "BCDE":
+            if tags.get("hazmat:" + letter) == "no":
+                cat = letter
+    if cat[:1] in ("B", "C", "D", "E"):
+        found.append(("adr_tunnel", float("BCDE".index(cat[:1]) + 2), cat[:1]))
     if tags.get("motorhome") == "no":
         found.append(("motorhome", 0.0, "no"))
     if tags.get("bus") == "no" or tags.get("psv") == "no":

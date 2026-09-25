@@ -1,4 +1,4 @@
-package app.navmaster.truck.ui
+package app.navmaster.truck.search
 
 import android.util.Log
 import java.net.URLEncoder
@@ -16,7 +16,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import uniffi.ferrostar.GeographicCoordinate
 
-data class Place(val title: String, val detail: String, val coordinate: GeographicCoordinate)
 
 /**
  * Address search. Coordinates typed by the driver ("44.05, 12.56") work offline; everything else
@@ -43,10 +42,10 @@ object Geocoder {
     return if (lat in -90.0..90.0 && lon in -180.0..180.0) GeographicCoordinate(lat, lon) else null
   }
 
-  suspend fun search(query: String, near: GeographicCoordinate?): List<Place> =
+  suspend fun search(query: String, near: GeographicCoordinate?): List<Found> =
       withContext(Dispatchers.IO) {
         parseCoordinates(query)?.let {
-          return@withContext listOf(Place("Coordinate", String.format("%.5f, %.5f", it.lat, it.lng), it))
+          return@withContext listOf(Found("Coordinate", String.format(java.util.Locale.ITALY, "%.5f, %.5f", it.lat, it.lng), it, "📌"))
         }
         val fixed = fixQuery(query)
         val first = photon(fixed, near)
@@ -55,10 +54,10 @@ object Geocoder {
         else photon(fixed.substringBeforeLast(' '), near)
       }
 
-  private fun photon(q: String, near: GeographicCoordinate?): List<Place> {
+  private fun photon(q: String, near: GeographicCoordinate?): List<Found> {
     if (q.isBlank()) return emptyList()
     val bias = near?.let { "&lat=${it.lat}&lon=${it.lng}" } ?: ""
-    val url = "https://photon.komoot.io/api/?q=${URLEncoder.encode(q, "UTF-8")}&lang=it&limit=8$bias"
+    val url = "https://photon.komoot.io/api/?q=${URLEncoder.encode(q, "UTF-8")}&lang=default&limit=8$bias"
     return try {
       client.newCall(Request.Builder().url(url).header("User-Agent", "NavMaster/0.1").build()).execute().use { resp ->
         if (!resp.isSuccessful) return emptyList()
@@ -69,7 +68,7 @@ object Geocoder {
           val coords = obj["geometry"]?.jsonObject?.get("coordinates")?.jsonArray ?: return@mapNotNull null
           val lon = coords[0].jsonPrimitive.doubleOrNull ?: return@mapNotNull null
           val lat = coords[1].jsonPrimitive.doubleOrNull ?: return@mapNotNull null
-          Place(title(props), detail(props), GeographicCoordinate(lat, lon))
+          Found(title(props), detail(props), GeographicCoordinate(lat, lon), "🌐", offline = false)
         } ?: emptyList()
       }
     } catch (e: Exception) {

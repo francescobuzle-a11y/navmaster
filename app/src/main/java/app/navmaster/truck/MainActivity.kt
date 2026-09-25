@@ -8,10 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import app.navmaster.truck.nav.NavViewModel
 import app.navmaster.truck.ui.MainScreen
+import app.navmaster.truck.ui.NmTheme
 import com.stadiamaps.ferrostar.core.AndroidTtsStatusListener
 import java.util.Locale
 import uniffi.ferrostar.GeographicCoordinate
@@ -27,7 +26,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     createFerrostarLogger()
     enableEdgeToEdge()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false
-    setContent { MaterialTheme(colorScheme = darkColorScheme(primary = androidx.compose.ui.graphics.Color(0xFF2EB85C), onPrimary = androidx.compose.ui.graphics.Color.White, secondary = androidx.compose.ui.graphics.Color(0xFF2EB85C))) { MainScreen(vm) } }
+    setContent { NmTheme { MainScreen(vm, intent?.getStringExtra("nm_sheet")) } }
     handleTestIntent()
   }
 
@@ -55,7 +54,10 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     val c = GeographicCoordinate(parts[0].trim().toDouble(), parts[1].trim().toDouble())
     intent?.getStringExtra("nm_profile")?.let { AppGraph.profiles.select(it) }
     intent?.getStringExtra("nm_load")?.toDoubleOrNull()?.let { AppGraph.profiles.setLoad(it) }
-    vm.autoRun(c, intent?.getStringExtra("nm_label") ?: "Prova", intent?.getBooleanExtra("nm_sim", true) ?: true)
+    val label = intent?.getStringExtra("nm_label") ?: "Prova"
+    // plan only: the route choice with its difficulties stays on screen
+    if (intent?.getBooleanExtra("nm_plan", false) == true) vm.autoPlan(c, label)
+    else vm.autoRun(c, label, intent?.getBooleanExtra("nm_sim", true) ?: true)
   }
 
   override fun onTtsInitialized(tts: TextToSpeech?, status: Int) {

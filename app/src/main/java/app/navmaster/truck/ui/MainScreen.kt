@@ -4,25 +4,41 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
-import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.LocalShipping
+import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,16 +49,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import app.navmaster.truck.AppGraph
 import app.navmaster.truck.limits.RouteLimit
 import app.navmaster.truck.nav.NavViewModel
+import app.navmaster.truck.nav.PlanState
+import app.navmaster.truck.poi.RoutePoi
+import app.navmaster.truck.routing.Criticality
+import app.navmaster.truck.routing.Severity
 import app.navmaster.truck.vehicle.VehicleProfile
 import com.stadiamaps.ferrostar.composeui.runtime.KeepScreenOnDisposableEffect
 import com.stadiamaps.ferrostar.core.measurement.MeasurementSpeedUnit
@@ -65,8 +88,10 @@ import org.maplibre.compose.style.BaseStyle
 import org.maplibre.compose.util.MaplibreComposable
 import uniffi.ferrostar.GeographicCoordinate
 
+private enum class Sheet { NONE, SEARCH, VEHICLE, SETTINGS, REGIONS }
+
 @Composable
-fun MainScreen(vm: NavViewModel) {
+fun MainScreen(vm: NavViewModel, initialSheet: String? = null) {
   KeepScreenOnDisposableEffect()
   val context = LocalContext.current
   val configuration = LocalConfiguration.current
@@ -77,11 +102,10 @@ fun MainScreen(vm: NavViewModel) {
           arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
               Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.FOREGROUND_SERVICE_LOCATION)
       else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-          arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
-              Manifest.permission.POST_NOTIFICATIONS)
+          arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.POST_NOTIFICATIONS)
       else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
   val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-    vm.setLocationPermission(result[Manifest.permission.ACCESS_FINE_LOCATION] == true)
+    vm.setLocationPermission(result[Manifest.permission.ACCESS_FINE_LOCATION] == true || result[Manifest.permission.ACCESS_COARSE_LOCATION] == true)
   }
   LaunchedEffect(Unit) {
     if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
@@ -89,25 +113,40 @@ fun MainScreen(vm: NavViewModel) {
     } else {
       launcher.launch(permissions)
     }
+    AppGraph.catalog.refresh()
   }
 
   val ui by vm.navigationUiState.collectAsState()
-  val scene by vm.scene.collectAsState()
+  val plan by vm.plan.collectAsState()
+  val nav by vm.nav.collectAsState()
   val garage by AppGraph.profiles.garage.collectAsState()
   val installed by AppGraph.regions.installed.collectAsState()
-  val download by AppGraph.regions.state.collectAsState()
+  val settings by AppGraph.settings.settings.collectAsState()
+  val location by vm.location.collectAsState()
   val navigating = ui.isNavigating()
+  val here = rememberCurrentCountry(location?.coordinates?.lat, location?.coordinates?.lng)
 
-  // automatic night mode, checked every minute
-  var night by remember { mutableStateOf(MapStyles.isNight()) }
-  LaunchedEffect(Unit) {
+  var night by remember { mutableStateOf(MapStyles.isNight(settings.nightMode)) }
+  LaunchedEffect(settings.nightMode) {
     while (true) {
+      night = MapStyles.isNight(settings.nightMode)
       delay(60_000)
-      night = MapStyles.isNight()
     }
   }
-  val region = installed.let { list -> list.firstOrNull { it.id == "italia" } ?: list.firstOrNull() }
-  val styleUri = remember(region?.dir?.absolutePath, night) { MapStyles.styleUri(context, region, night) }
+  var satellite by remember { mutableStateOf(false) }
+  var sheet by remember {
+    mutableStateOf(when (initialSheet) {
+      "vehicle" -> Sheet.VEHICLE
+      "settings" -> Sheet.SETTINGS
+      "regions" -> Sheet.REGIONS
+      "search" -> Sheet.SEARCH
+      else -> Sheet.NONE
+    })
+  }
+  var openCrit by remember { mutableStateOf<Criticality?>(null) }
+  var openPoi by remember { mutableStateOf<RoutePoi?>(null) }
+  var countryHintClosed by remember { mutableStateOf(false) }
+  val styleUri = remember(installed, night, satellite) { MapStyles.styleUri(context, installed, night, satellite) }
 
   // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible
   val h = configuration.screenHeightDp
@@ -116,7 +155,7 @@ fun MainScreen(vm: NavViewModel) {
       NavigationCameraOptions(
           browsingZoom = 15.0,
           navigationZoom = 16.6,
-          navigationTilt = 55.0,
+          navigationTilt = settings.tiltDeg.toDouble(),
           browsingPadding = PaddingValues(0.dp),
           navigationPadding =
               if (landscape) PaddingValues(top = (h * 0.30f).dp, end = (w * 0.42f).dp)
@@ -124,18 +163,10 @@ fun MainScreen(vm: NavViewModel) {
       )
   val mapState = rememberNavigationMapState()
 
-  var showVehicle by remember { mutableStateOf(false) }
-  var showRegions by remember { mutableStateOf(false) }
-
-  // limits follow the route after a recalculation
-  val geometry = ui.routeGeometry
-  LaunchedEffect(geometry?.size, geometry?.lastOrNull()) {
-    if (navigating && geometry != null) vm.refreshLimitsFor(geometry)
-  }
-
-  val traveled = if (navigating) scene.activeRouteLength - (ui.progress?.distanceRemaining ?: 0.0) else 0.0
-  val nextLimit = scene.activeLimits.firstOrNull { it.alongM - traveled > -15 }
+  val traveled = if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0) else 0.0
+  val nextLimit = nav.limits.firstOrNull { it.alongM - traveled > -15 }
   val nextLimitDist = nextLimit?.let { it.alongM - traveled }
+  val nextCrit = nav.criticalities.firstOrNull { it.severity != Severity.INFO && it.endM - traveled > -10 && it.startM - traveled < 3000 }
 
   // spoken warning for a limit the vehicle cannot pass, at 3 km and at 800 m
   val spoken = remember { mutableSetOf<String>() }
@@ -147,14 +178,13 @@ fun MainScreen(vm: NavViewModel) {
       val key = "${l.lat},${l.lon},$at"
       if (d <= at && d > at - 400 && key !in spoken) {
         spoken += key
-        AppGraph.tts.tts?.speak(
-            "Attenzione: tra ${Fmt.distanceText(d).replace("km", "chilometri").replace(" m", " metri")}, ${l.label} ${l.signValue ?: ""}. Il mezzo non passa, verificare la segnaletica.",
-            TextToSpeech.QUEUE_ADD, null, "limit-$key")
+        vm.say("Attenzione: tra ${Fmt.distanceText(d).replace("km", "chilometri").replace(" m", " metri")}, ${l.label} ${l.signValue ?: ""}. " +
+            "Il mezzo non passa, verificare la segnaletica.")
       }
     }
   }
 
-  Box(Modifier.fillMaxSize().background(Color(0xFF101418))) {
+  Box(Modifier.fillMaxSize().background(Nm.Bg)) {
     NavigationMapView(
         baseStyle = BaseStyle.Uri(styleUri),
         navigationMapState = mapState,
@@ -164,7 +194,7 @@ fun MainScreen(vm: NavViewModel) {
             RouteOverlayBuilder(
                 navigationPath = { state ->
                   state.routeGeometry?.let {
-                    BorderedPolyline(points = it, idPrefix = "nm-route", color = NmRoute, lineWidth = 13f, borderWidth = 3f)
+                    BorderedPolyline(points = it, idPrefix = "nm-route", color = Nm.Route, lineWidth = 13f, borderWidth = 3f)
                   }
                 }),
         navigationCameraOptions = cameraOptions,
@@ -176,49 +206,99 @@ fun MainScreen(vm: NavViewModel) {
                 dotStrokeWidth = 4.dp,
             ),
         onMapLongClick = { coordinate, _ ->
-          if (!navigating) vm.selectDestination(coordinate, "Punto sulla mappa")
+          if (!navigating) vm.selectDestination(coordinate, if (plan.addingStop) "Tappa sulla mappa" else "Punto sulla mappa")
           NavigationMapClickResult.Consume
         },
     ) { _ ->
-      scene.planned?.let {
-        BorderedPolyline(points = it.route.geometry, idPrefix = "nm-preview", color = NmRoute, lineWidth = 11f, borderWidth = 3f)
+      if (!navigating) {
+        plan.variants.forEachIndexed { i, v ->
+          if (i != plan.selected) BorderedPolyline(points = v.route.geometry, idPrefix = "nm-alt-$i", color = Color(0xFF8C97A3), lineWidth = 8f, borderWidth = 2f)
+        }
+        plan.current?.let { BorderedPolyline(points = it.route.geometry, idPrefix = "nm-preview", color = Nm.Route, lineWidth = 11f, borderWidth = 3f) }
       }
-      LimitMarkers(if (navigating) scene.activeLimits else scene.planned?.limits ?: emptyList())
-      scene.destination?.let { DestinationPin(it) }
+      CritMarkers(if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList())
+      LimitMarkers(if (navigating) nav.limits else plan.current?.limits ?: emptyList())
+      StopMarkers(plan.stops.map { it.coordinate })
     }
 
     if (navigating) {
-      NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, landscape, mapState)
+      NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, traveled, nav.pois, landscape, mapState,
+          onCrit = { openCrit = it }, onPoi = { openPoi = it })
+      if (nav.recalculating) {
+        Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(28.dp))
+            Spacer(Modifier.width(12.dp))
+            Text("Ricalcolo del percorso…", color = Color.White, fontSize = 18.sp)
+          }
+        }
+      }
+      nav.prompt?.let { p ->
+        PromptCard(p, traveled, onRamp = vm::answerRamp, onToll = vm::answerToll,
+            onBreakGo = { pk -> vm.dismissPrompt(); vm.addStopDuringNav(pk.poi.coordinate, pk.poi.title.ifBlank { "Parcheggio" }) },
+            onDismiss = vm::dismissPrompt)
+      }
     } else {
-      BrowsingOverlay(vm, scene, garage, landscape, onVehicle = { showVehicle = true }, onRegions = { showRegions = true })
-    }
-
-    if (installed.isEmpty() && !showRegions) {
-      Box(Modifier.fillMaxSize().background(Color(0xE6101418)).statusBarsPadding(), contentAlignment = Alignment.Center) {
-        WelcomeCard {
-          RegionsCard(installed, download, AppGraph.regions::download, AppGraph.regions::delete, null, Modifier.widthIn(max = 520.dp).padding(16.dp))
+      BrowsingOverlay(
+          vm, plan, garage.active.name, garage.active.type.icon, landscape,
+          onSearch = { sheet = Sheet.SEARCH },
+          onVehicle = { sheet = Sheet.VEHICLE },
+          onSettings = { sheet = Sheet.SETTINGS },
+          onRegions = { sheet = Sheet.REGIONS },
+          onSatellite = { satellite = !satellite },
+          satellite = satellite,
+          onRecenter = { mapState.recenter(true) },
+          onCrit = { openCrit = it },
+      )
+      // in a country whose map is not on the tablet: offer it
+      if (here != null && installed.isNotEmpty() && installed.none { it.id == here.id } && here.available && !countryHintClosed) {
+        Row(
+            Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 92.dp).shadow(8.dp, RoundedCornerShape(20.dp))
+                .clip(RoundedCornerShape(20.dp)).background(Nm.PanelSolid).border(1.dp, Nm.Accent, RoundedCornerShape(20.dp))
+                .clickable { sheet = Sheet.REGIONS }.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(here.flag, fontSize = 24.sp)
+          Spacer(Modifier.width(10.dp))
+          Column {
+            Text("Sei in ${here.name}", color = Nm.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Caption("Tocca per scaricarne la mappa", size = 13)
+          }
+          Spacer(Modifier.width(10.dp))
+          Icon(Icons.Rounded.Close, "Chiudi", tint = Nm.Muted, modifier = Modifier.size(36.dp).clip(CircleShape).clickable { countryHintClosed = true }.padding(6.dp))
         }
       }
     }
-    if (showRegions) {
-      Box(Modifier.fillMaxSize().background(Color(0x99000000)).statusBarsPadding(), contentAlignment = Alignment.Center) {
-        RegionsCard(installed, download, AppGraph.regions::download, { AppGraph.regions.delete(it); AppGraph.engine.reset() },
-            { showRegions = false }, Modifier.widthIn(max = 520.dp).padding(16.dp))
-      }
+
+    if (installed.isEmpty() && sheet != Sheet.REGIONS) {
+      WelcomeScreen(here) { sheet = Sheet.REGIONS }
     }
-    if (showVehicle) {
-      Box(Modifier.fillMaxSize().background(Color(0x99000000)).statusBarsPadding(), contentAlignment = Alignment.Center) {
-        VehicleSheet(
-            garage,
-            onSelect = AppGraph.profiles::select,
-            onLoad = AppGraph.profiles::setLoad,
-            onSave = AppGraph.profiles::save,
-            onClose = {
-              showVehicle = false
-              if (scene.destination != null) vm.planRoute()
-            },
-        )
-      }
+
+    when (sheet) {
+      Sheet.SEARCH -> SearchScreen(location?.coordinates, onPick = { f ->
+        sheet = Sheet.NONE
+        vm.selectDestination(f.coordinate, f.title)
+      }, onClose = { sheet = Sheet.NONE })
+      Sheet.VEHICLE -> VehicleEditor(onClose = {
+        sheet = Sheet.NONE
+        if (plan.stops.isNotEmpty()) vm.planRoutes()
+      })
+      Sheet.SETTINGS -> SettingsScreen(onClose = { sheet = Sheet.NONE; vm.refreshPois() }, onRegions = { sheet = Sheet.REGIONS })
+      Sheet.REGIONS -> RegionsScreen(here, onClose = { sheet = Sheet.NONE })
+      Sheet.NONE -> {}
+    }
+    openCrit?.let { c ->
+      CriticalitySheet(
+          c,
+          (if (navigating) nav.analysis?.route else plan.current?.route)?.geometry,
+          onAvoid = if (!navigating) ({ openCrit = null; vm.avoid(c) }) else null,
+          onAddStop = if (!navigating) ({ openCrit = null; vm.startAddingStop() }) else null,
+          onClose = { openCrit = null },
+      )
+    }
+    openPoi?.let { p ->
+      PoiSheet(p, traveled, onAddStop = { openPoi = null; vm.addStopDuringNav(p.poi.coordinate, p.poi.title.ifBlank { "Tappa" }) },
+          onClose = { openPoi = null })
     }
   }
 }
@@ -226,41 +306,66 @@ fun MainScreen(vm: NavViewModel) {
 @Composable
 private fun BrowsingOverlay(
     vm: NavViewModel,
-    scene: app.navmaster.truck.nav.SceneState,
-    garage: app.navmaster.truck.vehicle.Garage,
+    plan: PlanState,
+    vehicleName: String,
+    vehicleIcon: String,
     landscape: Boolean,
+    onSearch: () -> Unit,
     onVehicle: () -> Unit,
+    onSettings: () -> Unit,
     onRegions: () -> Unit,
+    onSatellite: () -> Unit,
+    satellite: Boolean,
+    onRecenter: () -> Unit,
+    onCrit: (Criticality) -> Unit,
 ) {
-  val location by vm.location.collectAsState()
-  Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(12.dp)) {
-    Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-      SearchPanel(
-          near = location?.coordinates,
-          onPick = { vm.selectDestination(it.coordinate, it.title) },
-          modifier = Modifier.weight(1f).widthIn(max = 560.dp),
-      )
-      RoundButton("🗺") { onRegions() }
-    }
-    Box(Modifier.weight(1f).fillMaxWidth()) {
-      Column(Modifier.align(Alignment.BottomStart).fillMaxWidth(if (landscape) 0.5f else 1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        scene.error?.let {
-          Card { Text(it, color = Color(0xFFFF8A80), fontSize = 16.sp) }
-        }
-        if (scene.planning) {
-          Card { Text("Calcolo del percorso per ${garage.active.name}…", color = Color.White, fontSize = 17.sp) }
-        }
-        scene.planned?.let { p ->
-          PlannedRouteCard(p, scene.destinationLabel, onStart = { vm.start(false) }, onSimulate = { vm.start(true) }, onCancel = { vm.clearDestination() })
-        }
-        if (scene.planned == null && !scene.planning) {
-          VehicleChip(garage, onVehicle)
-          if (scene.destination == null) {
-            Text("Tieni premuto sulla mappa per scegliere la destinazione", color = Color(0xCCFFFFFF), fontSize = 14.sp,
-                modifier = Modifier.background(Color(0x99000000), CircleShape).padding(horizontal = 12.dp, vertical = 6.dp))
-          }
-        }
+  Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(12.dp)) {
+    // search bar
+    Row(
+        Modifier.align(Alignment.TopStart).fillMaxWidth(if (landscape) 0.5f else 1f).heightIn(min = 64.dp).shadow(10.dp, RoundedCornerShape(32.dp))
+            .clip(RoundedCornerShape(32.dp)).background(Nm.Panel).border(1.dp, Nm.Line, RoundedCornerShape(32.dp)).clickable(onClick = onSearch)
+            .padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Icon(Icons.Rounded.Search, null, tint = Nm.Muted, modifier = Modifier.size(28.dp))
+      Spacer(Modifier.width(12.dp))
+      Text("Dove andiamo?", color = Nm.Muted, fontSize = 19.sp, modifier = Modifier.weight(1f))
+      Row(
+          Modifier.clip(RoundedCornerShape(20.dp)).background(Nm.Raised).clickable(onClick = onVehicle).padding(horizontal = 12.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(vehicleIcon, fontSize = 18.sp)
+        Spacer(Modifier.width(6.dp))
+        Text(vehicleName, color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 150.dp))
       }
+    }
+    // map buttons
+    Column(Modifier.align(Alignment.TopEnd), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+      RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
+      RoundAction(Icons.Rounded.LocalShipping, "Mezzo", onClick = onVehicle)
+      RoundAction(Icons.Rounded.Layers, "Satellite", container = if (satellite) Nm.Accent else Nm.Panel, onClick = onSatellite)
+      RoundAction(Icons.Rounded.Public, "Mappe", onClick = onRegions)
+    }
+    RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
+
+    if (plan.stops.isNotEmpty()) {
+      PlanPanel(
+          plan, vehicleName,
+          modifier = Modifier.align(if (landscape) Alignment.BottomStart else Alignment.BottomCenter)
+              .then(if (landscape) Modifier.fillMaxWidth(0.46f).fillMaxHeight(0.84f) else Modifier.fillMaxWidth().heightIn(max = 560.dp)),
+          onSelect = vm::selectVariant,
+          onCrit = onCrit,
+          onUnavoid = vm::unavoid,
+          onAddStop = { if (plan.addingStop) vm.cancelAddingStop() else vm.startAddingStop() },
+          onRemoveStop = vm::removeStop,
+          onStart = { vm.start(false) },
+          onSimulate = { vm.start(true) },
+          onCancel = vm::clearPlan,
+      )
+    } else {
+      Text("Cerca un indirizzo o tieni premuto sulla mappa", color = Color(0xCCFFFFFF), fontSize = 14.sp,
+          modifier = Modifier.align(Alignment.BottomStart).background(Color(0x99000000), CircleShape).padding(horizontal = 14.dp, vertical = 8.dp))
     }
   }
 }
@@ -272,32 +377,38 @@ private fun NavigatingOverlay(
     vehicle: VehicleProfile,
     nextLimit: RouteLimit?,
     nextLimitDist: Double?,
+    nextCrit: Criticality?,
+    traveled: Double,
+    pois: List<RoutePoi>,
     landscape: Boolean,
     mapState: com.stadiamaps.ferrostar.maplibreui.runtime.NavigationMapState,
+    onCrit: (Criticality) -> Unit,
+    onPoi: (RoutePoi) -> Unit,
 ) {
   val simulating by vm.simulating.collectAsState()
   val speedKmh = ui.location?.speed?.value?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
     TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth())
-    if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
-      RestrictionBanner(
-          nextLimit,
-          nextLimitDist,
-          vehicleValue(nextLimit, vehicle),
-          Modifier.padding(top = 8.dp).align(if (landscape) Alignment.Start else Alignment.CenterHorizontally),
-      )
+    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
+        RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
+      } else if (nextCrit != null) {
+        CritBanner(nextCrit, (nextCrit.startM - traveled).coerceAtLeast(0.0)) { onCrit(nextCrit) }
+      }
     }
     Box(Modifier.weight(1f).fillMaxWidth()) {
       SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp))
+      PoiRail(pois, traveled, Modifier.align(if (landscape) Alignment.TopEnd else Alignment.BottomCenter)
+          .padding(top = 8.dp, bottom = 8.dp, end = if (landscape) 0.dp else 76.dp, start = if (landscape) 0.dp else 84.dp), onPoi)
       Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        RoundButton(if (ui.isMuted == true) "🔇" else "🔊") { vm.toggleMute() }
-        RoundButton("◎") { mapState.recenter(true) }
-        RoundButton("✕", danger = true) { vm.stopNavigation() }
+        RoundAction(if (ui.isMuted == true) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, "Voce") { vm.toggleMute() }
+        RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
+        RoundAction(Icons.Rounded.Close, "Termina", container = Nm.Red) { vm.stopNavigation() }
       }
       if (simulating) {
         Text("SIMULAZIONE", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp,
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp).background(NmAmber, CircleShape).padding(horizontal = 10.dp, vertical = 3.dp))
+            modifier = Modifier.align(Alignment.TopStart).padding(top = 6.dp).background(Nm.Amber, CircleShape).padding(horizontal = 10.dp, vertical = 3.dp))
       }
     }
     BottomTripBar(ui.currentStepRoadName, ui.progress?.distanceRemaining, ui.progress?.durationRemaining, Modifier.fillMaxWidth())
@@ -311,35 +422,36 @@ private fun vehicleValue(l: RouteLimit, v: VehicleProfile): String? =
       "maxlength" -> Fmt.metres(v.lengthM)
       "maxaxleload" -> Fmt.tonnes(v.axleLoadT)
       "maxweight" -> Fmt.tonnes(AppGraph.profiles.garage.value.let { v.tripWeightT(it.loadT) })
+      "adr_tunnel" -> "ADR ${v.adr.name}"
       else -> null
     }
 
-@Composable
-private fun RoundButton(label: String, danger: Boolean = false, onClick: () -> Unit) {
-  FilledIconButton(
-      onClick = onClick,
-      modifier = Modifier.size(64.dp),
-      colors = IconButtonDefaults.filledIconButtonColors(containerColor = if (danger) Color(0xFFC62828) else NmPanel),
-  ) { Text(label, fontSize = 24.sp, color = Color.White) }
-}
+private fun points(list: List<Pair<Double, Double>>): String =
+    """{"type":"FeatureCollection","features":[""" +
+        list.joinToString(",") { """{"type":"Feature","geometry":{"type":"Point","coordinates":[${it.second},${it.first}]},"properties":{}}""" } +
+        "]}"
 
 @Composable
 @MaplibreComposable
 private fun LimitMarkers(limits: List<RouteLimit>) {
-  fun fc(list: List<RouteLimit>) =
-      """{"type":"FeatureCollection","features":[""" +
-          list.joinToString(",") { """{"type":"Feature","geometry":{"type":"Point","coordinates":[${it.lon},${it.lat}]},"properties":{}}""" } +
-          "]}"
-  val ok = rememberGeoJsonSource(GeoJsonData.JsonString(fc(limits.filter { !it.blocking })))
-  val bad = rememberGeoJsonSource(GeoJsonData.JsonString(fc(limits.filter { it.blocking })))
-  CircleLayer(id = "nm-limits-ok", source = ok, color = const(NmAmber), radius = const(8.dp), strokeColor = const(Color.White), strokeWidth = const(2.dp))
+  val ok = rememberGeoJsonSource(GeoJsonData.JsonString(points(limits.filter { !it.blocking }.map { it.lat to it.lon })))
+  val bad = rememberGeoJsonSource(GeoJsonData.JsonString(points(limits.filter { it.blocking }.map { it.lat to it.lon })))
+  CircleLayer(id = "nm-limits-ok", source = ok, color = const(NmAmber), radius = const(7.dp), strokeColor = const(Color.White), strokeWidth = const(2.dp))
   CircleLayer(id = "nm-limits-bad", source = bad, color = const(NmRed), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
 
 @Composable
 @MaplibreComposable
-private fun DestinationPin(c: GeographicCoordinate) {
-  val src = rememberGeoJsonSource(
-      GeoJsonData.JsonString("""{"type":"Feature","geometry":{"type":"Point","coordinates":[${c.lng},${c.lat}]},"properties":{}}"""))
-  CircleLayer(id = "nm-dest", source = src, color = const(Color(0xFFD50000)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
+private fun CritMarkers(list: List<Criticality>) {
+  val warn = rememberGeoJsonSource(GeoJsonData.JsonString(points(list.filter { it.severity == Severity.WARN }.map { it.lat to it.lon })))
+  val crit = rememberGeoJsonSource(GeoJsonData.JsonString(points(list.filter { it.severity == Severity.CRITICAL }.map { it.lat to it.lon })))
+  CircleLayer(id = "nm-crit-warn", source = warn, color = const(Nm.Amber), radius = const(9.dp), strokeColor = const(Color(0xFF111111)), strokeWidth = const(3.dp))
+  CircleLayer(id = "nm-crit-bad", source = crit, color = const(Nm.Red), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
+}
+
+@Composable
+@MaplibreComposable
+private fun StopMarkers(stops: List<GeographicCoordinate>) {
+  val src = rememberGeoJsonSource(GeoJsonData.JsonString(points(stops.map { it.lat to it.lng })))
+  CircleLayer(id = "nm-stops", source = src, color = const(Color(0xFFD50000)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
