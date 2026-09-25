@@ -1,5 +1,7 @@
-# Changes arrive as one packed file (inbox/*.b64 = base64 of a .tar.gz of the changed files):
-# this workflow unpacks it into the repository, commits, and starts the builds concerned.
+# Changes arrive as one packed file (inbox/*.b64 = base64 of a .tar.gz, inbox/*.b85 = base85 of a .tar.xz):
+# this workflow unpacks it into the repository, applies the diffs in .patches/, commits, and starts
+# the builds concerned. Optional control files in the bundle: .dati-regions (regions for dati.yml,
+# e.g. "europa"), .run-app (build the app even without app changes).
 name: Scompatta pacchetto
 
 on:
@@ -33,6 +35,13 @@ jobs:
             tar -xf /tmp/bundle.bin -C .   # gzip or xz, recognised by tar
             git rm -q "$f"
           done
+          if [ -d .patches ]; then
+            for p in .patches/*.diff; do echo "patch $p"; git apply --whitespace=nowarn "$p"; done
+            rm -rf .patches
+          fi
+          regions=$(cat .dati-regions 2>/dev/null | tr -d ' \n' || true)
+          runapp=$([ -f .run-app ] && echo 1 || echo 0)
+          rm -f .dati-regions .run-app
           if [ -f .delete-list ]; then
             while read -r p; do [ -n "$p" ] && git rm -rq --ignore-unmatch "$p"; done < .delete-list
             rm -f .delete-list
@@ -44,10 +53,15 @@ jobs:
           git add -A
           changed=$(git diff --cached --name-only)
           echo "$changed"
-          git commit -q -m "$msg" || { echo "nessuna modifica"; exit 0; }
+          git commit -q -m "$msg" || echo "nessuna modifica"
           git push
-          echo "app=$(echo "$changed" | grep -vqE '^(docs/|data/|inbox/|\.github/workflows/dati\.yml|[^/]*\.md$)' && echo 1 || echo 0)" >> $GITHUB_OUTPUT
-          echo "dati=$(echo "$changed" | grep -qE '^(data/|\.github/workflows/dati\.yml)' && echo 1 || echo 0)" >> $GITHUB_OUTPUT
+          app=$(echo "$changed" | grep -vqE '^(docs/|data/|inbox/|\.github/workflows/dati\.yml|[^/]*\.md$)' && echo 1 || echo 0)
+          dati=$(echo "$changed" | grep -qE '^(data/|\.github/workflows/dati\.yml)' && echo 1 || echo 0)
+          [ "$runapp" = 1 ] && app=1
+          [ -n "$regions" ] && dati=1
+          echo "app=$app" >> $GITHUB_OUTPUT
+          echo "dati=$dati" >> $GITHUB_OUTPUT
+          echo "regions=${regions:-romania,italy,test}" >> $GITHUB_OUTPUT
           echo "first=$( [ -f .first-run ] && echo 1 || echo 0)" >> $GITHUB_OUTPUT
       - name: Avvia la build dell'app
         if: steps.u.outputs.app == '1'
@@ -56,4 +70,4 @@ jobs:
       - name: Avvia la preparazione dei dati offline
         if: steps.u.outputs.dati == '1'
         env: {GH_TOKEN: "${{ github.token }}"}
-        run: gh workflow run dati.yml --ref main -f region=romania,italy,test
+        run: gh workflow run dati.yml --ref main -f region=${{ steps.u.outputs.regions }}
