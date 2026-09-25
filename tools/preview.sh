@@ -42,6 +42,7 @@ adb shell ls -la $D >> "$INFO" 2>&1
 
 start; sleep 16; shot 02_mappa_offline
 start --es nm_sheet vehicle; sleep 10; shot 03_mezzo
+start --es nm_sheet vehicle --ei nm_tab 6; sleep 10; shot 03b_mezzo_sterzata
 start --es nm_sheet search; sleep 8; adb shell input text "via"; sleep 1; adb shell input keyevent 62; adb shell input text "flaminia"; sleep 5; shot 04_ricerca
 # the same with the tablet upright: the results must stay above the keyboard
 adb shell settings put system accelerometer_rotation 0
@@ -59,6 +60,8 @@ adb shell input swipe 1900 700 1900 700 1600; sleep 3; shot 05i_punto_sulla_mapp
 # detail of the first difficulty: swept path, satellite, street photos, choices
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ei nm_crit 0
 sleep 40; shot 05b_criticita
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ei nm_crit 0 --ei nm_tab 1
+sleep 40; shot 05b2_criticita_fonti
 # tolls on the A14 of the test map. From next to the Rimini Nord booth to Riccione: the motorway
 # (booths Rimini Nord and Riccione) or the free roads; the driver accepts 5 minutes more to save it
 TOLL="--es nm_from 44.08767,12.46958 --es nm_dest 43.99007,12.64362 --es nm_label Riccione --es nm_profile camion --es nm_load 12 --es nm_tolls ask"
@@ -69,6 +72,8 @@ start $TOLL --ei nm_tollmax 30 --ez nm_plan true
 sleep 36; shot 05e_pedaggi_consiglio
 # onto the motorway (destination on the A14 towards Cattolica): the entry booth right after the start
 TOLLIN="--es nm_from 44.08767,12.46958 --es nm_dest 43.96360,12.69205 --es nm_label Cattolica --es nm_profile camion --es nm_load 12 --es nm_tolls allow"
+start $TOLLIN --ez nm_plan true
+sleep 36; shot 05k_ingresso_piano
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2

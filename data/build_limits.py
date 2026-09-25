@@ -214,5 +214,30 @@ def main():
     print(json.dumps(meta))
 
 
+def signs(dst):
+    """The direction signs go in the same file: from the region extract next to it (the workflow
+    works in the folder of region.osm.pbf), with osmium. Without them the file is complete anyway."""
+    import os
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.exists("region.osm.pbf"):
+        print("signs: no region.osm.pbf here, skipped")
+        return
+    try:
+        subprocess.run(["osmium", "tags-filter", "region.osm.pbf", "w/destination", "w/destination:ref", "w/destination:forward",
+                        "w/destination:backward", "w/destination:ref:forward", "w/destination:ref:backward", "w/destination:street",
+                        "n/highway=motorway_junction", "-o", "signs.osm.pbf", "--overwrite"], check=True)
+        subprocess.run(["osmium", "export", "signs.osm.pbf", "-f", "geojsonseq", "--add-unique-id=type_id",
+                        "--format-option", "print_record_separator=false", "-o", "signs.geojsonseq", "--overwrite"], check=True)
+        subprocess.run([sys.executable, os.path.join(here, "build_signs.py"), "signs.geojsonseq", dst], check=True)
+    except Exception as ex:
+        print(f"signs: skipped ({ex})")
+    finally:
+        for f in ("signs.osm.pbf", "signs.geojsonseq"):
+            if os.path.exists(f):
+                os.remove(f)
+
+
 if __name__ == "__main__":
     main()
+    signs(sys.argv[2])

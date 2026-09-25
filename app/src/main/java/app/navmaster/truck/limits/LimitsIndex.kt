@@ -127,11 +127,68 @@ class LimitsIndex(regions: RegionManager) {
       if (!relevant(l, vehicle)) continue
       out += l
     }
+    if (a != null) a.osmSigns = runCatching { signs(m, a) }.getOrElse { Log.w("NavMasterLimits", "signs: $it"); emptyList() }
     Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
         "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms, " +
         "$elsewhere on roads next to the route left out" + (if (ways.isEmpty()) " (no way ids: matched by distance)" else ""))
     for (l in out) Log.d("NavMasterLimits", "limit ${l.kind} ${l.value} @${l.alongM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, l.lat)}," +
         "${"%.5f".format(java.util.Locale.ROOT, l.lon)} blocking=${l.blocking} ${l.name ?: ""}")
+    return out
+  }
+
+  /**
+   * The direction signs at the junctions of the route (table «signs», data/build_signs.py): each
+   * road with destination tags that starts on the route is either the road the route takes there
+   * (its sign is the one to follow) or a road it leaves aside (its sign says where that one goes).
+   */
+  fun signs(m: RouteMatcher, a: RouteAnalysis): List<app.navmaster.truck.routing.RouteSign> {
+    class Row(val wayId: Long, val along: Double, val brg: Double, val sign: app.navmaster.truck.routing.EdgeSign)
+    val rows = dbs.perCells(m.cells) { db, inList ->
+      val out = mutableListOf<Row>()
+      try {
+        db.rawQuery("SELECT DISTINCT s.id, s.osm, s.lat, s.lon, s.brg, s.dest, s.dref, s.colour, s.jref, s.jname FROM sign_cells c " +
+            "JOIN signs s ON s.id = c.sid WHERE c.cell IN ($inList)", null).use { c ->
+          while (c.moveToNext()) {
+            val p = GeographicCoordinate(c.getDouble(2), c.getDouble(3))
+            val (d, along) = m.nearest(p) ?: continue
+            if (d > 15) continue
+            fun list(i: Int) = c.getString(i)?.split(';')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+            val sign = app.navmaster.truck.routing.EdgeSign(list(8), list(6), list(5), list(9), c.getString(7))
+            out += Row(c.getString(1)?.removePrefix("w")?.toLongOrNull() ?: -1L, along, c.getDouble(4), sign)
+          }
+        }
+      } catch (e: Exception) {
+        // packages built before the signs have no table: nothing to show
+      }
+      out
+    }
+    if (rows.isEmpty()) return emptyList()
+    val groups = mutableListOf<MutableList<Row>>()
+    for (r in rows.sortedBy { it.along }) {
+      val g = groups.lastOrNull()
+      if (g != null && r.along - g.first().along < 40) g += r else groups += mutableListOf(r)
+    }
+    val out = mutableListOf<app.navmaster.truck.routing.RouteSign>()
+    for (g in groups) {
+      val at = g.first().along
+      val routeBrg = app.navmaster.truck.core.Geo.bearing(a.pointAt(at), a.pointAt((at + 25).coerceAtMost(a.length)))
+      var taken: app.navmaster.truck.routing.EdgeSign? = null
+      val others = mutableListOf<app.navmaster.truck.routing.SideSign>()
+      for (r in g) {
+        val ext = a.wayExtent(r.wayId)
+        if (ext != null && kotlin.math.abs(ext.startM - r.along) < 40) {
+          taken = taken ?: r.sign
+          continue
+        }
+        if (r.wayId in a.wayIds) continue
+        val diff = ((r.brg - routeBrg + 540.0) % 360.0) - 180.0
+        others += app.navmaster.truck.routing.SideSign(r.sign, if (diff < -8) -1 else if (diff > 8) 1 else 0, r.wayId)
+      }
+      if (taken != null || others.isNotEmpty()) out += app.navmaster.truck.routing.RouteSign(at, taken, others)
+    }
+    Log.i("NavMasterLimits", "signs: ${rows.size} on the route, ${out.size} junctions: " +
+        out.take(12).joinToString { s -> "${s.atM.toInt()}:" + (s.taken?.let { t -> (t.branches + t.towards).joinToString("/") } ?: "-") +
+            " | " + s.others.joinToString(" ") { o -> "${o.side}:" + (o.sign.branches + o.sign.towards).joinToString("/") } })
     return out
   }
 

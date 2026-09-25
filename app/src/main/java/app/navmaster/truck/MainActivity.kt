@@ -29,6 +29,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     enableEdgeToEdge()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false
     val crit = intent?.getIntExtra("nm_crit", -1)?.takeIf { it >= 0 }
+    app.navmaster.truck.ui.UiHints.tab = intent?.getIntExtra("nm_tab", 0) ?: 0
     setContent { NmTheme { MainScreen(vm, intent?.getStringExtra("nm_sheet"), crit) } }
     handleTestIntent()
   }

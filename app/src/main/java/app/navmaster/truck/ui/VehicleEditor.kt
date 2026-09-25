@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -58,7 +57,6 @@ import app.navmaster.truck.vehicle.VehicleType
 fun VehicleEditor(onClose: () -> Unit) {
   val garage by AppGraph.profiles.garage.collectAsState()
   var editingId by remember { mutableStateOf(garage.activeId) }
-  var advanced by remember { mutableStateOf(false) }
   val v = garage.profiles.firstOrNull { it.id == editingId } ?: garage.active
   fun save(p: VehicleProfile) = AppGraph.profiles.save(p)
 
@@ -97,67 +95,70 @@ fun VehicleEditor(onClose: () -> Unit) {
       BigButton("Usa questo mezzo", Modifier.fillMaxWidth().padding(top = 8.dp), Icons.Rounded.Check) { AppGraph.profiles.select(v.id) }
     }
 
-    SectionHeader("Carico di questo viaggio")
-    Stepper("Merce a bordo", garage.loadT, "t", 0.5, 0.0, (v.maxWeightT - v.tareT).coerceAtLeast(0.5), 1) { AppGraph.profiles.setLoad(it) }
-    KeyValue("Peso totale usato per il calcolo", Fmt.tonnes(v.tripWeightT(garage.loadT)))
-
-    SectionHeader("Tipo")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      for (t in VehicleType.entries) {
-        Pill(t.icon + " " + t.label, v.type == t) { save(VehicleProfile.withTypicalGeometry(v.copy(type = t))) }
+    // one page at a time: the trip first, the technical data behind their own tabs
+    var tab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(UiHints.take(7)) }
+    Spacer(Modifier.height(8.dp))
+    TabPills(listOf("Viaggio", "Tipo e nome", "Misure", "Pesi e assi", "Merci ADR", "Percorso", "Sterzata"), tab) { tab = it }
+    when (tab) {
+      0 -> GroupCard("Carico di questo viaggio") {
+        Stepper("Merce a bordo", garage.loadT, "t", 0.5, 0.0, (v.maxWeightT - v.tareT).coerceAtLeast(0.5), 1) { AppGraph.profiles.setLoad(it) }
+        KeyValue("Peso totale usato per il calcolo", Fmt.tonnes(v.tripWeightT(garage.loadT)))
+        KeyValue("Misure", "${fmtNum(v.heightM, 2)} m alto · ${fmtNum(v.widthM, 2)} m largo · ${fmtNum(v.lengthM, 2)} m lungo")
+        KeyValue("Merci pericolose", v.adr.label)
       }
-    }
-    OutlinedTextField(
-        v.name, { save(v.copy(name = it.take(40))) }, label = { Text("Nome") }, singleLine = true,
-        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-    )
-
-    SectionHeader("Misure")
-    Stepper("Altezza", v.heightM, "m", 0.05, 1.8, 4.9) { save(v.copy(heightM = it)) }
-    Stepper("Larghezza", v.widthM, "m", 0.05, 1.6, 3.5) { save(v.copy(widthM = it)) }
-    Stepper("Lunghezza", v.lengthM, "m", 0.1, 4.0, 25.25, 1) { save(VehicleProfile.withTypicalGeometry(v.copy(lengthM = it))) }
-
-    SectionHeader("Pesi e assi")
-    Stepper("Tara (a vuoto)", v.tareT, "t", 0.5, 1.5, 40.0, 1) { save(v.copy(tareT = it)) }
-    Stepper("Massa complessiva a pieno carico", v.maxWeightT, "t", 0.5, 2.0, 60.0, 1) { save(v.copy(maxWeightT = it)) }
-    Stepper("Peso massimo per asse", v.axleLoadT, "t", 0.5, 1.0, 13.0, 1) { save(v.copy(axleLoadT = it)) }
-    Stepper("Numero di assi", v.axleCount.toDouble(), "", 1.0, 2.0, 9.0, 0) { save(v.copy(axleCount = it.toInt())) }
-
-    SectionHeader("Merci pericolose (ADR)")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      for (a in AdrTunnel.entries) Pill(a.label, v.adr == a) { save(v.copy(adr = a)) }
-    }
-    ToggleRow("Merci inquinanti per le acque", "Evita le strade vietate a queste merci", v.hazmatWater) { save(v.copy(hazmatWater = it)) }
-
-    SectionHeader("Preferenze di percorso")
-    Stepper("Velocità massima del mezzo", v.topSpeedKmh.toDouble(), "km/h", 5.0, 40.0, 130.0, 0) { save(v.copy(topSpeedKmh = it.toInt())) }
-    ToggleRow("Preferisci le strade per mezzi pesanti", null, v.preferTruckRoutes) { save(v.copy(preferTruckRoutes = it)) }
-    ToggleRow("Evita i traghetti", null, v.avoidFerries) { save(v.copy(avoidFerries = it)) }
-    ToggleRow("Evita le strade sterrate", null, v.avoidUnpaved) { save(v.copy(avoidUnpaved = it)) }
-
-    Row(Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(14.dp)).clickable { advanced = !advanced }.padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-      androidx.compose.material3.Icon(Icons.Rounded.Tune, null, tint = Nm.Muted)
-      Spacer(Modifier.width(8.dp))
-      Text("Geometria di sterzata (per curve e svincoli stretti)", color = Nm.Text, fontSize = 16.sp, modifier = Modifier.weight(1f))
-      Caption(if (advanced) "Chiudi" else "Apri", color = Nm.Accent)
-    }
-    if (advanced) {
-      Caption("Servono a calcolare quanto il rimorchio «taglia» le curve. Se non li conosci lascia i valori tipici.")
-      Stepper("Passo (asse anteriore → asse motore)", v.wheelbaseM, "m", 0.1, 2.0, 8.0, 1) { save(v.copy(wheelbaseM = it)) }
-      if (v.type == VehicleType.AUTOARTICOLATO || v.type == VehicleType.AUTOTRENO) {
-        Stepper(if (v.type == VehicleType.AUTOARTICOLATO) "Ralla → centro assi semirimorchio" else "Gancio → assi rimorchio",
-            v.trailerWheelbaseM, "m", 0.1, 3.0, 12.0, 1) { save(v.copy(trailerWheelbaseM = it)) }
-        Stepper(if (v.type == VehicleType.AUTOARTICOLATO) "Ralla davanti all'asse motore" else "Gancio dietro l'asse motore",
-            if (v.type == VehicleType.AUTOARTICOLATO) -v.couplingOffsetM else v.couplingOffsetM, "m", 0.05, 0.0, 4.0, 2) {
-          save(v.copy(couplingOffsetM = if (v.type == VehicleType.AUTOARTICOLATO) -it else it))
+      1 -> GroupCard("Tipo di mezzo") {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          for (t in VehicleType.entries) {
+            Pill(t.icon + " " + t.label, v.type == t) { save(VehicleProfile.withTypicalGeometry(v.copy(type = t))) }
+          }
         }
+        OutlinedTextField(
+            v.name, { save(v.copy(name = it.take(40))) }, label = { Text("Nome") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp),
+            colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
+        )
       }
-      Stepper("Sbalzo anteriore", v.frontOverhangM, "m", 0.1, 0.5, 3.5, 1) { save(v.copy(frontOverhangM = it)) }
-      Stepper("Raggio di sterzata esterno", v.turnRadiusM, "m", 0.25, 5.0, 15.0, 2) { save(v.copy(turnRadiusM = it)) }
-      BigButton("Valori tipici per questo mezzo", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST) {
-        save(VehicleProfile.withTypicalGeometry(v))
+      2 -> GroupCard("Misure") {
+        Stepper("Altezza", v.heightM, "m", 0.05, 1.8, 4.9) { save(v.copy(heightM = it)) }
+        Stepper("Larghezza", v.widthM, "m", 0.05, 1.6, 3.5) { save(v.copy(widthM = it)) }
+        Stepper("Lunghezza", v.lengthM, "m", 0.1, 4.0, 25.25, 1) { save(VehicleProfile.withTypicalGeometry(v.copy(lengthM = it))) }
+      }
+      3 -> GroupCard("Pesi e assi") {
+        Stepper("Tara (a vuoto)", v.tareT, "t", 0.5, 1.5, 40.0, 1) { save(v.copy(tareT = it)) }
+        Stepper("Massa complessiva a pieno carico", v.maxWeightT, "t", 0.5, 2.0, 60.0, 1) { save(v.copy(maxWeightT = it)) }
+        Stepper("Peso massimo per asse", v.axleLoadT, "t", 0.5, 1.0, 13.0, 1) { save(v.copy(axleLoadT = it)) }
+        Stepper("Numero di assi", v.axleCount.toDouble(), "", 1.0, 2.0, 9.0, 0) { save(v.copy(axleCount = it.toInt())) }
+      }
+      4 -> GroupCard("Merci pericolose (ADR)") {
+        Caption("Categoria di galleria del carico: le gallerie vietate vengono evitate e segnalate.", size = 13)
+        Spacer(Modifier.height(6.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          for (a in AdrTunnel.entries) Pill(a.label, v.adr == a) { save(v.copy(adr = a)) }
+        }
+        ToggleRow("Merci inquinanti per le acque", "Evita le strade vietate a queste merci", v.hazmatWater) { save(v.copy(hazmatWater = it)) }
+      }
+      5 -> GroupCard("Preferenze di percorso") {
+        Stepper("Velocità massima del mezzo", v.topSpeedKmh.toDouble(), "km/h", 5.0, 40.0, 130.0, 0) { save(v.copy(topSpeedKmh = it.toInt())) }
+        ToggleRow("Preferisci le strade per mezzi pesanti", null, v.preferTruckRoutes) { save(v.copy(preferTruckRoutes = it)) }
+        ToggleRow("Evita i traghetti", null, v.avoidFerries) { save(v.copy(avoidFerries = it)) }
+        ToggleRow("Evita le strade sterrate", null, v.avoidUnpaved) { save(v.copy(avoidUnpaved = it)) }
+      }
+      else -> GroupCard("Geometria di sterzata (curve e svincoli stretti)") {
+        Caption("Servono a calcolare quanto il rimorchio «taglia» le curve. Se non li conosci lascia i valori tipici.", size = 13)
+        Stepper("Passo (asse anteriore → asse motore)", v.wheelbaseM, "m", 0.1, 2.0, 8.0, 1) { save(v.copy(wheelbaseM = it)) }
+        if (v.type == VehicleType.AUTOARTICOLATO || v.type == VehicleType.AUTOTRENO) {
+          Stepper(if (v.type == VehicleType.AUTOARTICOLATO) "Ralla → centro assi semirimorchio" else "Gancio → assi rimorchio",
+              v.trailerWheelbaseM, "m", 0.1, 3.0, 12.0, 1) { save(v.copy(trailerWheelbaseM = it)) }
+          Stepper(if (v.type == VehicleType.AUTOARTICOLATO) "Ralla davanti all'asse motore" else "Gancio dietro l'asse motore",
+              if (v.type == VehicleType.AUTOARTICOLATO) -v.couplingOffsetM else v.couplingOffsetM, "m", 0.05, 0.0, 4.0, 2) {
+            save(v.copy(couplingOffsetM = if (v.type == VehicleType.AUTOARTICOLATO) -it else it))
+          }
+        }
+        Stepper("Sbalzo anteriore", v.frontOverhangM, "m", 0.1, 0.5, 3.5, 1) { save(v.copy(frontOverhangM = it)) }
+        Stepper("Raggio di sterzata esterno", v.turnRadiusM, "m", 0.25, 5.0, 15.0, 2) { save(v.copy(turnRadiusM = it)) }
+        BigButton("Valori tipici per questo mezzo", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST) {
+          save(VehicleProfile.withTypicalGeometry(v))
+        }
       }
     }
     if (garage.profiles.size > 1) {

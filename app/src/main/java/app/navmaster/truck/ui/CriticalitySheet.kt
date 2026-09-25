@@ -26,7 +26,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,94 +90,120 @@ fun CriticalitySheet(
       Spacer(Modifier.width(8.dp))
       Caption("${c.kind.icon} ${c.kind.label} · a ${Fmt.distanceText(c.startM)} dalla partenza")
     }
+    // what is checked in the background, fetched once for all the tabs
+    val hasSource = c.osm != null || c.limitKind != null
+    val report by produceState<app.navmaster.truck.photos.EvidenceReport?>(null, c.id) {
+      if (hasSource) value = app.navmaster.truck.photos.Evidence.check(c.osm, c.lat, c.lon, c.limitKind, settings.mapillaryToken)
+    }
+    val photos by produceState<List<StreetPhoto>?>(null, c.id) {
+      value = StreetPhotos.near(c.lat, c.lon, c.headingDeg, settings.mapillaryToken)
+    }
+    val r = report
+    if (r != null) {
+      Spacer(Modifier.height(4.dp))
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Badge(r.reliability.label, reliabilityColor(r.reliability))
+        Spacer(Modifier.width(8.dp))
+        Caption(if (r.signs.isNotEmpty()) "cartello visto nelle foto" else "fonte: OpenStreetMap", size = 12, lines = 1)
+      }
+    }
     Spacer(Modifier.height(6.dp))
     Caption(c.detail, color = Nm.Text, size = 16, lines = 8)
     if (c.estimated) Caption("Larghezze stimate dal tipo di strada: controlla con le immagini.", size = 13)
 
-    c.scene?.let { s ->
-      SectionHeader("Come passa il tuo mezzo")
-      SweptDiagram(s, Modifier.fillMaxWidth().height(260.dp))
-      Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(top = 6.dp)) {
-        Caption("━ ruote anteriori", color = Nm.Accent, size = 13)
-        Caption("━ ruote posteriori", color = Nm.Red, size = 13)
-        Caption("▭ ingombro", color = Color(0xCCFFFFFF), size = 13)
-      }
-      Caption("Raggio seguito ${s.radiusM.toInt().takeIf { s.radiusM < 999 } ?: "—"} m · raggio minimo del mezzo ${s.vehicleMinRadiusM.toInt()} m", size = 13)
+    // one tab at a time; the choices stay below, always visible
+    val tabs = buildList {
+      add("Dettaglio")
+      if (hasSource) add("Fonti")
+      add("Foto" + (photos?.size?.takeIf { it > 0 }?.let { " $it" } ?: ""))
+      add("Satellite")
     }
-
-    // where it comes from and how sure it is, with the links to check it
-    if (c.osm != null || c.limitKind != null) {
-      SectionHeader("Fonti e affidabilità")
-      val report by produceState<app.navmaster.truck.photos.EvidenceReport?>(null, c.id) {
-        value = app.navmaster.truck.photos.Evidence.check(c.osm, c.lat, c.lon, c.limitKind, settings.mapillaryToken)
+    var tab by remember(c.id) { mutableStateOf(UiHints.take(tabs.size)) }
+    Spacer(Modifier.height(8.dp))
+    TabPills(tabs, tab) { tab = it }
+    when (tabs.getOrNull(tab)?.substringBefore(' ')) {
+      "Fonti" -> GroupCard("Fonti e affidabilità") {
+        if (r == null) {
+          Caption("Controllo la fonte su OpenStreetMap e i cartelli nelle foto…")
+        } else {
+          Badge(r.reliability.label, reliabilityColor(r.reliability))
+          Spacer(Modifier.height(6.dp))
+          for (reason in r.reasons) Caption("• $reason", color = Nm.Text, size = 14, lines = 3)
+          if (r.signs.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Caption("Il cartello nelle foto stradali (Mapillary)", size = 13)
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+              for (sg in r.signs) {
+                Column(Modifier.width(220.dp).clickable { sg.thumbUrl?.let { StreetPhotos.openPhoto(context, it) } }) {
+                  if (sg.thumbUrl != null) NetImage(sg.thumbUrl, Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)))
+                  Caption("${sg.type.substringAfter("--").substringBeforeLast("--").replace('-', ' ')} · ${sg.distanceM.toInt()} m" +
+                      (sg.firstSeen?.let { " · dal $it" } ?: ""), size = 12, lines = 2)
+                }
+              }
+            }
+          }
+          if (r.tags.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Caption("Dati OpenStreetMap" + (r.lastEdit?.let { " (ultima modifica $it" + (r.version?.let { v -> ", versione $v" } ?: "") + ")" } ?: ""), size = 13)
+            for ((k, v) in r.tags.take(12)) Caption("$k = $v", color = Nm.Text, size = 13, lines = 2)
+          }
+          Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            r.osmUrl?.let { u -> BigButton("OpenStreetMap", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openPhoto(context, u) } }
+            r.historyUrl?.let { u -> BigButton("Storico", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openPhoto(context, u) } }
+          }
+          BigButton("Segnala un errore sulla mappa", Modifier.fillMaxWidth().padding(top = 8.dp), style = BtnStyle.GHOST) {
+            StreetPhotos.openPhoto(context, app.navmaster.truck.photos.Evidence.noteUrl(c.lat, c.lon))
+          }
+          Caption("Il cartello sulla strada vale sempre più della mappa.", size = 12)
+        }
       }
-      val r = report
-      if (r == null) {
-        Caption("Controllo la fonte su OpenStreetMap e i cartelli nelle foto…")
-      } else {
-        Badge(r.reliability.label, when (r.reliability) {
-          app.navmaster.truck.photos.Reliability.HIGH -> Nm.Accent
-          app.navmaster.truck.photos.Reliability.MEDIUM -> Nm.Amber
-          app.navmaster.truck.photos.Reliability.LOW -> Nm.Red
-        })
-        Spacer(Modifier.height(6.dp))
-        for (reason in r.reasons) Caption("• $reason", color = Nm.Text, size = 14, lines = 3)
-        if (r.signs.isNotEmpty()) {
-          Spacer(Modifier.height(8.dp))
-          Caption("Il cartello nelle foto stradali (Mapillary)", size = 13)
-          Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            for (sg in r.signs) {
-              Column(Modifier.width(220.dp).clickable { sg.thumbUrl?.let { StreetPhotos.openPhoto(context, it) } }) {
-                if (sg.thumbUrl != null) NetImage(sg.thumbUrl, Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)))
-                Caption("${sg.type.substringAfter("--").substringBeforeLast("--").replace('-', ' ')} · ${sg.distanceM.toInt()} m" +
-                    (sg.firstSeen?.let { " · dal $it" } ?: ""), size = 12, lines = 2)
+      "Foto" -> GroupCard("Foto dalla strada") {
+        when {
+          photos == null -> Caption("Cerco foto di questo punto…")
+          photos!!.isEmpty() -> Caption("Nessuna foto libera vicina: apri Street View.")
+          else -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            for (p in photos!!) {
+              Column(Modifier.width(220.dp).clickable { StreetPhotos.openPhoto(context, p.fullUrl) }) {
+                NetImage(p.thumbUrl, Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)))
+                Caption("${p.source} · ${p.distanceM.toInt()} m" + (p.date?.let { " · $it" } ?: ""), size = 12, lines = 1)
               }
             }
           }
         }
-        if (r.tags.isNotEmpty()) {
-          Spacer(Modifier.height(8.dp))
-          Caption("Dati OpenStreetMap" + (r.lastEdit?.let { " (ultima modifica $it" + (r.version?.let { v -> ", versione $v" } ?: "") + ")" } ?: ""), size = 13)
-          for ((k, v) in r.tags.take(12)) Caption("$k = $v", color = Nm.Text, size = 13, lines = 2)
-        }
         Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          r.osmUrl?.let { u -> BigButton("OpenStreetMap", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openPhoto(context, u) } }
-          r.historyUrl?.let { u -> BigButton("Storico", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openPhoto(context, u) } }
+          BigButton("Street View", Modifier.weight(1f), Icons.Rounded.Streetview, BtnStyle.SECONDARY) {
+            StreetPhotos.openStreetView(context, c.lat, c.lon, c.headingDeg)
+          }
+          BigButton("Mapillary", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openMapillary(context, c.lat, c.lon) }
         }
-        BigButton("Segnala un errore sulla mappa", Modifier.fillMaxWidth().padding(top = 8.dp), style = BtnStyle.GHOST) {
-          StreetPhotos.openPhoto(context, app.navmaster.truck.photos.Evidence.noteUrl(c.lat, c.lon))
-        }
-        Caption("Il cartello sulla strada vale sempre più della mappa.", size = 12)
       }
-    }
-
-    SectionHeader("Vista dal satellite")
-    SatelliteView(c.lat, c.lon, route, Modifier.fillMaxWidth().height(260.dp))
-    Caption(MapStyles.ESRI_ATTRIBUTION + " · serve la connessione", size = 11)
-
-    SectionHeader("Foto dalla strada")
-    val photos by produceState<List<StreetPhoto>?>(null, c.id) {
-      value = StreetPhotos.near(c.lat, c.lon, c.headingDeg, settings.mapillaryToken)
-    }
-    when {
-      photos == null -> Caption("Cerco foto di questo punto…")
-      photos!!.isEmpty() -> Caption("Nessuna foto libera vicina: apri Street View.")
-      else -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        for (p in photos!!) {
-          Column(Modifier.width(220.dp).clickable { StreetPhotos.openPhoto(context, p.fullUrl) }) {
-            NetImage(p.thumbUrl, Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(14.dp)))
-            Caption("${p.source} · ${p.distanceM.toInt()} m" + (p.date?.let { " · $it" } ?: ""), size = 12, lines = 1)
+      "Satellite" -> GroupCard("Vista dal satellite") {
+        SatelliteView(c.lat, c.lon, route, Modifier.fillMaxWidth().height(260.dp))
+        Caption(MapStyles.ESRI_ATTRIBUTION + " · serve la connessione", size = 11)
+      }
+      else -> {
+        val sc = c.scene
+        if (sc != null) {
+          GroupCard("Come passa il tuo mezzo") {
+            SweptDiagram(sc, Modifier.fillMaxWidth().height(260.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(top = 6.dp)) {
+              Caption("━ ruote anteriori", color = Nm.Accent, size = 13)
+              Caption("━ ruote posteriori", color = Nm.Red, size = 13)
+              Caption("▭ ingombro", color = Color(0xCCFFFFFF), size = 13)
+            }
+            Caption("Raggio seguito ${sc.radiusM.toInt().takeIf { sc.radiusM < 999 } ?: "—"} m · raggio minimo del mezzo ${sc.vehicleMinRadiusM.toInt()} m", size = 13)
+          }
+        } else {
+          // no drawing: the satellite picture tells more than words
+          GroupCard("Il punto dall'alto") {
+            SatelliteView(c.lat, c.lon, route, Modifier.fillMaxWidth().height(220.dp))
+            Caption(MapStyles.ESRI_ATTRIBUTION, size = 11)
           }
         }
       }
     }
-    Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      BigButton("Street View", Modifier.weight(1f), Icons.Rounded.Streetview, BtnStyle.SECONDARY) {
-        StreetPhotos.openStreetView(context, c.lat, c.lon, c.headingDeg)
-      }
-      BigButton("Mapillary", Modifier.weight(1f), style = BtnStyle.SECONDARY) { StreetPhotos.openMapillary(context, c.lat, c.lon) }
-    }
 
+    Spacer(Modifier.height(10.dp))
     SectionHeader("Cosa vuoi fare?")
     if (onAvoid != null && c.avoidable) {
       BigButton("Evita questo punto e ricalcola", Modifier.fillMaxWidth(), Icons.Rounded.Block, BtnStyle.DANGER, onClick = onAvoid)
@@ -259,4 +288,16 @@ fun SweptDiagram(s: TurnCheck.Scene, modifier: Modifier = Modifier) {
     line(s.front, Nm.Accent)
     line(s.rear, Nm.Red)
   }
+}
+
+private fun reliabilityColor(r: app.navmaster.truck.photos.Reliability): Color = when (r) {
+  app.navmaster.truck.photos.Reliability.HIGH -> Nm.Accent
+  app.navmaster.truck.photos.Reliability.MEDIUM -> Nm.Amber
+  app.navmaster.truck.photos.Reliability.LOW -> Nm.Red
+}
+
+/** First tab of the next sheet, from the test intents (tools/preview.sh); 0 otherwise. */
+object UiHints {
+  @Volatile var tab = 0
+  fun take(count: Int): Int { val t = tab; tab = 0; return t.coerceIn(0, (count - 1).coerceAtLeast(0)) }
 }

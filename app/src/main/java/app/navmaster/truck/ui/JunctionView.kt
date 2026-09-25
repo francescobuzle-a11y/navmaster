@@ -67,6 +67,8 @@ data class JunctionScene(
     /** An ordinary turn or a roundabout in town (no gantry, a smaller view). */
     val turn: Boolean = false,
     val roundabout: Boolean = false,
+    /** Sign of the road not taken at this junction (OSM destination tags): where the other way goes. */
+    val otherSign: EdgeSign? = null,
 )
 
 /** Countries whose motorway signs are green (the others use blue). */
@@ -87,6 +89,16 @@ fun signColors(country: String?, motorway: Boolean): Pair<Color, Color> {
     c in GREEN_MOTORWAY -> SignBlue to Color.White
     else -> SignBlue to Color.White
   }
+}
+
+/** The colour of a sign as mapped in OSM (destination:colour, first value). */
+fun osmSignColors(colour: String): Pair<Color, Color>? = when (colour.substringBefore(';').trim().lowercase()) {
+  "green" -> SignGreen to Color.White
+  "blue" -> SignBlue to Color.White
+  "white" -> SignWhite to Color.Black
+  "yellow" -> SignYellow to Color.Black
+  "brown" -> Color(0xFF6B3E1E) to Color.White
+  else -> null
 }
 
 /** The small plate of a road number, coloured like on the signs ("A1" green in Italy, "E45" green, "SS16" blue). */
@@ -122,7 +134,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
   val progress by animateFloatAsState(target, tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "junction")
   // the position glides between two GPS fixes (one a second), so the view moves continuously
   val smooth by animateFloatAsState(scene.traveledM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "pos")
-  val hasSigns = scene.sign != null || (!scene.turn && scene.mainRefs.isNotEmpty())
+  val hasSigns = scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty())
   Column(
       modifier.shadow(10.dp, RoundedCornerShape(18.dp)).clip(RoundedCornerShape(18.dp)).background(Color(0xFF0C1117)),
   ) {
@@ -142,14 +154,19 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
             (scene.motorway && !scene.exit)
         val (brBg, brFg) = signColors(scene.country, branchMotorway || scene.motorway)
         val main: @Composable (Modifier) -> Unit = { m ->
-          if (scene.mainRefs.isNotEmpty() || scene.side != 0) {
-            SignPanel(m, mainBg, mainFg, arrow = 0f, exitNumber = null, refs = scene.mainRefs, towns = emptyList(),
+          val o = scene.otherSign
+          if (scene.mainRefs.isNotEmpty() || scene.side != 0 || o != null) {
+            val (oBg, oFg) = o?.colour?.let { osmSignColors(it) } ?: (mainBg to mainFg)
+            SignPanel(m, oBg, oFg, arrow = 0f, exitNumber = null,
+                refs = ((o?.branches ?: emptyList()) + scene.mainRefs).distinct().take(3),
+                towns = o?.towards?.take(2) ?: emptyList(),
                 taken = scene.side == 0 && scene.exit.not(), country = scene.country)
           }
         }
         val branch: @Composable (Modifier) -> Unit = { m ->
           val sign = scene.sign
-          SignPanel(m, brBg, brFg, arrow = if (scene.side < 0) -45f else if (scene.side > 0) 45f else 0f,
+          val (sBg, sFg) = sign?.colour?.let { osmSignColors(it) } ?: (brBg to brFg)
+          SignPanel(m, sBg, sFg, arrow = if (scene.side < 0) -45f else if (scene.side > 0) 45f else 0f,
               exitNumber = sign?.exitNumbers?.firstOrNull(),
               refs = (sign?.branches.orEmpty() + scene.branchRefs).distinct().take(3),
               towns = (sign?.towards.orEmpty() + sign?.exitNames.orEmpty()).distinct().take(3),
@@ -393,6 +410,9 @@ fun junctionSceneOf(
   if (distanceM > range) return null
   val at = traveled + distanceM
   val sign = a?.signNear(at)
+  // the signs mapped in OSM at this junction: the road taken and the one left aside
+  val osm = a?.osmSignNear(at)
+  val other = osm?.others?.let { o -> o.firstOrNull { it.side == -side && side != 0 } ?: o.firstOrNull { it.side != side } ?: o.firstOrNull() }?.sign
   // without the sign data of the graph, what the instruction says is the sign itself ("Riccione",
   // "A1 / Roma / Firenze"): the road numbers go on plates, the rest are the towns
   val parts = (listOf(p.text) + listOfNotNull(instruction.secondaryContent?.text))
@@ -410,7 +430,7 @@ fun junctionSceneOf(
       lanes = lanes,
       distanceM = distanceM,
       rangeM = range,
-      sign = sign?.second ?: fallback,
+      sign = sign?.second ?: osm?.taken ?: fallback,
       branchRefs = (sign?.first?.refs ?: emptyList()) + (after?.refs ?: emptyList()),
       mainRefs = here?.refs ?: emptyList(),
       motorway = motorway,
@@ -421,6 +441,7 @@ fun junctionSceneOf(
       maneuverAtM = at,
       turn = turnLike,
       roundabout = roundabout,
+      otherSign = other,
   )
 }
 

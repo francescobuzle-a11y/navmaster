@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -292,5 +293,35 @@ fun KeyValue(key: String, value: String, modifier: Modifier = Modifier) {
   Row(modifier.fillMaxWidth().padding(vertical = 3.dp)) {
     Caption(key, Modifier.weight(1f))
     Text(value, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+  }
+}
+
+/** A group of settings or facts on a card, with a small title. */
+@Composable
+fun GroupCard(title: String? = null, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+  Column(
+      modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(18.dp)).background(Nm.Raised)
+          .border(1.dp, Nm.Line, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
+  ) {
+    if (title != null) Text(title.uppercase(), color = Nm.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp,
+        modifier = Modifier.padding(top = 2.dp, bottom = 6.dp))
+    content()
+  }
+}
+
+/** Tabs as a row of pills that scrolls sideways: one page of a long screen at a time. */
+@Composable
+fun TabPills(tabs: List<String>, selected: Int, modifier: Modifier = Modifier, onSelect: (Int) -> Unit) {
+  Row(
+      modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    tabs.forEachIndexed { i, t ->
+      Box(
+          Modifier.clip(RoundedCornerShape(20.dp)).background(if (i == selected) Nm.Accent else Nm.Raised)
+              .border(1.dp, if (i == selected) Nm.Accent else Nm.Line, RoundedCornerShape(20.dp))
+              .clickable { onSelect(i) }.padding(horizontal = 14.dp, vertical = 9.dp),
+      ) { Text(t, color = Color.White, fontSize = 15.sp, fontWeight = if (i == selected) FontWeight.Bold else FontWeight.Normal, maxLines = 1) }
+    }
   }
 }

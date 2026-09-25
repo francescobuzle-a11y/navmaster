@@ -125,8 +125,18 @@ fun PlanPanel(
         if (v != null) {
           val list = v.criticalities.filter { it.severity != Severity.INFO || it.kind.name == "BAN" }
           SectionHeader(if (list.isEmpty()) "Nessuna criticità per il mezzo" else "Criticità del percorso (${list.size})")
-          for (c in if (showAll) list else list.take(5)) CritRow(c) { onCrit(c) }
-          if (list.size > 5) Caption(if (showAll) "Mostra meno" else "Mostra tutte (${list.size})", color = Nm.Accent,
+          // grouped by kind: one pill per kind with its count, the list shows the chosen kind in route order
+          val kinds = list.groupBy { it.kind }.toList().sortedWith(
+              compareByDescending<Pair<app.navmaster.truck.routing.CritKind, List<Criticality>>> { p -> p.second.count { it.severity == Severity.CRITICAL } }
+                  .thenByDescending { it.second.size })
+          var kindSel by remember(v) { mutableStateOf(0) }
+          if (kinds.size > 1) {
+            TabPills(listOf("Tutte ${list.size}") + kinds.map { (k, l) -> "${k.icon} ${k.label} ${l.size}" }, kindSel.coerceAtMost(kinds.size)) { kindSel = it }
+          }
+          val shown = if (kindSel == 0 || kindSel > kinds.size) list else kinds[kindSel - 1].second
+          val sorted = shown.sortedBy { it.startM }
+          for (c in if (showAll) sorted else sorted.take(5)) CritRow(c) { onCrit(c) }
+          if (sorted.size > 5) Caption(if (showAll) "Mostra meno" else "Mostra tutte (${sorted.size})", color = Nm.Accent,
               modifier = Modifier.clickable { showAll = !showAll }.padding(8.dp))
           if (plan.avoidAreas.isNotEmpty()) {
             SectionHeader("Zone che eviti")

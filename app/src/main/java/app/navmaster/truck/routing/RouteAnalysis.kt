@@ -61,10 +61,18 @@ data class EdgeSign(
     val branches: List<String>,
     val towards: List<String>,
     val exitNames: List<String>,
+    /** destination:colour of OSM ("green", "blue", "white" ...), when mapped. */
+    val colour: String? = null,
 ) {
   val isEmpty: Boolean
     get() = exitNumbers.isEmpty() && branches.isEmpty() && towards.isEmpty() && exitNames.isEmpty()
 }
+
+/** A road that leaves a junction of the route, with its sign: the one not taken shows where it goes. */
+data class SideSign(val sign: EdgeSign, /** -1 left of the route, 1 right, 0 straight on. */ val side: Int, val wayId: Long)
+
+/** The signs of one junction of the route, from the OSM destination tags (limiti.sqlite). */
+data class RouteSign(val atM: Double, val taken: EdgeSign?, val others: List<SideSign>)
 
 /** A toll booth, a toll gantry or a border control on the route (at the end of an edge). */
 data class RouteNode(val alongM: Double, val type: String) {
@@ -163,6 +171,13 @@ class RouteAnalysis(
    */
   fun signNear(alongM: Double): Pair<EdgeInfo, EdgeSign>? =
       edges.firstOrNull { it.sign != null && it.startM >= alongM - 40 && it.startM <= alongM + 300 }?.let { it to it.sign!! }
+
+  /** Signs of the junctions of the route from the OSM destination tags, filled by LimitsIndex.scan. */
+  @Volatile var osmSigns: List<RouteSign> = emptyList()
+
+  /** The junction signs closest to this point of the route (within 60 m). */
+  fun osmSignNear(alongM: Double): RouteSign? =
+      osmSigns.filter { kotlin.math.abs(it.atM - alongM) < 60 }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
 
   fun edgeAt(alongM: Double): EdgeInfo? = edges.firstOrNull { alongM >= it.startM && alongM < it.endM }
 
