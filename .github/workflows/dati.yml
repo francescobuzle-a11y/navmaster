@@ -52,7 +52,8 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 20
+      # 20 jobs at once is the account limit: leave room for the app build and the unpacking
+      max-parallel: 15
       matrix:
         region: ${{ fromJson(needs.plan.outputs.regions) }}
         part: [mappa, dati]
