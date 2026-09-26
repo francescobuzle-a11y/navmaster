@@ -111,6 +111,16 @@ sleep 2
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_personal_feed http://10.0.2.2:8088
 sleep 22; shot 16_server_personale
 start --es nm_personal_feed none; sleep 5
+# the same reports asked directly by the tablet (Live Map format), again from a sample file
+mkdir -p /tmp/pf/live-map/api
+cat > /tmp/pf/live-map/api/georss <<'JSON'
+{"alerts":[{"type":"POLICE","subtype":"POLICE_HIDING","location":{"x":12.49037,"y":44.07414},"nThumbsUp":2,"street":"A14","uuid":"t1"},
+{"type":"HAZARD","subtype":"HAZARD_ON_SHOULDER_CAR_STOPPED","location":{"x":12.55,"y":44.06},"street":"SS16","uuid":"t2"}],
+"jams":[{"level":3,"street":"A14","line":[{"x":12.56,"y":44.05},{"x":12.565,"y":44.045},{"x":12.57,"y":44.04}],"delay":240,"uuid":"t3"}]}
+JSON
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_waze_direct http://10.0.2.2:8088/live-map/api/georss
+sleep 22; shot 16b_waze_dal_tablet
+start --es nm_personal_feed none; sleep 5
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_detour 43.99007,12.64362 --es nm_sheet stops
 sleep 42; shot 13_deviazione_tappe
 # all the places (along the route, nearest first) while driving
@@ -147,6 +157,6 @@ start --es nm_sheet regions; sleep 12; shot 11_paesi
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
 log
-grep -E "live|detour|direction of travel|report|personal feed" "$OUT/logcat.txt" | head -60 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct" "$OUT/logcat.txt" | head -60 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

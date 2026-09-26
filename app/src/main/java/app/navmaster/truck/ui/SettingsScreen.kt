@@ -241,10 +241,18 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     )
   }
   Card("Prova personale") {
-    ToggleRow("Server personale (solo prova)", "Legge polizia, incidenti, pericoli e code da un server che fai girare tu sul tuo " +
-        "computer, nel formato del progetto waze-api / JMoore335. Solo per te e a scopo dimostrativo: quello che legge resta sul " +
-        "tablet e non va agli altri autisti.", s.personalFeed) { v -> set { it.copy(personalFeed = v) } }
+    ToggleRow("Segnalazioni Waze (solo prova)", "Polizia, incidenti, pericoli, veicoli fermi, lavori, chiusure e code dalla mappa " +
+        "pubblica di Waze, solo sul tratto di percorso davanti, ogni 2 minuti e mai da fermo. Solo per te e a scopo dimostrativo " +
+        "(i Termini di Waze non lo consentono): quello che legge resta sul tablet e non va agli altri autisti.", s.personalFeed) { v ->
+      set { it.copy(personalFeed = v) }
+    }
     if (s.personalFeed) {
+      Pills {
+        Pill("Dal tablet", s.personalFeedDirect) { set { it.copy(personalFeedDirect = true) } }
+        Pill("Dal mio computer", !s.personalFeedDirect) { set { it.copy(personalFeedDirect = false) } }
+      }
+    }
+    if (s.personalFeed && !s.personalFeedDirect) {
       OutlinedTextField(
           s.personalFeedUrl, { v -> set { it.copy(personalFeedUrl = v.trim()) } }, label = { Text("Indirizzo del server (es. http://192.168.1.20:8080)") },
           singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),

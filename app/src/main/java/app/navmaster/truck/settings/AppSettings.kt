@@ -165,6 +165,8 @@ data class Settings(
      */
     val personalFeed: Boolean = false,
     val personalFeedUrl: String = "",
+    /** true: the tablet asks the Waze Live Map itself (no computer); false: the owner's own server. */
+    val personalFeedDirect: Boolean = true,
     /** Random tag of this device, to count a driver's confirmations once (not who he is). */
     val deviceTag: String = "",
 )

@@ -95,4 +95,73 @@ object PersonalFeed {
     Log.i(TAG, "personal feed: ${out.size} reports (${out.groupingBy { it.kind }.eachCount()})")
     return out
   }
+
+  // ------------------------------------------------------------------------------ directly from the tablet
+
+  const val DIRECT_SOURCE = "Waze (prova personale)"
+
+  /** Address of the Live Map data; the emulator tests replace it with a sample file. */
+  @Volatile var directUrl = "https://www.waze.com/live-map/api/georss"
+
+  /** The largest side of the area asked (degrees, about 60 km): only the road ahead. */
+  private const val MAX_SIDE = 0.6
+
+  /**
+   * PERSONAL TEST ONLY: the reports of the Waze Live Map inside [box], asked by the tablet itself
+   * (no computer needed). The caller asks only the stretch of route ahead and at most every
+   * 2 minutes. Null when nothing could be read (no network, refused, format changed).
+   */
+  fun readDirect(box: GeoBox): List<LiveEvent>? {
+    var (w, s, e, n) = listOf(box.w, box.s, box.e, box.n)
+    if (n - s > MAX_SIDE) { val c = (n + s) / 2; s = c - MAX_SIDE / 2; n = c + MAX_SIDE / 2 }
+    if (e - w > MAX_SIDE) { val c = (e + w) / 2; w = c - MAX_SIDE / 2; e = c + MAX_SIDE / 2 }
+    val f = { v: Double -> String.format(java.util.Locale.ROOT, "%.6f", v) }
+    val url = "$directUrl?top=${f(n)}&bottom=${f(s)}&left=${f(w)}&right=${f(e)}&env=row&types=alerts,traffic"
+    val text = (try {
+      client.newCall(Request.Builder().url(url)
+          .header("User-Agent", "NavMaster/1.0 (Android; personal test)")
+          .header("Referer", "https://www.waze.com/live-map/")
+          .header("Accept", "application/json").build()).execute().use { r ->
+        if (r.isSuccessful) r.body.string() else null.also { Log.w(TAG, "waze direct: HTTP ${r.code}") }
+      }
+    } catch (ex: Exception) {
+      Log.w(TAG, "waze direct: $ex")
+      null
+    }) ?: return null
+    val root = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: run {
+      Log.w(TAG, "waze direct: not JSON (${text.take(80)})")
+      return null
+    }
+    val now = System.currentTimeMillis()
+    val out = mutableListOf<LiveEvent>()
+    (root["alerts"] as? JsonArray)?.forEachIndexed { i, a ->
+      val o = a as? JsonObject ?: return@forEachIndexed
+      val loc = o["location"] as? JsonObject ?: return@forEachIndexed
+      val lat = num(loc["y"]) ?: return@forEachIndexed
+      val lon = num(loc["x"]) ?: return@forEachIndexed
+      val kind = kindOf(str(o["type"]), str(o["subtype"])) ?: return@forEachIndexed
+      val at = num(o["pubMillis"])?.toLong()?.takeIf { it in 1..now } ?: now
+      out += LiveEvent(
+          id = "wz:" + (str(o["uuid"]) ?: str(o["id"]) ?: "$i:$lat,$lon"), source = DIRECT_SOURCE, kind = kind,
+          title = kind.label, detail = str(o["street"]) ?: str(o["city"]), lat = lat, lon = lon, timeMs = at, official = false,
+          confirms = (num(o["nThumbsUp"])?.toInt() ?: 0).coerceAtLeast(0))
+    }
+    (root["jams"] as? JsonArray)?.forEachIndexed { i, j ->
+      val o = j as? JsonObject ?: return@forEachIndexed
+      val line = (o["line"] as? JsonArray)?.mapNotNull { p ->
+        val po = p as? JsonObject ?: return@mapNotNull null
+        val y = num(po["y"]) ?: return@mapNotNull null
+        val x = num(po["x"]) ?: return@mapNotNull null
+        GeographicCoordinate(y, x)
+      } ?: emptyList()
+      val first = line.firstOrNull() ?: return@forEachIndexed
+      out += LiveEvent(
+          id = "wz:j:" + (str(o["uuid"]) ?: "$i:${first.lat}"), source = DIRECT_SOURCE, kind = LiveKind.JAM,
+          title = "Coda" + (str(o["street"])?.let { " · $it" } ?: ""), lat = first.lat, lon = first.lng,
+          line = if (line.size >= 2) line else emptyList(), timeMs = now,
+          delayS = (num(o["delay"])?.toInt() ?: 0).coerceAtLeast(0), official = false)
+    }
+    Log.i(TAG, "waze direct: ${out.size} reports (${out.groupingBy { it.kind }.eachCount()})")
+    return out
+  }
 }

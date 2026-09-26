@@ -483,6 +483,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var lastMoveAt = 0L
   private var personalEvents: List<LiveEvent> = emptyList()
   private var lastPersonalAt = 0L
+  private var personalMoveAt = 0L
 
   /**
    * TomTom incidents of the road ahead (60 km on motorways, 30 km elsewhere), read as zoom 12
@@ -592,33 +593,44 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       trafficSources = trafficSources.filterNot { it.startsWith("TomTom") } + "TomTom ${tomtomEvents.size}"
     } else tomtomEvents = emptyList()
     trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents else emptyList()
-    // personal test: the owner's own server (see PersonalFeed), at most every 2 minutes
-    if (s.personalFeed && s.personalFeedUrl.isNotBlank()) {
-      if (now - lastPersonalAt > 120_000L) {
+    // personal test (see PersonalFeed): Waze asked by the tablet itself, or the owner's own server;
+    // every 2 minutes, only the stretch of route ahead, never while standing still
+    val direct = s.personalFeedDirect
+    if (s.personalFeed && (direct || s.personalFeedUrl.isNotBlank())) {
+      val speed = navigationUiState.value.location?.speed?.value ?: 0.0
+      if (speed > 2.0 || personalMoveAt == 0L) personalMoveAt = now
+      if (now - lastPersonalAt > 120_000L && now - personalMoveAt < 5 * 60_000L) {
         lastPersonalAt = now
-        boxesAhead(a, traveled).firstOrNull()?.let { box ->
-          runCatching { app.navmaster.truck.live.PersonalFeed.read(s.personalFeedUrl, box) }.getOrNull()?.let { personalEvents = it }
+        val got = if (direct) {
+          // two areas of about 20 km of route each: small enough to get every report
+          val parts = boxesAhead(a, traveled, 20_000.0, 2).map { box ->
+            runCatching { app.navmaster.truck.live.PersonalFeed.readDirect(box) }.getOrNull()
+          }
+          if (parts.all { it == null }) null else parts.filterNotNull().flatten().distinctBy { it.id }
+        } else boxesAhead(a, traveled).firstOrNull()?.let { box ->
+          runCatching { app.navmaster.truck.live.PersonalFeed.read(s.personalFeedUrl, box) }.getOrNull()
         }
+        if (got != null) personalEvents = got
       }
-      sources += "server personale ${personalEvents.size}"
+      sources += (if (direct) "Waze prova " else "server personale ") + personalEvents.size
     } else personalEvents = emptyList()
     // my own reports show at once, before ntfy gives them back
     localReports = localReports.filter { now - it.timeMs < it.kind.ttlMin * 60_000L && reports.none { r -> r.mine && r.kind == it.kind && Geo.dist(r.lat, r.lon, it.lat, it.lon) < 300 } }
     liveEvents = trafficEvents + reports + localReports + personalEvents
     Log.i(TAG, "live: ${sources.joinToString()} -> ${liveEvents.size} events")
-    liveSources = (sources.filter { it.startsWith("segnalazioni") || it.startsWith("server personale") } +
+    liveSources = (sources.filter { it.startsWith("segnalazioni") || it.startsWith("server personale") || it.startsWith("Waze prova") } +
         (if (s.liveTraffic) trafficSources else emptyList()))
         .joinToString(" · ").ifBlank { null }
     matchLive()
   }
 
   /** Squares of about 40 km along the next 120 km of route (TomTom accepts up to 10,000 km² each). */
-  private fun boxesAhead(a: RouteAnalysis, traveled: Double): List<GeoBox> {
+  private fun boxesAhead(a: RouteAnalysis, traveled: Double, stepM: Double = 40_000.0, count: Int = 4): List<GeoBox> {
     val out = mutableListOf<GeoBox>()
     var from = traveled
-    val end = minOf(a.length, traveled + 120_000.0)
-    while (from < end && out.size < 4) {
-      val to = minOf(end, from + 40_000.0)
+    val end = minOf(a.length, traveled + stepM * count)
+    while (from < end && out.size < count) {
+      val to = minOf(end, from + stepM)
       val pts = generateSequence(from) { it + 1000.0 }.takeWhile { it <= to }.map { a.pointAt(it) }.toList() + a.pointAt(to)
       val pad = 0.02
       out += GeoBox(pts.minOf { it.lng } - pad, pts.minOf { it.lat } - pad, pts.maxOf { it.lng } + pad, pts.maxOf { it.lat } + pad)

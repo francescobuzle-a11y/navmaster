@@ -77,8 +77,13 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     }
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
     intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = if (k == "none") "" else k) } }
+    // emulator test of the direct mode on a sample file (never the real service from the tests)
+    intent?.getStringExtra("nm_waze_direct")?.let { u ->
+      app.navmaster.truck.live.PersonalFeed.directUrl = u
+      AppGraph.settings.update { it.copy(personalFeed = true, personalFeedDirect = true) }
+    }
     intent?.getStringExtra("nm_personal_feed")?.let { u ->
-      AppGraph.settings.update { it.copy(personalFeed = u != "none", personalFeedUrl = if (u == "none") "" else u) }
+      AppGraph.settings.update { it.copy(personalFeed = u != "none", personalFeedUrl = if (u == "none") "" else u, personalFeedDirect = false) }
     }
     if (intent?.hasExtra("nm_traffic_map") == true) {
       val v = intent?.getBooleanExtra("nm_traffic_map", false) == true
