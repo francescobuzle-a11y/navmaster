@@ -10,6 +10,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -39,6 +41,7 @@ import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
@@ -161,6 +164,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   }
   var openPoi by remember { mutableStateOf<RoutePoi?>(null) }
   var reportOpen by remember { mutableStateOf(initialSheet == "report") }
+  var stopsOpen by remember { mutableStateOf(initialSheet == "stops") }
+  var poiOpen by remember { mutableStateOf(initialSheet == "pois") }
   var countryHintClosed by remember { mutableStateOf(false) }
   val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && settings.tomtomKey.isNotBlank())
     app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(settings.tomtomKey, night) else null
@@ -288,7 +293,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           ?.takeIf { it.third <= 2500 }
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
           settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it },
-          live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true })
+          live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
+          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -302,6 +308,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         PromptCard(p, traveled, onRamp = vm::answerRamp, onToll = vm::answerToll,
             onBreakGo = { pk -> vm.dismissPrompt(); vm.addStopDuringNav(pk.poi.coordinate, pk.poi.title.ifBlank { "Parcheggio" }) },
             onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure)
+      }
+      if (stopsOpen && plan.stops.size > 1) {
+        StopsPanel(plan.stops, onRemove = { i -> vm.removeStopDuringNav(i); if (plan.stops.size <= 2) stopsOpen = false },
+            onRemoveAll = { vm.removeAllStopsDuringNav(); stopsOpen = false }, onClose = { stopsOpen = false })
       }
       if (reportOpen) {
         ReportPicker(nav.analysis?.edgeAt(traveled)?.country ?: here?.iso, onPick = { k -> reportOpen = false; vm.report(k) },
@@ -319,6 +329,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onRecenter = { mapState.recenter(false) },
           onCrit = { openCrit = it },
           tracking = mapState.isTrackingUser,
+          onPois = { poiOpen = true },
       )
       // in a country whose map is not on the tablet: offer it
       // the hint goes away by itself after a while and never covers a route being chosen
@@ -378,6 +389,32 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       Sheet.REGIONS -> RegionsScreen(here, onClose = { sheet = Sheet.NONE })
       Sheet.NONE -> {}
     }
+    if (poiOpen) {
+      val simulatingNow by vm.simulating.collectAsState()
+      PoiBrowser(
+          route = if (navigating) nav.analysis?.route?.geometry else plan.current?.route?.geometry,
+          traveledM = traveled,
+          here = location?.coordinates,
+          destination = plan.stops.lastOrNull()?.coordinate,
+          stop = plan.stops.dropLast(1).firstOrNull()?.coordinate,
+          navigating = navigating,
+          onAddStop = { p ->
+            poiOpen = false
+            val label = p.title.ifBlank { "Tappa" }
+            when {
+              navigating -> vm.addStopDuringNav(p.coordinate, label)
+              plan.stops.isNotEmpty() -> vm.addVia(p.coordinate, label)
+              else -> vm.selectDestination(p.coordinate, label)
+            }
+          },
+          onGo = { p ->
+            poiOpen = false
+            val label = p.title.ifBlank { "Destinazione" }
+            if (navigating) vm.goTo(p.coordinate, label, simulatingNow) else vm.selectDestination(p.coordinate, label)
+          },
+          onClose = { poiOpen = false },
+      )
+    }
     openCrit?.let { c ->
       CriticalitySheet(
           c,
@@ -410,26 +447,28 @@ private fun BrowsingOverlay(
     onRecenter: () -> Unit,
     onCrit: (Criticality) -> Unit,
     tracking: Boolean = false,
+    onPois: () -> Unit = {},
 ) {
   Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(12.dp)) {
     // search bar
     Row(
-        Modifier.align(Alignment.TopStart).fillMaxWidth(if (landscape) 0.5f else 1f).heightIn(min = 64.dp).shadow(10.dp, RoundedCornerShape(32.dp))
+        Modifier.align(Alignment.TopStart).then(if (landscape) Modifier.fillMaxWidth(0.5f) else Modifier.fillMaxWidth().padding(end = 76.dp))
+            .heightIn(min = 64.dp).shadow(10.dp, RoundedCornerShape(32.dp))
             .clip(RoundedCornerShape(32.dp)).background(Nm.Panel).border(1.dp, Nm.Line, RoundedCornerShape(32.dp)).clickable(onClick = onSearch)
             .padding(horizontal = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
       Icon(Icons.Rounded.Search, null, tint = Nm.Muted, modifier = Modifier.size(28.dp))
       Spacer(Modifier.width(12.dp))
-      Text("Dove andiamo?", color = Nm.Muted, fontSize = 19.sp, modifier = Modifier.weight(1f))
+      Text("Dove andiamo?", color = Nm.Muted, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
       Row(
           Modifier.clip(RoundedCornerShape(20.dp)).background(Nm.Raised).clickable(onClick = onVehicle).padding(horizontal = 12.dp, vertical = 8.dp),
           verticalAlignment = Alignment.CenterVertically,
       ) {
         Text(vehicleIcon, fontSize = 18.sp)
         Spacer(Modifier.width(6.dp))
-        Text(vehicleName, color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 150.dp))
+        Text(vehicleName, color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
       }
     }
     // map buttons
@@ -438,6 +477,7 @@ private fun BrowsingOverlay(
     Column(Modifier.align(Alignment.TopEnd), verticalArrangement = Arrangement.spacedBy(10.dp)) {
       if (plan.stops.isEmpty()) RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
       RoundAction(Icons.Rounded.Layers, "Satellite", container = if (satellite) Nm.Accent else Nm.Panel, onClick = onSatellite)
+      RoundAction(Icons.Rounded.Place, "Punti di interesse", onClick = onPois)
     }
     if (!tracking) RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
 
@@ -463,6 +503,7 @@ private fun BrowsingOverlay(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NavigatingOverlay(
     vm: NavViewModel,
@@ -489,8 +530,12 @@ private fun NavigatingOverlay(
     liveAsk: app.navmaster.truck.live.RouteLiveEvent? = null,
     onSettings: () -> Unit = {},
     onReport: () -> Unit = {},
+    stopsCount: Int = 0,
+    onStops: () -> Unit = {},
+    onPois: () -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
+  val simSpeed by vm.simSpeed.collectAsState()
   // buttons: shown for a few seconds after the map is touched (and at the start), then only the
   // ones that are needed right now (the "centre" one when the map was moved by hand)
   var controls by remember { mutableStateOf(true) }
@@ -508,7 +553,7 @@ private fun NavigatingOverlay(
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
     TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = scene != null)
-    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
         RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
       } else if (nextCrit != null) {
@@ -531,7 +576,8 @@ private fun NavigatingOverlay(
       val atRight = settings.poiRailSide != app.navmaster.truck.settings.PoiSide.LEFT
       if (jv == null) {
         PoiRail(pois, traveled, settings.poiRailCount, settings.poiRailSeconds, settings.poiRailOpacity, atRight, narrow = !landscape,
-            modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi)
+            modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi,
+            onAll = onPois)
       }
       Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
           horizontalAlignment = Alignment.End) {
@@ -544,6 +590,7 @@ private fun NavigatingOverlay(
           ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
         }
         RoundAction(Icons.Rounded.Settings, "Impostazioni", size = 56.dp, onClick = onSettings)
+        if (stopsCount > 0) StopsButton(stopsCount, onStops)
         // the map was moved by hand: "centre" stays until the driver uses it
         if (!mapState.isTrackingUser) RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
         androidx.compose.animation.AnimatedVisibility(controls, enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
@@ -567,9 +614,14 @@ private fun NavigatingOverlay(
         // muted: a small reminder stays even when the buttons are away
         if (!controls && ui.isMuted == true) RoundAction(Icons.Rounded.VolumeOff, "Voce", size = 48.dp, container = Nm.Red) { vm.toggleMute() }
       }
+      if (simulating) {
+        SimControls(simSpeed, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+            onPrevManeuver = { vm.simManeuver(false) }, onBack = { vm.simJump(-500.0) }, onSlower = vm::simSlower,
+            onFaster = vm::simFaster, onAhead = { vm.simJump(500.0) }, onNextManeuver = { vm.simManeuver(true) })
+      }
       if (liveAsk != null) {
         LiveAskCard(liveAsk, analysis?.edgeAt(liveAsk.startM)?.country, onAnswer = { yes -> vm.voteLive(liveAsk, yes) },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (simulating) 84.dp else 12.dp))
       }
       if (simulating) {
         Text("SIMULAZIONE", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp,

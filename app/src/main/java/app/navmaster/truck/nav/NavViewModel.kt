@@ -971,6 +971,137 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
+  // ------------------------------------------------------------------------------ stops while driving
+
+  /** The driver removes one of the stops or pass-through points still ahead (not the destination). */
+  fun removeStopDuringNav(index: Int) {
+    val p = _plan.value
+    if (p.stops.size <= 1 || index !in 0 until p.stops.size - 1) return
+    _plan.value = p.copy(stops = p.stops.filterIndexed { i, _ -> i != index })
+    rerouteToStops("Tappa eliminata: ricalcolo il percorso.")
+  }
+
+  /** Every stop and point away: straight to the destination. */
+  fun removeAllStopsDuringNav() {
+    val p = _plan.value
+    val dest = p.stops.lastOrNull() ?: return
+    if (p.stops.size <= 1) return
+    _plan.value = p.copy(stops = listOf(dest))
+    rerouteToStops("Tappe eliminate: vado diretto a destinazione.")
+  }
+
+  private fun rerouteToStops(message: String) {
+    val from = navigationUiState.value.location ?: lastLocation.value ?: return
+    // the points of an old "go there and come back" do not count any more
+    AppGraph.trip.value = AppGraph.trip.value.copy(viaHeadings = emptyMap())
+    _nav.update { it.copy(recalculating = true) }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val stops = _plan.value.stops
+        val waypoints = stops.mapIndexed { i, st ->
+          Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+        }
+        val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
+            ?: throw IllegalStateException("nessun percorso")
+        withContext(Dispatchers.Main) {
+          if (_simulating.value) locationProvider.enableSimulationOn(r)
+          core.replaceRoute(r)
+        }
+        say(message)
+      } catch (e: Exception) {
+        Log.w(TAG, "reroute: $e")
+        say("Non riesco a ricalcolare il percorso.")
+      } finally {
+        _nav.update { it.copy(recalculating = false) }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------------------ simulation controls
+
+  private val simSpeeds = listOf(1, 2, 3, 5, 8, 12, 20)
+  private val _simSpeed = MutableStateFlow(3)
+  /** How many times faster than real the simulated drive runs. */
+  val simSpeed: StateFlow<Int> = _simSpeed.asStateFlow()
+
+  fun simFaster() = setSimSpeed(simSpeeds.firstOrNull { it > _simSpeed.value } ?: simSpeeds.last())
+
+  fun simSlower() = setSimSpeed(simSpeeds.lastOrNull { it < _simSpeed.value } ?: simSpeeds.first())
+
+  private fun setSimSpeed(v: Int) {
+    _simSpeed.value = v
+    AppGraph.simulator.warpFactor = v.toUInt()
+  }
+
+  /** A bit ahead or back on the route (metres, negative = back). */
+  fun simJump(deltaM: Double) {
+    if (!_simulating.value) return
+    simJumpTo(traveledNow() + deltaM)
+  }
+
+  /** To the next (or previous) manoeuvre, a little before it so it is seen coming. */
+  fun simManeuver(next: Boolean) {
+    if (!_simulating.value) return
+    val a = _nav.value.analysis ?: return
+    val traveled = traveledNow()
+    var acc = 0.0
+    val starts = mutableListOf<Double>()
+    for (st in a.route.steps) {
+      if (acc > 0) starts += acc
+      acc += st.distance
+    }
+    val target = if (next) starts.firstOrNull { it > traveled + 200 } else starts.lastOrNull { it < traveled - 350 }
+    simJumpTo((target ?: if (next) a.length - 100 else 0.0) - 250)
+  }
+
+  private fun simJumpTo(alongM: Double) {
+    val a = _nav.value.analysis ?: return
+    val t = alongM.coerceIn(0.0, (a.length - 60).coerceAtLeast(0.0))
+    val p = a.pointAt(t)
+    val h = Geo.bearing(a.pointAt((t - 15).coerceAtLeast(0.0)), a.pointAt(t + 15))
+    val loc = android.location.Location("sim").apply {
+      latitude = p.lat
+      longitude = p.lng
+      accuracy = 5f
+      bearing = h.toFloat()
+      speed = 15f
+      time = System.currentTimeMillis()
+    }.toUserLocation()
+    // the stops still ahead of the new position, then the destination
+    val stops = _plan.value.stops
+    val g = a.route.geometry
+    val cum = Geo.cumulative(g)
+    fun alongOf(c: GeographicCoordinate): Double {
+      var best = Double.MAX_VALUE
+      var at = 0.0
+      for (i in g.indices) {
+        val d = Geo.dist(g[i], c)
+        if (d < best) { best = d; at = cum[i] }
+      }
+      return at
+    }
+    val ahead = stops.dropLast(1).filter { alongOf(it.coordinate) > t + 50 } + listOfNotNull(stops.lastOrNull())
+    Log.i(TAG, "simulation: jump to ${t.toInt()} m of ${a.length.toInt()} m")
+    _nav.update { it.copy(recalculating = true) }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val waypoints = ahead.mapIndexed { i, st ->
+          Waypoint(coordinate = st.coordinate, kind = if (st.via && i < ahead.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+        }
+        val r = AppGraph.routes.routes(loc, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
+            ?: throw IllegalStateException("nessun percorso")
+        withContext(Dispatchers.Main) {
+          locationProvider.enableSimulationOn(r)
+          core.replaceRoute(r)
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "simulation jump: $e")
+      } finally {
+        _nav.update { it.copy(recalculating = false) }
+      }
+    }
+  }
+
   /** Start a guidance to a single place right away (from the POI list or a search while driving). */
   fun goTo(target: GeographicCoordinate, label: String, simulate: Boolean = false) {
     _plan.value = PlanState(stops = listOf(Stop(target, label)))

@@ -183,6 +183,7 @@ fun PoiRail(
     narrow: Boolean,
     modifier: Modifier = Modifier,
     onPoi: (RoutePoi) -> Unit,
+    onAll: (() -> Unit)? = null,
 ) {
   if (count <= 0) return
   // the nearest of each kind ahead (a parking, a fuel station, a service area...) rather than four
@@ -211,9 +212,16 @@ fun PoiRail(
     if (open) {
       for (p in ahead) PoiChip(p, traveledM, bg) { onPoi(p) }
       // a thin handle to close it by hand
-      Text(if (atRight) "›  chiudi" else "chiudi  ‹", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
-          modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(bg).clickable { open = false }
-              .padding(horizontal = 10.dp, vertical = 4.dp))
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (onAll != null) {
+          Text("tutti i punti", color = Color.White.copy(alpha = 0.95f), fontSize = 12.sp, fontWeight = FontWeight.Bold,
+              modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(bg).clickable { onAll() }
+                  .padding(horizontal = 10.dp, vertical = 4.dp))
+        }
+        Text(if (atRight) "›  chiudi" else "chiudi  ‹", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
+            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(bg).clickable { open = false }
+                .padding(horizontal = 10.dp, vertical = 4.dp))
+      }
     } else {
       // closed: a small tab with the kinds of places ahead
       val icons = ahead.take(3).joinToString(" ") { PoiCategories.byId(it.poi.cat)?.icon ?: "📍" }

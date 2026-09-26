@@ -4,6 +4,7 @@ import android.app.Application
 import app.navmaster.truck.data.CatalogStore
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.limits.LimitsIndex
+import app.navmaster.truck.live.TomTomGuard
 import app.navmaster.truck.location.SmartLocationProvider
 import app.navmaster.truck.poi.PoiIndex
 import app.navmaster.truck.routing.CriticalityFinder
@@ -48,8 +49,8 @@ object AppGraph {
   fun init(application: Application) {
     app = application
     // TomTom only inside its free allowance, also for the map's own requests
-    app.navmaster.truck.live.TomTomGuard.init(application)
-    app.navmaster.truck.live.TomTomGuard.installOnMapLibre()
+    TomTomGuard.init(application)
+    TomTomGuard.installOnMapLibre()
   }
 
   val settings by lazy { SettingsStore(app) }
@@ -83,10 +84,13 @@ object AppGraph {
 
   val routes by lazy { OfflineRouteProvider(engine, { profiles.garage.value }, { trip.value }) { remember(it) } }
 
+  /** The simulated drive (its speed can be changed while it runs). */
+  val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }
+
   val locationProvider by lazy {
     NavigationLocationProvider(
         liveProviding = SmartLocationProvider(app),
-        simulatedProvider = SimulatedLocationProvider(warpFactor = 3u),
+        simulatedProvider = simulator,
     )
   }
 

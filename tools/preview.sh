@@ -48,6 +48,11 @@ start --es nm_sheet search; sleep 8; adb shell input text "via"; sleep 1; adb sh
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1; sleep 6
 start --es nm_sheet search; sleep 8; adb shell input text "via"; sleep 1; adb shell input keyevent 62; adb shell input text "roma"; sleep 5; shot 04c_ricerca_verticale
+# portrait: home, vehicle, route choice (nothing cut or overlapping)
+start; sleep 14; shot 02b_mappa_verticale
+start --es nm_sheet vehicle; sleep 9; shot 03c_mezzo_verticale
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
+sleep 32; shot 05m_scelta_verticale
 adb shell settings put system user_rotation 0; sleep 5
 # guided search (country > town > street > number), offline
 start --es nm_sheet search_guided; sleep 9; shot 04b_ricerca_guidata
@@ -93,8 +98,11 @@ sleep 24; shot 12_segnalazione_polizia
 sleep 24; shot 12c_ancora_li
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_sheet report
 sleep 18; shot 12b_segnala
-start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_detour 43.99007,12.64362
-sleep 42; shot 13_deviazione
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_detour 43.99007,12.64362 --es nm_sheet stops
+sleep 42; shot 13_deviazione_tappe
+# all the places (along the route, nearest first) while driving
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_sheet pois
+sleep 24; shot 14_punti_interesse
 
 # guidance, articulated lorry (places panel: 3 places, closes after 12 s)
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ei nm_tollmax 5 --ei nm_poicount 3 --ei nm_poisec 12 --ez nm_sim true
@@ -102,7 +110,7 @@ sleep 28; shot 06_guida_camion
 sleep 3; shot 06b_svolta_dal_vivo
 sleep 15; shot 07_guida_camion_2
 adb shell settings put system accelerometer_rotation 0
-adb shell settings put system user_rotation 1; sleep 8; shot 08_guida_verticale
+adb shell settings put system user_rotation 1; sleep 8; shot 08_guida_verticale; sleep 10; shot 08b_guida_verticale_2
 adb shell settings put system user_rotation 0; sleep 4
 # the same trip seen in 2D, from above
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --es nm_view 2d --ez nm_sim true
