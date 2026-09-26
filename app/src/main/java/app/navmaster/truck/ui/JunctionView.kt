@@ -513,7 +513,7 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
 
   val m = scene.maneuverAtM
   // far: the road ahead up to well beyond the junction; near: framed on the junction
-  val lead = if (near) (if (scene.turn) 45.0 else 70.0) else 150.0
+  val lead = if (near) (if (scene.turn) 40.0 else 50.0) else 150.0
   val anchor = max(pos, m - lead).coerceAtMost(a.length)
   val here = a.pointAt(anchor)
   val plane = app.navmaster.truck.core.LocalPlane(here.lat, here.lng)
@@ -523,8 +523,8 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
     val p = plane.toXY(c)
     return app.navmaster.truck.core.XY(p.x * hv.y - p.y * hv.x, p.x * hv.x + p.y * hv.y)
   }
-  val zMax = (m - anchor) + if (near) (if (scene.turn) 50.0 else 110.0) else 170.0
-  val k = if (near) 0.02 else 0.016
+  val zMax = (m - anchor) + if (near) (if (scene.turn) 45.0 else 75.0) else 170.0
+  val k = if (near) 0.028 else 0.016
   fun persp(z: Double) = 1.0 / (1.0 + max(z, -10.0) * k)
   val bottomY = h * 1.0
   val topY = horizon + (h - horizon) * 0.01
@@ -630,7 +630,7 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
     ribbon(center, { i -> bandCenter(i) - bw / 4 }, { i -> bandCenter(i) + bw / 4 })?.let { drawPath(it, violetLight.copy(alpha = 0.55f)) }
   } else {
     // junction view: one big violet arrow painted on the lane, through the manoeuvre
-    val sel = center.indices.filter { along[it] >= max(pos + 2, m - 60) && along[it] <= m + 70 }
+    val sel = center.indices.filter { along[it] >= max(pos + 2, m - 45) && along[it] <= m + 55 }
     val aw = laneW * 0.62
     // the head is 9 m long, so it reads well even far in the picture
     val headSamples = (9.0 / step).toInt().coerceAtLeast(2)
