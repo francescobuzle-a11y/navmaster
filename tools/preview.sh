@@ -12,6 +12,7 @@ log() { adb logcat -d -s NavMaster:* NavMasterRoute:* NavMasterLimits:* NavMaste
 start() { adb shell am force-stop $PKG; adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663" "$@"; }
 
 adb wait-for-device
+adb logcat -G 16M || true
 for i in $(seq 1 30); do adb shell pm path android 2>/dev/null | grep -q package: && break; sleep 3; done
 adb shell settings put system screen_off_timeout 1800000
 adb root; sleep 3; adb wait-for-device

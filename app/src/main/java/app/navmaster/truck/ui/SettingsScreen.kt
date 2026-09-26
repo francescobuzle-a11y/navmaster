@@ -232,12 +232,6 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     ToggleRow("Polizia e autovelox in tutti i Paesi", "Anche in Germania e Svizzera (dove la legge vieta l'avviso al conducente) " +
         "e in Francia (dove è ammessa solo la «zona di controllo»). Spento: si seguono le regole di ogni Paese.",
         s.enforcementEverywhere) { v -> set { it.copy(enforcementEverywhere = v) } }
-    Caption("Le segnalazioni viaggiano su ntfy (gratuito, open source): puoi indicare anche un tuo server.", size = 13, lines = 3)
-    OutlinedTextField(
-        s.reportsServer, { v -> set { it.copy(reportsServer = v.trim()) } }, label = { Text("Server ntfy") },
-        singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
-        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-    )
   }
   Card("Traffico") {
     ToggleRow("Informazioni sul traffico", "Code, incidenti, lavori, chiusure e pericoli sul percorso, detti a voce in tempo; se la " +

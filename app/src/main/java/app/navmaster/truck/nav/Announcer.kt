@@ -35,6 +35,14 @@ class Announcer(private val speak: (String) -> Unit) {
   fun textOf(step: RouteStep): String? =
       step.spokenInstructions.minByOrNull { it.triggerDistanceBeforeManeuver }?.text?.let { clean(it) }
 
+  /** Leaving a roundabout: already said with its entry ("prendi la 2a uscita"), never alone. */
+  private fun isRoundaboutExit(step: RouteStep): Boolean {
+    val type = step.visualInstructions.firstOrNull()?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
+    if ("EXIT_ROUNDABOUT" in type || "EXIT_ROTARY" in type) return true
+    val t = textOf(step)?.lowercase() ?: return false
+    return (t.startsWith("esci") || t.startsWith("exit")) && ("rotatoria" in t || "rotonda" in t || "roundabout" in t)
+  }
+
   private fun distanceWords(m: Double): String = when {
     m >= 950 -> {
       val km = Math.round(m / 500.0) * 0.5
@@ -72,6 +80,7 @@ class Announcer(private val speak: (String) -> Unit) {
       acc = end
     }
     val step = steps[index]
+    if (isRoundaboutExit(step)) return
     val main = textOf(step) ?: return
     val v = speed.coerceAtLeast(8.0)
     val dNow = (v * 4.5).coerceIn(30.0, 160.0)
@@ -85,12 +94,18 @@ class Announcer(private val speak: (String) -> Unit) {
         done += "$id:prep"
         done += "$id:far"
         val next = steps.getOrNull(index + 1)
-        val soon = next != null && next.distance > 0 && next.distance < maxOf(120.0, v * 7) && index + 2 < steps.size
+        val soon = next != null && next.distance > 0 && next.distance < maxOf(120.0, v * 7) && index + 2 < steps.size &&
+            !isRoundaboutExit(next)
         val then = if (soon) next?.let { textOf(it) } else null
-        if (then != null) done += "$key:${index + 1}:prep"
+        // the next manoeuvre was just said with this one: not said again a few seconds later
+        if (then != null) {
+          done += "$key:${index + 1}:prep"
+          done += "$key:${index + 1}:far"
+          done += "$key:${index + 1}:now"
+        }
         say(main + (then?.let { ", poi " + it.replaceFirstChar { c -> c.lowercase() } } ?: "") + ".")
       }
-      toManeuver <= dPrep && toManeuver > dNow + v * 3 && settled -> if (done.add("$id:prep")) {
+      toManeuver <= dPrep && toManeuver >= 100 && toManeuver > dNow + v * 3 && settled -> if (done.add("$id:prep")) {
         done += "$id:far"
         say("Tra ${distanceWords(toManeuver)}, ${main.replaceFirstChar { it.lowercase() }}.")
       }

@@ -739,7 +739,20 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
             !(scene.motorway && b.roadClass in minor)
       }
       val outs: List<Pair<app.navmaster.truck.core.XY, Int>> =
-          if (branches.isNotEmpty()) branches.map { dirOf(it.heading) to it.lanes.coerceIn(1, 6) }
+          if (branches.isNotEmpty()) branches.map { b ->
+            // the carriageway that goes on (same class as the road before the fork) keeps the lanes
+            // the route leaves to it, when the graph does not say how many it has
+            val same = b.roadClass == (a.edgeAt((m - 40).coerceAtLeast(0.0))?.roadClass ?: "")
+            val lanesOf = if (b.lanes <= 1 && same) max(1, if (scene.exit) n - taken else n) else b.lanes
+            // a fork of a few degrees is widened, as in the drawings of the dedicated navigators, so
+            // that the road not taken is clearly apart from the one to take
+            val ref = oh ?: ih
+            val shown = if (ref == null) b.heading else {
+              val d = ((b.heading - ref + 540.0) % 360.0) - 180.0
+              if (kotlin.math.abs(d) < 35) ref + (d * 1.8).coerceIn(-50.0, 50.0) else b.heading
+            }
+            dirOf(shown) to lanesOf.coerceIn(1, 6)
+          }
           else if (inDir.len() > 0.5) listOf(inDir to n) else emptyList()
       for ((dir, bl) in outs) {
         if (dir.len() < 0.5) continue
