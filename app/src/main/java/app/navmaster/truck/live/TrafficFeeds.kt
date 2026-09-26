@@ -33,7 +33,7 @@ data class GeoBox(val w: Double, val s: Double, val e: Double, val n: Double) {
  */
 object TrafficFeeds {
   private const val TAG = "NavMasterLive"
-  private val client = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).build()
+  private val client = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).addInterceptor(TomTomGuard).build()
   private val json = Json { ignoreUnknownKeys = true }
 
   private fun get(url: String): String? =
@@ -101,6 +101,68 @@ object TrafficFeeds {
 
   // ------------------------------------------------------------------------------ TomTom
 
+  /** Zoom of the incident tiles read along the route (a tile is about 7 × 10 km in Europe). */
+  const val INCIDENT_ZOOM = 12
+
+  private const val INCIDENT_TAGS = "[icon_category,description,delay,magnitude,id,road_category,end_date]"
+
+  /**
+   * The incidents of one TomTom vector tile (counted as a tile, the large free allowance), or null
+   * when it was not asked (budget, no network): then the old answer is kept.
+   */
+  fun tomtomTile(key: String, z: Int, x: Int, y: Int): List<LiveEvent>? {
+    val url = "https://api.tomtom.com/traffic/map/4/tile/incidents/$z/$x/$y.pbf?key=${enc(key)}&t=-1" +
+        "&tags=${enc(INCIDENT_TAGS)}&language=it-IT"
+    val bytes = (try {
+      client.newCall(Request.Builder().url(url).header("User-Agent", "NavMaster/1.0 (truck navigation)").build()).execute().use {
+        when {
+          it.code == 204 -> null
+          it.isSuccessful -> it.body.bytes()
+          else -> null.also { _ -> Log.w(TAG, "TomTom tile HTTP ${it.code}") }
+        }
+      }
+    } catch (e: Exception) {
+      Log.w(TAG, "TomTom tile: $e")
+      null
+    }) ?: return null
+    val features = runCatching { Mvt.decode(bytes, z, x, y) }.getOrElse { Log.w(TAG, "TomTom tile decode: $it"); return null }
+    // the stretches (queues, closures) by incident id, the points carry the description
+    val lines = HashMap<String, MutableList<GeographicCoordinate>>()
+    for (f in features) {
+      if (f.type != 2) continue
+      val id = f.props["id"]?.toString() ?: continue
+      val pts = f.lines.flatten()
+      lines.getOrPut(id) { mutableListOf() }.addAll(pts)
+    }
+    val out = mutableListOf<LiveEvent>()
+    for (f in features) {
+      if (f.type != 1) continue
+      val p = f.lines.firstOrNull()?.firstOrNull() ?: continue
+      val cat = (f.props["icon_category"] as? Number)?.toInt() ?: 0
+      if (cat == 13) continue // a cluster of several incidents: the closer tiles have them one by one
+      val kind = kindOf(cat)
+      val id = f.props["id"]?.toString()
+      val desc = (f.props["description"] as? String)?.takeIf { it.isNotBlank() }
+      val delay = (f.props["delay"] as? Number)?.toInt() ?: 0
+      val line = id?.let { lines[it] }?.takeIf { it.size >= 2 } ?: emptyList()
+      out += LiveEvent(
+          id = "tt:" + (id ?: "${p.lat},${p.lng}"), source = "TomTom Traffic", kind = kind,
+          title = desc ?: kind.label, detail = null, lat = p.lat, lon = p.lng, line = line,
+          timeMs = System.currentTimeMillis(), delayS = if (kind == LiveKind.CLOSED) 0 else delay, official = true)
+    }
+    return out
+  }
+
+  private fun kindOf(cat: Int): LiveKind = when (cat) {
+    1 -> LiveKind.ACCIDENT
+    2, 4, 5, 10, 11 -> LiveKind.WEATHER
+    6 -> LiveKind.JAM
+    8 -> LiveKind.CLOSED
+    9 -> LiveKind.ROADWORKS
+    14 -> LiveKind.BROKEN_VEHICLE
+    else -> LiveKind.HAZARD
+  }
+
   private const val TOMTOM_FIELDS =
       "{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code},startTime,from,to,delay,roadNumbers}}}"
 
@@ -141,8 +203,11 @@ object TrafficFeeds {
   }
 
   /** TomTom's traffic flow as map tiles (coloured lines over the roads), with the driver's key. */
+  @Suppress("UNUSED_PARAMETER")
   fun tomtomFlowTiles(key: String, night: Boolean): String =
-      "https://api.tomtom.com/traffic/map/4/tile/flow/${if (night) "relative0-dark" else "relative0"}/{z}/{x}/{y}.png?key=${enc(key)}&tileSize=256"
+      // vector tiles, only the slowed roads ("relative-delay"): the map draws them sharp at any zoom
+      // from zoom 12 tiles, so a handful of requests covers the whole trip (see MapStyles)
+      "https://api.tomtom.com/traffic/map/4/tile/flow/relative-delay/{z}/{x}/{y}.pbf?key=${enc(key)}"
 
   // ------------------------------------------------------------------------------ HERE
 

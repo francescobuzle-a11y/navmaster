@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
       vm.probe(debugCosting = dbg, points = pr.split(';', '_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
     }
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
+    intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = k) } }
     val reportAhead = intent?.getStringExtra("nm_report_ahead")?.split(':')
     val detour = intent?.getStringExtra("nm_detour")?.split(',')?.takeIf { it.size == 2 }?.let {
       GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble())

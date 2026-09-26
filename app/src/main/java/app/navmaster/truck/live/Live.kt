@@ -84,14 +84,20 @@ object LiveMatch {
   }
 }
 
-/** Countries where the police checks may not be announced, and where only a "control zone" may. */
+/**
+ * Countries where the police checks may not be announced, and where only a "control zone" may.
+ * The driver chose to see them everywhere (Settings › Traffic and reports): then nothing is hidden.
+ */
 object LiveRules {
   val ENFORCEMENT_BANNED = setOf("DE", "CH")
   val ENFORCEMENT_ZONE_ONLY = setOf("FR")
 
-  fun allowed(kind: LiveKind, country: String?): Boolean = !kind.enforcement || country?.uppercase() !in ENFORCEMENT_BANNED
+  private fun everywhere() = app.navmaster.truck.AppGraph.settings.settings.value.enforcementEverywhere
+
+  fun allowed(kind: LiveKind, country: String?): Boolean =
+      !kind.enforcement || everywhere() || country?.uppercase() !in ENFORCEMENT_BANNED
 
   /** What the driver sees for an event in this country. */
   fun label(kind: LiveKind, country: String?): String =
-      if (kind.enforcement && country?.uppercase() in ENFORCEMENT_ZONE_ONLY) "Zona di controllo" else kind.label
+      if (kind.enforcement && !everywhere() && country?.uppercase() in ENFORCEMENT_ZONE_ONLY) "Zona di controllo" else kind.label
 }

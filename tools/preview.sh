@@ -88,7 +88,7 @@ sleep 3; shot 05j_guida_casello_3
 # the drivers' ones), the "still there?" question once passed; the report tiles; a detour to
 # Riccione with the way back onto the motorway route computed at the start
 LIVE="--es nm_live_prefix navmaster-ci-$RANDOM-"
-start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_report_ahead POLICE:3000 --ez nm_livetest true
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_report_ahead POLICE:3000 --ez nm_livetest true --es nm_tomtom_key ci-no-key
 sleep 24; shot 12_segnalazione_polizia
 sleep 24; shot 12c_ancora_li
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_sheet report
@@ -120,6 +120,7 @@ start --es nm_sheet settings_poi; sleep 8; shot 10b_impostazioni_poi
 adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10c_impostazioni_poi_2
 start --es nm_sheet settings_map; sleep 8; shot 10d_impostazioni_mappa
 start --es nm_sheet settings_live; sleep 8; shot 10e_impostazioni_traffico
+adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10f_impostazioni_traffico_2
 start --es nm_sheet regions; sleep 12; shot 11_paesi
 log
 grep -E "live|detour|direction of travel|report" "$OUT/logcat.txt" | head -40 >> "$INFO"

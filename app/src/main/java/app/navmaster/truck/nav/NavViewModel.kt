@@ -477,6 +477,47 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var liveMatcher: Pair<String, RouteMatcher>? = null
   private var liveSources: String? = null
   private var trafficSources: List<String> = emptyList()
+  private var openEvents: List<LiveEvent> = emptyList()
+  private var tomtomEvents: List<LiveEvent> = emptyList()
+  private val tomtomTiles = HashMap<String, Pair<Long, List<LiveEvent>>>()
+  private var lastMoveAt = 0L
+
+  /**
+   * TomTom incidents of the road ahead (60 km on motorways, 30 km elsewhere), read as zoom 12
+   * tiles: a tile is asked again only after 4 minutes on motorways and 8 elsewhere (twice as long
+   * when less than a third of the day's budget is left), never while the vehicle stands still.
+   */
+  private fun refreshTomTom(key: String, a: RouteAnalysis, traveled: Double) {
+    val now = System.currentTimeMillis()
+    val speed = navigationUiState.value.location?.speed?.value ?: 0.0
+    if (speed > 2.0 || lastMoveAt == 0L) lastMoveAt = now
+    val fast = a.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
+    val end = minOf(a.length, traveled + if (fast) 60_000.0 else 30_000.0)
+    val z = TrafficFeeds.INCIDENT_ZOOM
+    val tiles = LinkedHashSet<String>()
+    var at = traveled
+    while (at <= end && tiles.size < 16) {
+      val p = a.pointAt(at)
+      val (x, y) = app.navmaster.truck.live.Mvt.tileOf(p.lat, p.lng, z)
+      tiles += "$z/$x/$y"
+      at += 500.0
+    }
+    tomtomTiles.keys.retainAll(tiles)
+    if (now - lastMoveAt < 5 * 60_000L) {
+      val maxAge = (if (fast) 4 else 8) * 60_000L * (if (app.navmaster.truck.live.TomTomGuard.leftToday() < 0.3) 2 else 1)
+      var asked = 0
+      for (t in tiles) {
+        val old = tomtomTiles[t]
+        if (old != null && now - old.first < maxAge) continue
+        val (tz, tx, ty) = t.split('/').map { it.toInt() }
+        val ev = TrafficFeeds.tomtomTile(key, tz, tx, ty) ?: continue
+        tomtomTiles[t] = now to ev
+        asked++
+      }
+      if (asked > 0) Log.i(TAG, "TomTom: $asked tiles asked, ${app.navmaster.truck.live.TomTomGuard.summary()}")
+    }
+    tomtomEvents = tomtomTiles.values.flatMap { it.second }.distinctBy { it.id }
+  }
 
   private fun traveledNow(): Double =
       (_nav.value.routeLength - (navigationUiState.value.progress?.distanceRemaining ?: _nav.value.routeLength)).coerceAtLeast(0.0)
@@ -507,6 +548,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     liveJob = null
     liveEvents = emptyList()
     trafficEvents = emptyList()
+    openEvents = emptyList()
+    tomtomEvents = emptyList()
+    tomtomTiles.clear()
+    lastTrafficAt = 0L
   }
 
   private fun refreshLive() {
@@ -534,12 +579,17 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       val deRoads = a.edges.filter { it.endM > traveled && it.country?.uppercase() == "DE" && it.roadClass == "motorway" }
           .flatMap { it.refs }.mapNotNull { r -> Regex("^A ?(\\d{1,3})$").find(r)?.let { "A" + it.groupValues[1] } }.distinct()
       if (deRoads.isNotEmpty()) list += TrafficFeeds.autobahn(deRoads).also { sources += "Autobahn ${it.size}" }
-      val boxes = boxesAhead(a, traveled)
-      if (s.tomtomKey.isNotBlank()) list += runCatching { TrafficFeeds.tomtom(s.tomtomKey, boxes) }.getOrDefault(emptyList()).also { sources += "TomTom ${it.size}" }
-      if (s.hereKey.isNotBlank()) list += runCatching { TrafficFeeds.here(s.hereKey, boxes) }.getOrDefault(emptyList()).also { sources += "HERE ${it.size}" }
-      trafficEvents = list
+      if (s.hereKey.isNotBlank()) list += runCatching { TrafficFeeds.here(s.hereKey, boxesAhead(a, traveled)) }.getOrDefault(emptyList()).also { sources += "HERE ${it.size}" }
+      openEvents = list
       trafficSources = sources.filterNot { it.startsWith("segnalazioni") }
     }
+    // TomTom: incident tiles along the road ahead, each asked again only when old (see TomTomGuard)
+    if (s.liveTraffic && s.tomtomKey.isNotBlank()) {
+      runCatching { refreshTomTom(s.tomtomKey, a, traveled) }.onFailure { Log.w(TAG, "TomTom: $it") }
+      sources += "TomTom ${tomtomEvents.size}"
+      trafficSources = trafficSources.filterNot { it.startsWith("TomTom") } + "TomTom ${tomtomEvents.size}"
+    } else tomtomEvents = emptyList()
+    trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents else emptyList()
     // my own reports show at once, before ntfy gives them back
     localReports = localReports.filter { now - it.timeMs < it.kind.ttlMin * 60_000L && reports.none { r -> r.mine && r.kind == it.kind && Geo.dist(r.lat, r.lon, it.lat, it.lon) < 300 } }
     liveEvents = trafficEvents + reports + localReports
@@ -1023,6 +1073,21 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     if (selfTest) viewModelScope.launch(Dispatchers.IO) {
       val ab = runCatching { TrafficFeeds.autobahn(listOf("A8")) }.getOrElse { Log.w(TAG, "livetest autobahn: $it"); emptyList() }
       Log.i(TAG, "livetest autobahn A8: ${ab.size} events, first: ${ab.firstOrNull()?.let { "${it.kind} ${it.title} ${it.line.size} pts" }}")
+      // the vector tile reader on a real public tile (OpenFreeMap, no key), as TomTom's are read
+      runCatching {
+        val http = okhttp3.OkHttpClient()
+        val tj = http.newCall(okhttp3.Request.Builder().url("https://tiles.openfreemap.org/planet").build()).execute().use { it.body.string() }
+        val tpl = Regex("\"tiles\"\\s*:\\s*\\[\\s*\"([^\"]+)\"").find(tj)?.groupValues?.get(1) ?: error("no tiles in $tj")
+        val (x, y) = app.navmaster.truck.live.Mvt.tileOf(44.06, 12.57, 12)
+        val bytes = http.newCall(okhttp3.Request.Builder().url(tpl.replace("{z}", "12").replace("{x}", "$x").replace("{y}", "$y")).build())
+            .execute().use { it.body.bytes() }
+        val f = app.navmaster.truck.live.Mvt.decode(bytes, 12, x, y)
+        val roads = f.filter { it.layer == "transportation" && it.type == 2 }
+        val first = roads.firstOrNull()?.lines?.firstOrNull()?.firstOrNull()
+        Log.i(TAG, "livetest mvt: ${bytes.size} bytes, ${f.size} features, layers ${f.map { it.layer }.distinct()}, " +
+            "roads ${roads.size}, first road point $first, props ${roads.firstOrNull()?.props}")
+      }.onFailure { Log.w(TAG, "livetest mvt: $it") }
+      Log.i(TAG, "livetest tomtom guard: ${app.navmaster.truck.live.TomTomGuard.summary()}")
     }
     if (report == null && detour == null) return
     viewModelScope.launch {

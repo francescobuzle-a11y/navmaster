@@ -47,6 +47,9 @@ object AppGraph {
 
   fun init(application: Application) {
     app = application
+    // TomTom only inside its free allowance, also for the map's own requests
+    app.navmaster.truck.live.TomTomGuard.init(application)
+    app.navmaster.truck.live.TomTomGuard.installOnMapLibre()
   }
 
   val settings by lazy { SettingsStore(app) }

@@ -67,11 +67,12 @@ object MapStyles {
         }
         if (traffic != null) {
           putJsonObject("traffic") {
-            put("type", "raster")
+            put("type", "vector")
             putJsonArray("tiles") { add(JsonPrimitive(traffic)) }
-            put("tileSize", 256)
-            put("minzoom", 6)
-            put("maxzoom", 18)
+            put("minzoom", 8)
+            // zoom 12 tiles drawn also at the closer zooms (vector lines stay sharp): a few
+            // requests cover the whole view and the free allowance lasts
+            put("maxzoom", 12)
             put("attribution", "Traffico © TomTom")
           }
         }
@@ -85,12 +86,7 @@ object MapStyles {
           // the traffic colours over the roads, under the names
           if (!trafficAdded && type == "symbol") {
             trafficAdded = true
-            add(buildJsonObject {
-              put("id", "traffic")
-              put("type", "raster")
-              put("source", "traffic")
-              putJsonObject("paint") { put("raster-opacity", 0.85) }
-            })
+            add(json.parseToJsonElement(TRAFFIC_LAYER))
           }
           if (src == null) {
             add(layer)
@@ -123,6 +119,14 @@ object MapStyles {
     if (!out.exists() || out.readText() != text) out.writeText(text)
     return "file://" + out.absolutePath
   }
+
+  /** Slowed roads: yellow a little, orange slow, red very slow, dark red nearly stopped; beside the road, on its side. */
+  private const val TRAFFIC_LAYER =
+      """{"id":"traffic","type":"line","source":"traffic","source-layer":"Traffic flow",""" +
+          """"filter":["<",["get","traffic_level"],0.85],"layout":{"line-cap":"round","line-join":"round"},""" +
+          """"paint":{"line-color":["interpolate",["linear"],["get","traffic_level"],0.0,"#7F0000",0.25,"#D50000",0.5,"#FF6D00",0.75,"#FFC400"],""" +
+          """"line-width":["interpolate",["linear"],["zoom"],9,2,14,5,18,9],"line-offset":["interpolate",["linear"],["zoom"],9,1,14,4,18,8],""" +
+          """"line-opacity":0.9}}"""
 
   private const val EMPTY =
       """{"version":8,"name":"NavMaster vuota","sources":{},"layers":[{"id":"bg","type":"background","paint":{"background-color":"{BG}"}}]}"""

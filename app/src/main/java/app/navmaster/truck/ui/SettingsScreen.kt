@@ -211,8 +211,9 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     }
   }
   Card("Autovelox") {
-    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap. In Germania e Svizzera l'avviso è vietato e non compare; " +
-        "in Francia si mostra solo la «zona di controllo».", s.speedCameras) { v -> set { it.copy(speedCameras = v) } }
+    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap. " + (if (s.enforcementEverywhere) "In tutti i Paesi " +
+        "(scelta in Traffico e segnalazioni)." else "In Germania e Svizzera non compare, in Francia solo «zona di controllo»."),
+        s.speedCameras) { v -> set { it.copy(speedCameras = v) } }
   }
   Card("Velocità") {
     Stepper("Avviso quando superi il limite di", s.speedWarningKmh.toDouble(), "km/h", 1.0, 0.0, 20.0, 0) { v ->
@@ -229,8 +230,10 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         "altri autisti NavMaster sulla tua strada, e il pulsante ⚠ per segnalare. Senza account e senza il tuo nome.", s.liveReports) { v ->
       set { it.copy(liveReports = v) }
     }
-    Caption("In Germania e Svizzera i controlli di polizia non si possono annunciare e non compaiono; in Francia si mostra " +
-        "solo la «zona di controllo». Viaggiano su ntfy (gratuito, open source): puoi indicare anche un tuo server.", size = 13, lines = 5)
+    ToggleRow("Polizia e autovelox in tutti i Paesi", "Anche in Germania e Svizzera (dove la legge vieta l'avviso al conducente) " +
+        "e in Francia (dove è ammessa solo la «zona di controllo»). Spento: si seguono le regole di ogni Paese.",
+        s.enforcementEverywhere) { v -> set { it.copy(enforcementEverywhere = v) } }
+    Caption("Le segnalazioni viaggiano su ntfy (gratuito, open source): puoi indicare anche un tuo server.", size = 13, lines = 3)
     OutlinedTextField(
         s.reportsServer, { v -> set { it.copy(reportsServer = v.trim()) } }, label = { Text("Server ntfy") },
         singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
@@ -254,9 +257,14 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
           app.navmaster.truck.photos.StreetPhotos.openPhoto(context, "https://developer.tomtom.com/user/register")
         }
       } else {
-        ToggleRow("Colori del traffico sulla mappa", "Verde, arancio e rosso sulle strade secondo la velocità del traffico", s.trafficOnMap) { v ->
+        ToggleRow("Colori del traffico sulla mappa", "Giallo, arancio e rosso sulle strade rallentate", s.trafficOnMap) { v ->
           set { it.copy(trafficOnMap = v) }
         }
+        val usage by app.navmaster.truck.live.TomTomGuard.usage.collectAsState()
+        Caption("Sempre dentro la quota gratuita: solo richieste «a riquadri», al massimo " +
+            "${app.navmaster.truck.live.TomTomGuard.DAY_TILES} al giorno e ${app.navmaster.truck.live.TomTomGuard.MONTH_TILES} al mese, " +
+            "niente richieste da fermo; oltre il limite TomTom si ferma fino al giorno dopo e restano le altre fonti.", size = 13, lines = 5)
+        Caption(usage.let { app.navmaster.truck.live.TomTomGuard.summary() }, color = Nm.Text, size = 13, lines = 3)
       }
       OutlinedTextField(
           s.hereKey, { v -> set { it.copy(hereKey = v.trim()) } }, label = { Text("Chiave HERE (facoltativa)") },

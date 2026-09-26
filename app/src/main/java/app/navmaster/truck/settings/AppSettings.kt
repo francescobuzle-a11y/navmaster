@@ -154,6 +154,11 @@ data class Settings(
     val trafficOnMap: Boolean = true,
     /** The ntfy server the reports travel on (the public one, or one's own). */
     val reportsServer: String = "https://ntfy.sh",
+    /**
+     * Police checks and speed cameras shown in every country, also where the law forbids warning
+     * about them (Germany, Switzerland; France only "control zone"): the driver's choice.
+     */
+    val enforcementEverywhere: Boolean = true,
     /** Random tag of this device, to count a driver's confirmations once (not who he is). */
     val deviceTag: String = "",
 )

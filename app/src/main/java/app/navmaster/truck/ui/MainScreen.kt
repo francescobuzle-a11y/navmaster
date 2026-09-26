@@ -201,10 +201,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // fixed speed cameras: only where warning about them is allowed, facing our way when the map says
   val nextCamera = if (!navigating || !settings.speedCameras) null else nav.limits.firstOrNull { l ->
     l.kind == "speed_camera" && l.alongM - traveled in -10.0..800.0 &&
-        nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED &&
+        (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED) &&
         cameraFacesUs(l, nav.analysis)
   }
-  val cameraZoneOnly = nextCamera != null && nav.analysis?.edgeAt(nextCamera.alongM)?.country?.uppercase() in CAMERA_ZONE_ONLY
+  val cameraZoneOnly = nextCamera != null && !settings.enforcementEverywhere &&
+      nav.analysis?.edgeAt(nextCamera.alongM)?.country?.uppercase() in CAMERA_ZONE_ONLY
   LaunchedEffect(nextCamera?.alongM, (nextCamera?.alongM?.minus(traveled) ?: 9999.0) < 600) {
     val cam = nextCamera ?: return@LaunchedEffect
     if (cam.alongM - traveled < 600) vm.say(if (cameraZoneOnly) "Zona di controllo della velocità" else
