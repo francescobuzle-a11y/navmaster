@@ -27,7 +27,7 @@ import uniffi.ferrostar.GeographicCoordinate
  */
 object PersonalFeed {
   private const val TAG = "NavMasterLive"
-  const val SOURCE = "Server personale (prova)"
+  const val SOURCE = "Da Waze"
   private val client = OkHttpClient.Builder().callTimeout(10, TimeUnit.SECONDS).build()
   private val json = Json { ignoreUnknownKeys = true }
 
@@ -98,7 +98,7 @@ object PersonalFeed {
 
   // ------------------------------------------------------------------------------ directly from the tablet
 
-  const val DIRECT_SOURCE = "Waze (prova personale)"
+  const val DIRECT_SOURCE = "Da Waze"
 
   /** Address of the Live Map data; the emulator tests replace it with a sample file. */
   @Volatile var directUrl = "https://www.waze.com/live-map/api/georss"

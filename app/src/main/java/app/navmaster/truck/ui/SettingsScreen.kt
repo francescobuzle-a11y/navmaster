@@ -240,10 +240,10 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
     )
   }
-  Card("Prova personale") {
-    ToggleRow("Segnalazioni Waze (solo prova)", "Polizia, incidenti, pericoli, veicoli fermi, lavori, chiusure e code dalla mappa " +
-        "pubblica di Waze, solo sul tratto di percorso davanti, ogni 2 minuti e mai da fermo. Solo per te e a scopo dimostrativo " +
-        "(i Termini di Waze non lo consentono): quello che legge resta sul tablet e non va agli altri autisti.", s.personalFeed) { v ->
+  Card("Waze") {
+    ToggleRow("Da Waze", "Polizia, incidenti, pericoli, veicoli fermi, lavori, chiusure e code dalla mappa " +
+        "pubblica di Waze, solo sul tratto di percorso davanti, ogni 2 minuti e mai da fermo. " +
+        "Restano su questo tablet e non vanno agli altri autisti.", s.personalFeed) { v ->
       set { it.copy(personalFeed = v) }
     }
     if (s.personalFeed) {
@@ -463,7 +463,7 @@ private fun AboutPage() {
         "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale). " +
         "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA). " +
         "Traffico: Autobahn GmbH (dati aperti), TomTom e HERE con la chiave dell'utente. Segnalazioni: autisti NavMaster via ntfy. " +
-        "Nessun dato Waze.", size = 14, lines = 10)
+        "Waze: segnalazioni dalla mappa pubblica, solo se attivate.", size = 14, lines = 10)
   }
   Card("Avvertenze") {
     Caption("I divieti nazionali di circolazione sono indicativi: verifica sempre il calendario ufficiale. " +
