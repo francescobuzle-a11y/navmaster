@@ -257,7 +257,7 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
           app.navmaster.truck.photos.StreetPhotos.openPhoto(context, "https://developer.tomtom.com/user/register")
         }
       } else {
-        ToggleRow("Colori del traffico sulla mappa", "Giallo, arancio e rosso sulle strade rallentate", s.trafficOnMap) { v ->
+        ToggleRow("Colori del traffico sulla mappa (prova)", "Giallo, arancio e rosso sulle strade rallentate", s.trafficOnMap) { v ->
           set { it.copy(trafficOnMap = v) }
         }
         val usage by app.navmaster.truck.live.TomTomGuard.usage.collectAsState()

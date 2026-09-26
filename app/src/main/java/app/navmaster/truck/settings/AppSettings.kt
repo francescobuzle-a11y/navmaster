@@ -151,7 +151,7 @@ data class Settings(
     /** Free HERE key (platform.here.com): incidents of all Europe. */
     val hereKey: String = "",
     /** Traffic colours on the map roads (with the TomTom key). */
-    val trafficOnMap: Boolean = true,
+    val trafficOnMap: Boolean = false,
     /** The ntfy server the reports travel on (the public one, or one's own). */
     val reportsServer: String = "https://ntfy.sh",
     /**

@@ -146,9 +146,14 @@ object TomTomGuard : Interceptor {
    * The same guard on MapLibre's own HTTP client (the traffic colours on the map are asked by the
    * map engine, not by the app). By name, so a change of the map library cannot break the build.
    */
-  fun installOnMapLibre() {
+  fun installOnMapLibre(context: Context) {
     val client = OkHttpClient.Builder().addInterceptor(this).build()
     try {
+      // the map library must be started before its HTTP client can be replaced
+      runCatching {
+        Class.forName("org.maplibre.android.MapLibre").methods
+            .firstOrNull { it.name == "getInstance" && it.parameterTypes.size == 1 }?.invoke(null, context)
+      }.onFailure { Log.w(TAG, "map start: ${it.cause ?: it}") }
       val cls = Class.forName("org.maplibre.android.module.http.HttpRequestUtil")
       val m = cls.methods.firstOrNull { it.name == "setOkHttpClient" && it.parameterTypes.size == 1 &&
           it.parameterTypes[0].isAssignableFrom(OkHttpClient::class.java) }
@@ -157,7 +162,7 @@ object TomTomGuard : Interceptor {
         Log.i(TAG, "TomTom guard on the map client")
       } else Log.w(TAG, "map client: setOkHttpClient not found")
     } catch (e: Throwable) {
-      Log.w(TAG, "map client: $e")
+      Log.w(TAG, "map client: ${e.cause ?: e}")
     }
   }
 }

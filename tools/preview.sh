@@ -8,7 +8,7 @@ mkdir -p "$OUT"
 INFO="$OUT/preview_info.txt"
 shot() { adb exec-out screencap -p > "$OUT/$1.png"; echo "shot $1" >> "$INFO"; }
 log() { adb logcat -d -s NavMaster:* NavMasterRoute:* NavMasterLimits:* NavMasterVM:* NavMasterData:* NavMasterCrit:* \
-  NavMasterAnalysis:* NavMasterJV:* NavMasterLive:* NavMasterCatalog:* NavMasterLocation:* AndroidRuntime:E FerrostarCore:* > "$OUT/logcat.txt" 2>&1; }
+  NavMasterAnalysis:* NavMasterJV:* NavMasterLive:* DEBUG:* libc:* Mbgl:* mbgl:* NavMasterCatalog:* NavMasterLocation:* AndroidRuntime:E FerrostarCore:* > "$OUT/logcat.txt" 2>&1; }
 start() { adb shell am force-stop $PKG; adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663" "$@"; }
 
 adb wait-for-device
@@ -130,6 +130,9 @@ start --es nm_sheet settings_map; sleep 8; shot 10d_impostazioni_mappa
 start --es nm_sheet settings_live; sleep 8; shot 10e_impostazioni_traffico
 adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10f_impostazioni_traffico_2
 start --es nm_sheet regions; sleep 12; shot 11_paesi
+# traffic colours on the map with a (fake) TomTom key: the app must not stop; then back to normal
+start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
+start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
 log
 grep -E "live|detour|direction of travel|report" "$OUT/logcat.txt" | head -40 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"

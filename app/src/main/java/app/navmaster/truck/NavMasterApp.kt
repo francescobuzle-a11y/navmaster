@@ -50,7 +50,7 @@ object AppGraph {
     app = application
     // TomTom only inside its free allowance, also for the map's own requests
     TomTomGuard.init(application)
-    TomTomGuard.installOnMapLibre()
+    TomTomGuard.installOnMapLibre(application)
   }
 
   val settings by lazy { SettingsStore(app) }
