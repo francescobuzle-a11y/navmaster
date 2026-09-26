@@ -238,34 +238,6 @@ def signs(dst):
                 os.remove(f)
 
 
-def debug_motorway(region):
-    """Test package only (diagnosis, temporary): every tag of the motorway ways and of the nodes on
-    them that could stop or slow a lorry, in the build log."""
-    import os
-    import re as _re
-    import subprocess
-    if region != "test" or not os.path.exists("region.osm.pbf"):
-        return
-    try:
-        subprocess.run(["osmium", "tags-filter", "region.osm.pbf", "w/highway=motorway,motorway_link", "-o", "mw.osm.pbf", "--overwrite"],
-                       check=True)
-        out = subprocess.run(["osmium", "export", "mw.osm.pbf", "-f", "geojsonseq", "--add-unique-id=type_id",
-                              "--format-option", "print_record_separator=false"], check=True, capture_output=True, text=True).stdout
-        interesting = _re.compile(r"hgv|goods|weight|height|length|width|access|conditional|lanes|vehicle|axle|hazmat|overtaking|barrier|toll|trailer")
-        for line in out.splitlines():
-            f = json.loads(line)
-            t = f.get("properties") or {}
-            keys = {k: v for k, v in t.items() if interesting.search(k) and k not in ("lanes", "toll")}
-            g = f.get("geometry") or {}
-            c = g.get("coordinates")
-            first = c[0] if g.get("type") == "LineString" else c
-            if keys or g.get("type") == "Point":
-                print("DBGMW", f.get("id"), t.get("highway"), t.get("ref"), first, json.dumps(keys or t, ensure_ascii=False))
-    except Exception as ex:
-        print(f"debug: {ex}")
-
-
 if __name__ == "__main__":
     main()
     signs(sys.argv[2])
-    debug_motorway(sys.argv[3])
