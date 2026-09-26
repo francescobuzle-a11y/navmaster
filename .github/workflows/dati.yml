@@ -161,6 +161,8 @@ jobs:
             w/route=ferry r/type=restriction r/route=road,ferry -o v/all.osm.pbf --overwrite
           osmium tags-filter -i v/all.osm.pbf w/service=driveway,drive-through,emergency_access w/tracktype=grade3,grade4,grade5 \
             -o v/roads.osm.pbf --overwrite
+          # "maxheight=default" and the like would read as a zero limit and close roads to lorries
+          python3 data/clean_dims.py v/roads.osm.pbf
           rm v/all.osm.pbf; ls -la v
           docker pull -q "$VALHALLA_IMAGE"
           docker run --rm -v "$PWD/v:/data" "$VALHALLA_IMAGE" bash -c "
