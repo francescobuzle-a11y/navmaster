@@ -81,7 +81,7 @@ sleep 36; shot 05l_ingresso_piano_camper
 start --es nm_profile camion --es nm_load 12 --es nm_probecmp "44.08381,12.46547_43.9932705,12.6218864"; sleep 30
 # the lorry's own route there with one costing option changed at a time: which one sends it off the A14?
 P3="44.08381,12.46547_43.9932705,12.6218864"
-for opt in "none:0" "use_highways:1" "use_tolls:1" "use_truck_route:0" "top_speed:130" "toll_booth_cost:0" "country_crossing_cost:0" "country_crossing_penalty:0" "low_class_penalty:0" "use_highways:0.5,use_tolls:0.5,use_truck_route:0,country_crossing_cost:0"; do
+for opt in "top_speed:85" "top_speed:90" "top_speed:95" "top_speed:100" "top_speed:110" "top_speed:120" "top_speed:90,use_highways:1"; do
   start --es nm_profile camion --es nm_load 12 --es nm_probe "$P3" --es nm_costing "$opt"; sleep 12
 done
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
