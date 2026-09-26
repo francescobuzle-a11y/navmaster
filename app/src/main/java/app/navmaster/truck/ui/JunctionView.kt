@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -129,20 +131,30 @@ fun RefPlate(ref: String, country: String?, big: Boolean = false) {
  * with the real road numbers and towns. The fork comes closer as the vehicle does, smoothly.
  */
 @Composable
-fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier) {
+fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier, fill: Boolean = false) {
+  // the driver can close the panel for this manoeuvre (×, top left, as on the reference device)
+  var closed by androidx.compose.runtime.remember((scene.maneuverAtM / 10).toLong()) { androidx.compose.runtime.mutableStateOf(false) }
+  if (closed) return
+  // far from the junction the lane guidance, close to it the junction view with the signs
+  val near = scene.analysis == null || scene.turn || scene.roundabout ||
+      scene.distanceM < (if (scene.motorway) 400.0 else 160.0)
   val target = (1.0 - (scene.distanceM / scene.rangeM)).coerceIn(0.0, 1.0).toFloat()
   val progress by animateFloatAsState(target, tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "junction")
   // the position glides between two GPS fixes (one a second), so the view moves continuously
   val smooth by animateFloatAsState(scene.traveledM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "pos")
-  val hasSigns = scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty())
+  val hasSigns = near && (scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty()))
   Column(
-      modifier.shadow(10.dp, RoundedCornerShape(18.dp)).clip(RoundedCornerShape(18.dp)).background(Color(0xFF0C1117)),
+      modifier.shadow(10.dp, RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(Color(0xFF0C1117)),
   ) {
-    BoxWithConstraints(Modifier.fillMaxWidth().height(if (hasSigns) 250.dp else 200.dp)) {
+    BoxWithConstraints(if (fill) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(if (hasSigns) 280.dp else 240.dp)) {
+      val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { (if (hasSigns) 96.dp else 0.dp).toPx() }
       Canvas(Modifier.fillMaxSize()) {
         val a = scene.analysis
-        if (a != null) drawLive(scene, a, smooth.toDouble(), night, if (hasSigns) 0.46f else 0.30f) else drawRoad(scene, progress, night)
+        if (a != null) drawGarmin(scene, a, smooth.toDouble(), night, near, signsPx) else drawRoad(scene, progress, night)
       }
+      Text("×", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+          modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000))
+              .clickable { closed = true }.padding(horizontal = 10.dp, vertical = 0.dp))
       // the signs, on a gantry above the road
       if (hasSigns) Row(
           Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
@@ -180,16 +192,6 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
           main(Modifier.weight(1f))
           branch(Modifier.weight(1.3f))
         }
-      }
-      // how far: a bar that empties as the junction comes, and the metres
-      val left = scene.distanceM
-      Column(Modifier.align(Alignment.BottomStart).padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.width(14.dp).height(70.dp).clip(RoundedCornerShape(7.dp)).background(Color(0x66000000))) {
-          Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height((70 * (1f - progress)).dp).background(Color.White))
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(Fmt.distanceText(left), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Color(0x99000000)).padding(horizontal = 6.dp, vertical = 1.dp))
       }
     }
   }
@@ -456,27 +458,61 @@ fun junctionSceneOf(
 }
 
 /**
- * The live view: the real shape of the route from where the vehicle is, seen from a little above
- * and behind the cab, redrawn as the vehicle moves. The road bends as it bends, the lanes to take
- * are lit, a white arrow runs along the path through the turn, and the road not taken is there too.
+ * The live view, drawn the way the dedicated navigators draw it (reference: the video of a Garmin
+ * nüvi the driver chose). Two looks, from the same real geometry of the route:
+ *
+ * - lane guidance (still far from the junction): the road seen from high above and behind, on a
+ *   green field with no sky, dark asphalt, bold white dashed lane lines and the lanes to take
+ *   painted in the route's violet all along the curve;
+ * - junction view (close to it): a sky, the ground, the road with its concrete barriers, and a
+ *   big violet arrow painted on the lane through the manoeuvre, under the direction signs.
+ *
+ * Everything is drawn here from OpenStreetMap / Valhalla data: no image of anyone else is used.
  */
-private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.routing.RouteAnalysis, pos: Double, night: Boolean, horizonFrac: Float) {
+private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.routing.RouteAnalysis, pos: Double, night: Boolean,
+                                 near: Boolean, signsSpace: Float) {
   val w = size.width
   val h = size.height
-  val horizon = h * horizonFrac
-  drawRect(Brush.verticalGradient(if (night) listOf(Color(0xFF0E1726), Color(0xFF2A3A52)) else listOf(Color(0xFF6FA8DC), Color(0xFFE3EEF6)),
-      0f, horizon), size = size.copy(height = horizon))
-  drawRect(Brush.verticalGradient(if (night) listOf(Color(0xFF22301F), Color(0xFF121A11)) else listOf(Color(0xFF9DB08F), Color(0xFF6F8465)),
-      horizon, h), topLeft = Offset(0f, horizon), size = size.copy(height = h - horizon))
-  val asphalt = if (night) Color(0xFF3B4047) else Color(0xFF5A6068)
-  val marking = if (night) Color(0xFFCFD3D8) else Color.White
+  val violet = if (night) Color(0xFF8C62D8) else Color(0xFF9C6FE4)
+  val violetLight = if (night) Color(0xFFA985E8) else Color(0xFFB896F2)
+  val asphalt = if (night) Color(0xFF2A2B2E) else Color(0xFF38393C)
+  val marking = if (night) Color(0xFFD8DADD) else Color.White
+  val horizon: Float
+  if (!near) {
+    // lane guidance: a field that fills the panel, only a thin haze at the top
+    horizon = h * 0.07f
+    drawRect(Brush.verticalGradient(if (night) listOf(Color(0xFF1B2433), Color(0xFF26331F)) else listOf(Color(0xFFD9E6D2), Color(0xFF7FB35C)),
+        0f, horizon), size = size.copy(height = horizon))
+    drawRect(Brush.verticalGradient(if (night) listOf(Color(0xFF26331F), Color(0xFF1A2416)) else listOf(Color(0xFF6FA64B), Color(0xFF4F8A35)),
+        horizon, h), topLeft = Offset(0f, horizon), size = size.copy(height = h - horizon))
+  } else {
+    // junction view: sky with the signs, a far strip of land, the ground
+    horizon = max(h * 0.40f, signsSpace + h * 0.06f).coerceAtMost(h * 0.55f)
+    drawRect(Brush.verticalGradient(if (night) listOf(Color(0xFF0B1424), Color(0xFF2B3D5C)) else listOf(Color(0xFF3F86D6), Color(0xFFC7DDF3)),
+        0f, horizon), size = size.copy(height = horizon))
+    // distant low hills / buildings, flat and hazy
+    val hills = Path().apply {
+      moveTo(0f, horizon)
+      var x = 0f
+      var up = true
+      while (x < w) {
+        val bw = w * (0.08f + ((x * 7) % 13) / 13f * 0.07f)
+        lineTo(x, horizon - h * (if (up) 0.035f else 0.018f))
+        lineTo(x + bw, horizon - h * (if (up) 0.035f else 0.018f))
+        x += bw
+        up = !up
+      }
+      lineTo(w, horizon); close()
+    }
+    drawPath(hills, if (night) Color(0xFF1F2A3A) else Color(0xFFA9B7C6))
+    drawRect(Brush.verticalGradient(if (night) listOf(Color(0xFF23301E), Color(0xFF151D12)) else listOf(Color(0xFFB9B28E), Color(0xFF8E9A63)),
+        horizon, h), topLeft = Offset(0f, horizon), size = size.copy(height = h - horizon))
+  }
 
-  // The view is anchored a little before the junction while the vehicle is still far, so the
-  // junction is always seen large; from there on it follows the vehicle, live.
   val m = scene.maneuverAtM
-  val lead = if (scene.turn) 45.0 else 60.0
+  // far: the road ahead up to well beyond the junction; near: framed on the junction
+  val lead = if (near) (if (scene.turn) 45.0 else 70.0) else 200.0
   val anchor = max(pos, m - lead).coerceAtMost(a.length)
-  // local frame at the anchor: x to the right, y ahead (metres)
   val here = a.pointAt(anchor)
   val plane = app.navmaster.truck.core.LocalPlane(here.lat, here.lng)
   val hv = (plane.toXY(a.pointAt(anchor + 12)) - plane.toXY(a.pointAt((anchor - 8).coerceAtLeast(0.0)))).unit()
@@ -485,48 +521,41 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
     val p = plane.toXY(c)
     return app.navmaster.truck.core.XY(p.x * hv.y - p.y * hv.x, p.x * hv.x + p.y * hv.y)
   }
-  // pseudo-3D like the dedicated navigators: far things shrink and rise towards the horizon
-  val zMax = (m - anchor) + if (scene.turn) 45.0 else 80.0
-  val k = 0.006
-  fun persp(z: Double) = 1.0 / (1.0 + max(z, -12.0) * k)
-  val bottomY = h * 0.97
-  val topY = horizon + (h - horizon) * 0.04
+  val zMax = (m - anchor) + if (near) (if (scene.turn) 50.0 else 90.0) else 260.0
+  val k = if (near) 0.02 else 0.012
+  fun persp(z: Double) = 1.0 / (1.0 + max(z, -10.0) * k)
+  val bottomY = h * 1.0
+  val topY = horizon + (h - horizon) * 0.01
   val span = 1.0 - persp(zMax)
-  val xs = w / (if (scene.turn) 28.0 else 34.0)
+  val xs = w / (if (near) (if (scene.turn) 22.0 else 26.0) else 30.0)
   val cx = w / 2.0
   fun proj(p: app.navmaster.truck.core.XY): Offset? {
-    if (p.y > zMax + 5 || p.y < -14) return null
+    if (p.y > zMax + 5 || p.y < -10) return null
     val q = persp(p.y)
     val y = bottomY - (1.0 - q) / span * (bottomY - topY)
     return Offset((cx + p.x * xs * q).toFloat(), y.toFloat())
   }
-
-  val end = min(a.length, m + if (scene.turn) 60.0 else 110.0)
-  val start = (anchor - 12).coerceAtLeast(0.0)
+  val end = min(a.length, anchor + zMax + 5)
+  val start = (anchor - 10).coerceAtLeast(0.0)
   if (end - start < 10) return
-  val step = 2.5
+  val step = if (near) 2.0 else 3.0
   val center = mutableListOf<app.navmaster.truck.core.XY>()
   val along = mutableListOf<Double>()
   var s0 = start
-  while (s0 <= end) {
-    center += loc(a.pointAt(s0))
-    along += s0
-    s0 += step
-  }
+  while (s0 <= end) { center += loc(a.pointAt(s0)); along += s0; s0 += step }
   val lanes = scene.lanes.take(8)
-  val n = max(lanes.size, if (scene.motorway) 2 else 1).coerceAtLeast(1)
+  val n = max(lanes.size, if (scene.motorway) 3 else 2).coerceAtLeast(1)
   val laneW = 3.6
   val taken = lanes.count { it.active }.let { if (it == 0) (if (scene.exit) 1 else n) else it }
+  val merge = if (near) 40.0 else 70.0
   fun widthAt(s: Double): Double {
-    val before = n * laneW + 1.0
-    val after = (if (scene.exit || scene.turn) max(1, if (scene.turn) min(n, 2) else taken) else n) * laneW + 1.0
-    val t = ((s - m) / 40.0).coerceIn(0.0, 1.0)
+    val before = n * laneW
+    val after = (if (scene.exit || scene.turn) max(1, if (scene.turn) min(n, 2) else taken) else n) * laneW
+    val t = ((s - m) / merge).coerceIn(0.0, 1.0)
     return before + (after - before) * t
   }
   fun normals(pts: List<app.navmaster.truck.core.XY>): List<app.navmaster.truck.core.XY> = pts.indices.map { i ->
-    val p0 = pts[max(0, i - 1)]
-    val p1 = pts[min(pts.size - 1, i + 1)]
-    val d = (p1 - p0).unit()
+    val d = (pts[min(pts.size - 1, i + 1)] - pts[max(0, i - 1)]).unit()
     app.navmaster.truck.core.XY(d.y, -d.x)
   }
   fun ribbon(pts: List<app.navmaster.truck.core.XY>, off0: (Int) -> Double, off1: (Int) -> Double): Path? {
@@ -535,10 +564,8 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
     val right = pts.indices.mapNotNull { i -> proj(pts[i] + nrm[i] * off1(i)) }
     if (left.size < 2 || right.size < 2) return null
     return Path().apply {
-      moveTo(left[0].x, left[0].y)
-      for (o in left.drop(1)) lineTo(o.x, o.y)
-      for (o in right.reversed()) lineTo(o.x, o.y)
-      close()
+      moveTo(left[0].x, left[0].y); for (o in left.drop(1)) lineTo(o.x, o.y)
+      for (o in right.reversed()) lineTo(o.x, o.y); close()
     }
   }
   fun polyline(pts: List<app.navmaster.truck.core.XY>, off: (Int) -> Double): Path? {
@@ -547,80 +574,82 @@ private fun DrawScope.drawLive(scene: JunctionScene, a: app.navmaster.truck.rout
     if (o.size < 2) return null
     return Path().apply { moveTo(o[0].x, o[0].y); for (q in o.drop(1)) lineTo(q.x, q.y) }
   }
+  // line widths scale with the panel, like the thick markings of the reference
+  val edgeW = w * 0.012f
+  val dashW = w * 0.011f
+  val dash = PathEffect.dashPathEffect(floatArrayOf(w * 0.035f, w * 0.05f))
 
-  // the road not taken: straight on from the manoeuvre (the motorway after an exit, the other
-  // arm of a fork or of a crossing)
+  // the road not taken (the motorway after an exit, the other arm of a fork)
   if (!scene.roundabout) {
     val mi = along.indexOfFirst { it >= m }.let { if (it < 0) along.size - 1 else it }
     if (mi in 2 until center.size) {
-      val inDir = (center[mi] - center[max(0, mi - 8)]).unit()
+      val inDir = (center[mi] - center[max(0, mi - 6)]).unit()
       if (inDir.len() > 0.5) {
-        val ghost = (0..45).map { j -> center[mi] + inDir * (j * 3.0) }
-        val gw = n * laneW + 1.0
-        ribbon(ghost, { -gw / 2 }, { gw / 2 })?.let { drawPath(it, asphalt.copy(alpha = 0.85f)) }
+        val gw = if (scene.exit) n * laneW else n * laneW
+        val ghost = (0..60).map { j -> center[mi] + inDir * (j * 4.0) }
+        ribbon(ghost, { -gw / 2 }, { gw / 2 })?.let { drawPath(it, asphalt) }
+        polyline(ghost) { -gw / 2 }?.let { drawPath(it, marking, style = Stroke(edgeW)) }
+        polyline(ghost) { gw / 2 }?.let { drawPath(it, marking, style = Stroke(edgeW)) }
+        for (kk in 1 until n) polyline(ghost) { -gw / 2 + kk * laneW }?.let { drawPath(it, marking, style = Stroke(dashW, pathEffect = dash)) }
       }
     }
   }
-  // the route's road
+  // concrete barriers along the road, near only (the photographic look)
+  if (near && !scene.turn) {
+    val barrier = if (night) Color(0xFF5D6166) else Color(0xFFCBC8BE)
+    ribbon(center, { i -> -widthAt(along[i]) / 2 - 1.6 }, { i -> -widthAt(along[i]) / 2 - 0.9 })?.let { drawPath(it, barrier) }
+    ribbon(center, { i -> widthAt(along[i]) / 2 + 0.9 }, { i -> widthAt(along[i]) / 2 + 1.6 })?.let { drawPath(it, barrier) }
+  }
+  // the route's road with its shoulders
+  ribbon(center, { i -> -widthAt(along[i]) / 2 - 0.9 }, { i -> widthAt(along[i]) / 2 + 0.9 })?.let { drawPath(it, asphalt.copy(alpha = 0.9f)) }
   ribbon(center, { i -> -widthAt(along[i]) / 2 }, { i -> widthAt(along[i]) / 2 })?.let { drawPath(it, asphalt) }
-  // edges and lane lines
-  polyline(center) { i -> -widthAt(along[i]) / 2 }?.let { drawPath(it, marking, style = Stroke(4f)) }
-  polyline(center) { i -> widthAt(along[i]) / 2 }?.let { drawPath(it, marking, style = Stroke(4f)) }
-  for (k in 1 until n) {
-    polyline(center.filterIndexed { i, _ -> along[i] < m }) { i -> -widthAt(along[i]) / 2 + 0.5 + k * laneW }?.let {
-      drawPath(it, marking, style = Stroke(3f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(28f, 22f))))
+  polyline(center) { i -> -widthAt(along[i]) / 2 }?.let { drawPath(it, marking, style = Stroke(edgeW)) }
+  polyline(center) { i -> widthAt(along[i]) / 2 }?.let { drawPath(it, marking, style = Stroke(edgeW)) }
+  for (kk in 1 until n) {
+    polyline(center.filterIndexed { i, _ -> along[i] < m - 5 }) { i -> -widthAt(along[i]) / 2 + kk * laneW }?.let {
+      drawPath(it, marking, style = Stroke(dashW, pathEffect = dash))
     }
   }
-  // the lanes to take, lit, closing in on the new road after the manoeuvre
+  // the lanes to take
   val active = lanes.mapIndexedNotNull { i, l -> if (l.active) i else null }
   val firstLane = active.minOrNull() ?: if (scene.side > 0) n - taken else if (scene.side < 0) 0 else (n - taken) / 2
   val lastLane = active.maxOrNull() ?: (firstLane + taken - 1)
   fun bandCenter(i: Int): Double {
     val c0 = -(n * laneW) / 2 + (firstLane + lastLane + 1) * laneW / 2
-    val t = ((along[i] - m) / 40.0).coerceIn(0.0, 1.0)
+    val t = ((along[i] - m) / merge).coerceIn(0.0, 1.0)
     return c0 * (1 - t)
   }
-  val bw = (lastLane - firstLane + 1) * laneW * 0.8
-  ribbon(center, { i -> bandCenter(i) - bw / 2 }, { i -> bandCenter(i) + bw / 2 })?.let { drawPath(it, NmRoute.copy(alpha = 0.55f)) }
-  val centerNormals = normals(center)
-  // the arrow through the manoeuvre, running along the real path
-  val arrowPts = center.indices.filter { along[it] >= max(pos + 4, m - 40) && along[it] <= m + 32 }.map { i ->
-    center[i] + centerNormals[i] * bandCenter(i)
-  }
-  val arrowScreen = arrowPts.mapNotNull { proj(it) }
-  if (arrowScreen.size >= 2) {
-    val path = Path().apply { moveTo(arrowScreen[0].x, arrowScreen[0].y); for (q in arrowScreen.drop(1)) lineTo(q.x, q.y) }
-    drawPath(path, Color(0x66000000), style = Stroke(w * 0.045f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    drawPath(path, Color.White, style = Stroke(w * 0.03f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    val tip = arrowScreen.last()
-    val prev = arrowScreen[arrowScreen.size - 2]
-    val dx = tip.x - prev.x
-    val dy = tip.y - prev.y
-    val len = kotlin.math.hypot(dx, dy).coerceAtLeast(1f)
-    val ux = dx / len
-    val uy = dy / len
-    val hs = w * 0.05f
-    val head = Path().apply {
-      moveTo(tip.x + ux * hs, tip.y + uy * hs)
-      lineTo(tip.x - uy * hs * 0.8f, tip.y + ux * hs * 0.8f)
-      lineTo(tip.x + uy * hs * 0.8f, tip.y - ux * hs * 0.8f)
-      close()
-    }
-    drawPath(head, Color.White)
-  }
-  // the vehicle, at the bottom
-  proj(loc(a.pointAt(pos)))?.let { v ->
-    drawCircle(Color(0xFF1E88E5), w * 0.022f, v)
-    drawCircle(Color.White, w * 0.022f, v, style = Stroke(4f))
-  }
-  // lane arrows under it
-  if (lanes.size >= 2) {
-    val cell = min(w / (lanes.size + 2) * 0.6f, w * 0.05f)
-    val total = cell * 1.3f * lanes.size
-    for ((i, l) in lanes.withIndex()) {
-      val dir = if (l.active) l.activeDirection ?: l.directions.firstOrNull() else l.directions.firstOrNull()
-      val x0 = w / 2f - total / 2f + i * cell * 1.3f
-      shifted(x0, h - cell * 1.9f) { drawIntoLane(directionAngle(dir), if (l.active) Color.White else Color(0x66FFFFFF), cell) }
+  val nrm = normals(center)
+  if (!near) {
+    // lane guidance: the lanes to take painted violet all along, a lighter core like a lit lane
+    val bw = (lastLane - firstLane + 1) * laneW * 0.86
+    ribbon(center, { i -> bandCenter(i) - bw / 2 }, { i -> bandCenter(i) + bw / 2 })?.let { drawPath(it, violet) }
+    ribbon(center, { i -> bandCenter(i) - bw / 4 }, { i -> bandCenter(i) + bw / 4 })?.let { drawPath(it, violetLight.copy(alpha = 0.55f)) }
+  } else {
+    // junction view: one big violet arrow painted on the lane, through the manoeuvre
+    val sel = center.indices.filter { along[it] >= max(pos + 2, m - 55) && along[it] <= m + 35 }
+    val aw = laneW * 0.62
+    if (sel.size >= 3) {
+      val body = sel.dropLast(2)
+      val pts = body.map { center[it] }
+      val offs = body.map { bandCenter(it) }
+      val left = pts.indices.mapNotNull { j -> proj(pts[j] + nrm[body[j]] * (offs[j] - aw / 2)) }
+      val right = pts.indices.mapNotNull { j -> proj(pts[j] + nrm[body[j]] * (offs[j] + aw / 2)) }
+      val tipI = sel.last()
+      val baseI = body.last()
+      val tip = proj(center[tipI] + nrm[tipI] * bandCenter(tipI))
+      val hl = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) - aw * 1.25))
+      val hr = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) + aw * 1.25))
+      if (left.size >= 2 && right.size >= 2 && tip != null && hl != null && hr != null) {
+        val arrow = Path().apply {
+          moveTo(left[0].x, left[0].y); for (o in left.drop(1)) lineTo(o.x, o.y)
+          lineTo(hl.x, hl.y); lineTo(tip.x, tip.y); lineTo(hr.x, hr.y)
+          for (o in right.reversed()) lineTo(o.x, o.y); close()
+        }
+        drawPath(arrow, violet)
+        drawPath(arrow, violetLight, style = Stroke(w * 0.006f, join = StrokeJoin.Round))
+      }
     }
   }
 }
+

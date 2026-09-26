@@ -501,7 +501,9 @@ private fun NavigatingOverlay(
     if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp))
     Box(Modifier.weight(1f).fillMaxWidth()) {
       if (jv != null && landscape) {
-        JunctionView(jv, night, Modifier.align(Alignment.TopEnd).fillMaxWidth(0.44f).padding(top = 4.dp))
+        // as on the reference device: a tall panel on the right, from the manoeuvre bar down to the
+        // bottom bar, the map on the left
+        JunctionView(jv, night, Modifier.align(Alignment.TopEnd).fillMaxWidth(0.42f).fillMaxHeight().padding(top = 4.dp, bottom = 8.dp), fill = true)
       }
       SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
       // places along the route: a narrow panel at the edge (the right one unless the driver chose
