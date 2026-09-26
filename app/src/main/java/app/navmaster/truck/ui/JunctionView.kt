@@ -434,7 +434,9 @@ fun junctionSceneOf(
       branchRefs = (sign?.first?.refs ?: emptyList()) + (after?.refs ?: emptyList()),
       mainRefs = here?.refs ?: emptyList(),
       motorway = motorway,
-      country = (here?.country ?: after?.country ?: countryFallback)?.uppercase()?.takeIf { it.length == 2 },
+      // the graph knows the country when its admin data is complete; else the catalogue by position
+      country = (here?.country ?: after?.country ?: countryFallback?.takeIf { it.length == 2 }
+          ?: a?.pointAt(at)?.let { pt -> app.navmaster.truck.AppGraph.catalog.countryAt(pt.lat, pt.lng)?.iso })?.uppercase(),
       exit = type.contains("OFFRAMP") || type.contains("FORK"),
       analysis = a,
       traveledM = traveled,

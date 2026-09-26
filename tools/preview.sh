@@ -78,9 +78,9 @@ sleep 36; shot 05k_ingresso_piano
 start $TOLLIN --es nm_profile camper --es nm_load 0.4 --ez nm_plan true
 sleep 36; shot 05l_ingresso_piano_camper
 # which stretch stops the lorry? routes between points of the Rimini Nord entry, lorry then camper (log: probe)
-PROBE="44.08767,12.46958;44.08690,12.46887;44.08588,12.46840;44.08381,12.46547;43.96360,12.69205"
+PROBE="44.08767,12.46958_44.08690,12.46887_44.08588,12.46840_44.08381,12.46547_43.96360,12.69205"
 start --es nm_profile camion --es nm_load 12 --es nm_probe "$PROBE"; sleep 25
-start --es nm_profile camion --es nm_load 12 --es nm_probe "44.08767,12.46958;43.96360,12.69205;44.08588,12.46840;43.96360,12.69205;44.08690,12.46887;44.08588,12.46840"; sleep 25
+start --es nm_profile camion --es nm_load 12 --es nm_probe "44.08767,12.46958_43.96360,12.69205_44.08588,12.46840_43.96360,12.69205_44.08690,12.46887_44.08588,12.46840"; sleep 25
 start --es nm_profile camper --es nm_load 0.4 --es nm_probe "$PROBE"; sleep 20
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio

@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     intent?.getStringExtra("nm_probe")?.let { pr ->
       intent?.getStringExtra("nm_profile")?.let { AppGraph.profiles.select(it) }
       intent?.getStringExtra("nm_load")?.toDoubleOrNull()?.let { AppGraph.profiles.setLoad(it) }
-      vm.probe(pr.split(';').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
+      vm.probe(pr.split(';', '_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
     }
     val dest = intent?.getStringExtra("nm_dest") ?: return
     val parts = dest.split(',')
