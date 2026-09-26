@@ -53,6 +53,8 @@ jobs:
           osmium tags-filter -i /mnt/w/all.osm.pbf w/service=driveway,drive-through,emergency_access \
             w/tracktype=grade3,grade4,grade5 -o $HOME/big/roads.osm.pbf --overwrite
           rm /mnt/w/all.osm.pbf
+          # "maxheight=default" and the like would read as a zero limit and close roads to lorries
+          python3 "$GITHUB_WORKSPACE/data/clean_dims.py" $HOME/big/roads.osm.pbf /mnt/w
           ls -la $HOME/big; date; df -h / /mnt
       - name: Grafo Valhalla dell'Europa
         run: |
