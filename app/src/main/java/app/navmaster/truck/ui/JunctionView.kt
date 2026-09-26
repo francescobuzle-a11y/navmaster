@@ -569,7 +569,7 @@ fun junctionSceneOf(
   if (jvLogged != at.toLong() / 50) {
     jvLogged = at.toLong() / 50
     android.util.Log.i("NavMasterJV", "scene at ${at.toInt()} m: ${type} ${mod} lanes ${lanes.size}, graph lanes ${here?.lanes}, " +
-        "shape ${a?.junctionShapeNear(at)}")
+        "shape ${a?.junctionShapeNear(at, 90.0)}")
   }
   return JunctionScene(
       side = side,
@@ -687,7 +687,9 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
   while (s0 <= end) { center += loc(a.pointAt(s0)); along += s0; s0 += step }
   val lanes = scene.lanes.take(8)
   // the real number of lanes: the lane data of the junction, else the graph's lanes of the road
-  val js = a.junctionShapeNear(m)
+  // the node of the junction: the manoeuvre point of the guidance and the node of the graph can be
+  // some tens of metres apart
+  val js = a.junctionShapeNear(m, 90.0)
   val graphLanes = a.edgeAt((m - 40).coerceAtLeast(0.0))?.lanes ?: 0
   val n = (if (lanes.size >= 2) lanes.size else if (graphLanes >= 1) graphLanes else if (scene.motorway) 3 else 2).coerceIn(1, 8)
   val laneW = 3.6
