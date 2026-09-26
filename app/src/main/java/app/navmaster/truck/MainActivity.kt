@@ -75,6 +75,11 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
         kv.split(':').takeIf { it.size == 2 }?.let { it[0] to (it[1].toDoubleOrNull() ?: return@mapNotNull null) } }?.toMap() ?: emptyMap()
       vm.probe(debugCosting = dbg, points = pr.split(';', '_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
     }
+    intent?.getStringExtra("nm_night")?.let { n ->
+      val mode = when (n) { "night" -> app.navmaster.truck.settings.NightMode.NIGHT; "day" -> app.navmaster.truck.settings.NightMode.DAY
+        else -> app.navmaster.truck.settings.NightMode.AUTO }
+      AppGraph.settings.update { it.copy(nightMode = mode) }
+    }
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
     intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = if (k == "none") "" else k) } }
     // emulator test of the direct mode on a sample file (never the real service from the tests)

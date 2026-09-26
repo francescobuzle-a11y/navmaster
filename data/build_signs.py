@@ -59,6 +59,22 @@ def clean(v):
     return ";".join(out[:5]) or None
 
 
+def end_bearing(coords):
+    """Bearing of the last ~25 m of the line: the way the lanes go into the junction."""
+    return (start_bearing(list(reversed(coords))) + 180.0) % 360
+
+
+def lanes_value(v):
+    """destination:lanes "Bologna|Bologna|Milano;Torino" -> the same, cleaned lane by lane (None if empty)."""
+    if not v:
+        return None
+    lanes = []
+    for lane in v.split("|"):
+        vals = [p.strip() for p in lane.split(";") if p.strip() and p.strip().lower() not in ("none", "no")]
+        lanes.append(";".join(vals[:4]))
+    return "|".join(lanes) if len(lanes) >= 2 and any(lanes) else None
+
+
 def main():
     src, dst = sys.argv[1], sys.argv[2]
     db = sqlite3.connect(dst)
@@ -67,6 +83,10 @@ def main():
         CREATE TABLE signs(id INTEGER PRIMARY KEY, osm TEXT, lat REAL, lon REAL, brg REAL, hw TEXT,
                            dest TEXT, dref TEXT, colour TEXT, jref TEXT, jname TEXT);
         CREATE TABLE sign_cells(cell INTEGER NOT NULL, sid INTEGER NOT NULL);
+        DROP TABLE IF EXISTS lane_signs; DROP TABLE IF EXISTS lane_sign_cells;
+        CREATE TABLE lane_signs(id INTEGER PRIMARY KEY, osm TEXT, lat REAL, lon REAL, brg REAL, hw TEXT,
+                                dest TEXT, dref TEXT, colour TEXT);
+        CREATE TABLE lane_sign_cells(cell INTEGER NOT NULL, sid INTEGER NOT NULL);
     """)
     junctions = {}
     jcells = {}
@@ -89,6 +109,29 @@ def main():
             if geom.get("type") != "LineString":
                 continue
             ways.append((str(feat.get("id") or ""), tags, geom["coordinates"]))
+    # the signs over the lanes (destination:lanes): stored at the END of the road that carries them,
+    # where its lanes split, with the bearing the lanes have there
+    nl = 0
+    for osm, tags, coords in ways:
+        if len(coords) < 2:
+            continue
+        oneway = tags.get("oneway") in ("yes", "1", "true") or tags.get("highway") in ("motorway", "motorway_link")
+        for direction in ("forward", "backward"):
+            if direction == "backward" and oneway:
+                continue
+            def tl(k):
+                return tags.get(f"{k}:lanes:{direction}") or (tags.get(f"{k}:lanes") if direction == "forward" else None)
+            dest = lanes_value(tl("destination"))
+            dref = lanes_value(tl("destination:ref"))
+            if not dest and not dref:
+                continue
+            colour = lanes_value(tl("destination:colour"))
+            pts = coords if direction == "forward" else list(reversed(coords))
+            lon, lat = pts[-1]
+            cur = db.execute("INSERT INTO lane_signs(osm, lat, lon, brg, hw, dest, dref, colour) VALUES (?,?,?,?,?,?,?,?)",
+                             (osm, round(lat, 6), round(lon, 6), round(end_bearing(pts), 1), tags.get("highway"), dest, dref, colour))
+            db.execute("INSERT INTO lane_sign_cells(cell, sid) VALUES (?,?)", (cell_id(lat, lon), cur.lastrowid))
+            nl += 1
     n = 0
     for osm, tags, coords in ways:
         if len(coords) < 2:
@@ -124,11 +167,13 @@ def main():
             db.execute("INSERT INTO sign_cells(cell, sid) VALUES (?,?)", (cell_id(lat, lon), cur.lastrowid))
             n += 1
     db.execute("CREATE INDEX sign_cells_cell ON sign_cells(cell)")
+    db.execute("CREATE INDEX lane_sign_cells_cell ON lane_sign_cells(cell)")
     db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('signs', ?)", (str(n),))
+    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('lane_signs', ?)", (str(nl),))
     db.commit()
     db.execute("VACUUM")
     db.close()
-    print(json.dumps({"signs": n, "exits": len(junctions)}))
+    print(json.dumps({"signs": n, "lane_signs": nl, "exits": len(junctions)}))
 
 
 if __name__ == "__main__":

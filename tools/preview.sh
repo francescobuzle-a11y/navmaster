@@ -88,6 +88,11 @@ start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 16; shot 05f_guida_casello
 sleep 16; shot 05g_guida_casello_2
 sleep 3; shot 05j_guida_casello_3
+# the same exit at night: night palette of the junction view, the gantry drawn behind the signs
+start $TOLLOUT --ei nm_variant 0 --ez nm_sim true --es nm_night night
+sleep 16; shot 05n_svincolo_notte
+sleep 14; shot 05o_svincolo_notte_2
+start --es nm_night auto; sleep 6
 
 # live: a report of "another driver" 3 km ahead, sent and read back through ntfy (test topics, not
 # the drivers' ones), the "still there?" question once passed; the report tiles; a detour to
@@ -157,6 +162,6 @@ start --es nm_sheet regions; sleep 12; shot 11_paesi
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
 log
-grep -E "live|detour|direction of travel|report|personal feed|waze direct" "$OUT/logcat.txt" | head -60 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs" "$OUT/logcat.txt" | head -60 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

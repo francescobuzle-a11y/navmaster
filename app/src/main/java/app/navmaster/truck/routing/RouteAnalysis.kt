@@ -71,6 +71,18 @@ data class EdgeSign(
 /** A road that leaves a junction of the route, with its sign: the one not taken shows where it goes. */
 data class SideSign(val sign: EdgeSign, /** -1 left of the route, 1 right, 0 straight on. */ val side: Int, val wayId: Long)
 
+/** What the sign over one lane says (OSM destination:lanes / destination:ref:lanes). */
+data class LaneDest(val towns: List<String>, val refs: List<String>, val colour: String?) {
+  val isEmpty: Boolean
+    get() = towns.isEmpty() && refs.isEmpty()
+
+  /** Two lanes under the same panel of the gantry. */
+  fun samePanel(o: LaneDest): Boolean = towns == o.towns && refs == o.refs && colour == o.colour
+}
+
+/** The signs over the lanes before a junction of the route (left to right), where the lanes split. */
+data class LaneSigns(val atM: Double, val lanes: List<LaneDest>)
+
 /** The signs of one junction of the route, from the OSM destination tags (limiti.sqlite). */
 data class RouteSign(val atM: Double, val taken: EdgeSign?, val others: List<SideSign>)
 
@@ -178,6 +190,16 @@ class RouteAnalysis(
   /** The junction signs closest to this point of the route (within 60 m). */
   fun osmSignNear(alongM: Double): RouteSign? =
       osmSigns.filter { kotlin.math.abs(it.atM - alongM) < 60 }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
+
+  /** The signs over the lanes (destination:lanes) of the route, filled by LimitsIndex.scan. */
+  @Volatile var laneSigns: List<LaneSigns> = emptyList()
+
+  /**
+   * The gantry of the junction at [alongM]: the road with the lane signs ends where its lanes split,
+   * at the junction or up to a few hundred metres before it.
+   */
+  fun laneSignsNear(alongM: Double): LaneSigns? =
+      laneSigns.filter { it.atM >= alongM - 400 && it.atM <= alongM + 40 }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
 
   fun edgeAt(alongM: Double): EdgeInfo? = edges.firstOrNull { alongM >= it.startM && alongM < it.endM }
 

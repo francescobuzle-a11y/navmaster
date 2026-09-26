@@ -226,6 +226,8 @@ def signs(dst):
     try:
         subprocess.run(["osmium", "tags-filter", "region.osm.pbf", "w/destination", "w/destination:ref", "w/destination:forward",
                         "w/destination:backward", "w/destination:ref:forward", "w/destination:ref:backward", "w/destination:street",
+                        "w/destination:lanes", "w/destination:ref:lanes", "w/destination:lanes:forward",
+                        "w/destination:lanes:backward", "w/destination:ref:lanes:forward", "w/destination:ref:lanes:backward",
                         "n/highway=motorway_junction", "-o", "signs.osm.pbf", "--overwrite"], check=True)
         subprocess.run(["osmium", "export", "signs.osm.pbf", "-f", "geojsonseq", "--add-unique-id=type_id",
                         "--format-option", "print_record_separator=false", "-o", "signs.geojsonseq", "--overwrite"], check=True)

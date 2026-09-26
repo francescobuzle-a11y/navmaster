@@ -128,6 +128,7 @@ class LimitsIndex(regions: RegionManager) {
       out += l
     }
     if (a != null) a.osmSigns = runCatching { signs(m, a) }.getOrElse { Log.w("NavMasterLimits", "signs: $it"); emptyList() }
+    if (a != null) a.laneSigns = runCatching { laneSigns(m, a) }.getOrElse { Log.w("NavMasterLimits", "lane signs: $it"); emptyList() }
     Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
         "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms, " +
         "$elsewhere on roads next to the route left out" + (if (ways.isEmpty()) " (no way ids: matched by distance)" else ""))
@@ -189,6 +190,53 @@ class LimitsIndex(regions: RegionManager) {
     Log.i("NavMasterLimits", "signs: ${rows.size} on the route, ${out.size} junctions: " +
         out.take(12).joinToString { s -> "${s.atM.toInt()}:" + (s.taken?.let { t -> (t.branches + t.towards).joinToString("/") } ?: "-") +
             " | " + s.others.joinToString(" ") { o -> "${o.side}:" + (o.sign.branches + o.sign.towards).joinToString("/") } })
+    return out
+  }
+
+  /**
+   * The signs over the lanes on the route (table «lane_signs», data/build_signs.py): the road that
+   * carries them must be one the route drives, in the same direction, up to where its lanes split.
+   */
+  fun laneSigns(m: RouteMatcher, a: RouteAnalysis): List<app.navmaster.truck.routing.LaneSigns> {
+    val rows = dbs.perCells(m.cells) { db, inList ->
+      val out = mutableListOf<app.navmaster.truck.routing.LaneSigns>()
+      try {
+        db.rawQuery("SELECT DISTINCT s.id, s.osm, s.lat, s.lon, s.brg, s.dest, s.dref, s.colour FROM lane_sign_cells c " +
+            "JOIN lane_signs s ON s.id = c.sid WHERE c.cell IN ($inList)", null).use { c ->
+          while (c.moveToNext()) {
+            val p = GeographicCoordinate(c.getDouble(2), c.getDouble(3))
+            val (d, along) = m.nearest(p) ?: continue
+            if (d > 15) continue
+            val wayId = c.getString(1)?.removePrefix("w")?.toLongOrNull() ?: -1L
+            if (wayId > 0 && a.wayIds.isNotEmpty() && wayId !in a.wayIds) continue
+            val routeBrg = app.navmaster.truck.core.Geo.bearing(a.pointAt((along - 25).coerceAtLeast(0.0)), a.pointAt(along))
+            val diff = abs(((c.getDouble(4) - routeBrg + 540.0) % 360.0) - 180.0)
+            if (diff > 50) continue
+            fun lanes(i: Int) = c.getString(i)?.split('|') ?: emptyList()
+            val dest = lanes(5)
+            val dref = lanes(6)
+            val col = lanes(7)
+            val n = maxOf(dest.size, dref.size)
+            if (n < 2) continue
+            fun vals(l: List<String>, k: Int) = l.getOrNull(k)?.split(';')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+            val list = (0 until n).map { k ->
+              app.navmaster.truck.routing.LaneDest(vals(dest, k), vals(dref, k), col.getOrNull(k)?.takeIf { it.isNotBlank() })
+            }
+            if (list.all { it.isEmpty }) continue
+            out += app.navmaster.truck.routing.LaneSigns(along, list)
+          }
+        }
+      } catch (e: Exception) {
+        // packages built before the lane signs have no table: nothing to show
+      }
+      out
+    }
+    val out = rows.sortedBy { it.atM }.fold(mutableListOf<app.navmaster.truck.routing.LaneSigns>()) { acc, r ->
+      if (acc.none { abs(it.atM - r.atM) < 20 }) acc += r
+      acc
+    }
+    if (out.isNotEmpty()) Log.i("NavMasterLimits", "lane signs: ${out.size} on the route: " +
+        out.take(8).joinToString { s -> "${s.atM.toInt()}:" + s.lanes.joinToString("|") { l -> (l.refs + l.towns).joinToString(";") } })
     return out
   }
 

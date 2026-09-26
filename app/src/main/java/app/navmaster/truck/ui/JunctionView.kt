@@ -71,6 +71,10 @@ data class JunctionScene(
     val roundabout: Boolean = false,
     /** Sign of the road not taken at this junction (OSM destination tags): where the other way goes. */
     val otherSign: EdgeSign? = null,
+    /** The signs over the lanes, left to right (OSM destination:lanes), when mapped. */
+    val laneSigns: List<app.navmaster.truck.routing.LaneDest>? = null,
+    /** Which of those lanes the route takes (same size as [laneSigns]), when known. */
+    val laneSignsActive: List<Boolean>? = null,
 )
 
 /** Countries whose motorway signs are green (the others use blue). */
@@ -103,9 +107,13 @@ fun osmSignColors(colour: String): Pair<Color, Color>? = when (colour.substringB
   else -> null
 }
 
+/** The signs at night: a little darker and the white less dazzling, as seen in the headlights. */
+private fun nightSign(c: Color, night: Boolean): Color =
+    if (!night) c else if (c == Color.White || c == SignWhite) Color(0xFFDCDFE3) else androidx.compose.ui.graphics.lerp(c, Color.Black, 0.25f)
+
 /** The small plate of a road number, coloured like on the signs ("A1" green in Italy, "E45" green, "SS16" blue). */
 @Composable
-fun RefPlate(ref: String, country: String?, big: Boolean = false) {
+fun RefPlate(ref: String, country: String?, big: Boolean = false, night: Boolean = false) {
   val r = ref.uppercase()
   val c = country?.uppercase()
   val (bg, fg) = when {
@@ -119,8 +127,9 @@ fun RefPlate(ref: String, country: String?, big: Boolean = false) {
     else -> SignBlue to Color.White
   }
   Text(
-      r, color = fg, fontSize = if (big) 18.sp else 14.sp, fontWeight = FontWeight.Bold,
-      modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(bg).border(1.5.dp, fg.copy(alpha = 0.9f), RoundedCornerShape(4.dp))
+      r, color = nightSign(fg, night), fontSize = if (big) 18.sp else 14.sp, fontWeight = FontWeight.Bold,
+      modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(nightSign(bg, night))
+          .border(1.5.dp, nightSign(fg, night).copy(alpha = 0.9f), RoundedCornerShape(4.dp))
           .padding(horizontal = 6.dp, vertical = 1.dp),
   )
 }
@@ -142,7 +151,8 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
   val progress by animateFloatAsState(target, tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "junction")
   // the position glides between two GPS fixes (one a second), so the view moves continuously
   val smooth by animateFloatAsState(scene.traveledM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "pos")
-  val hasSigns = near && (scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty()))
+  val laneGantry = near && !scene.turn && scene.laneSigns != null
+  val hasSigns = near && (laneGantry || scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty()))
   Column(
       modifier.shadow(10.dp, RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(Color(0xFF0C1117)),
   ) {
@@ -151,12 +161,17 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
       Canvas(Modifier.fillMaxSize()) {
         val a = scene.analysis
         if (a != null) drawGarmin(scene, a, smooth.toDouble(), night, near, signsPx) else drawRoad(scene, progress, night)
+        // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
+        if (hasSigns) drawGantry(signsPx, night)
       }
       Text("×", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
           modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000))
               .clickable { closed = true }.padding(horizontal = 10.dp, vertical = 0.dp))
+      // the signs over the lanes (destination:lanes): one panel over each group of lanes
+      if (hasSigns && laneGantry) LaneGantry(scene, night,
+          Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 50.dp, end = 14.dp, top = 8.dp, bottom = 8.dp))
       // the signs, on a gantry above the road
-      if (hasSigns) Row(
+      else if (hasSigns) Row(
           Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 50.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
           verticalAlignment = Alignment.Top,
@@ -172,7 +187,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
             SignPanel(m, oBg, oFg, arrow = 0f, exitNumber = null,
                 refs = ((o?.branches ?: emptyList()) + scene.mainRefs).distinct().take(3),
                 towns = o?.towards?.take(2) ?: emptyList(),
-                taken = scene.side == 0 && scene.exit.not(), country = scene.country)
+                taken = scene.side == 0 && scene.exit.not(), country = scene.country, night = night)
           }
         }
         val branch: @Composable (Modifier) -> Unit = { m ->
@@ -182,7 +197,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
               exitNumber = sign?.exitNumbers?.firstOrNull(),
               refs = (sign?.branches.orEmpty() + scene.branchRefs).distinct().take(3),
               towns = (sign?.towards.orEmpty() + sign?.exitNames.orEmpty()).distinct().take(3),
-              taken = true, country = scene.country)
+              taken = true, country = scene.country, night = night)
         }
         // the panels in the same order as the roads: the branch on its own side
         if (scene.side < 0) {
@@ -201,8 +216,10 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
 @Composable
 private fun SignPanel(
     modifier: Modifier, bg: Color, fg: Color, arrow: Float, exitNumber: String?, refs: List<String>, towns: List<String>,
-    taken: Boolean, country: String?,
+    taken: Boolean, country: String?, night: Boolean = false,
 ) {
+  val bg = nightSign(bg, night)
+  val fg = nightSign(fg, night)
   Column(
       modifier.alpha(if (taken) 1f else 0.55f).shadow(if (taken) 6.dp else 0.dp, RoundedCornerShape(6.dp))
           .clip(RoundedCornerShape(6.dp)).background(bg).border(2.dp, fg, RoundedCornerShape(6.dp))
@@ -216,11 +233,98 @@ private fun SignPanel(
             modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(SignYellow).padding(horizontal = 4.dp))
         Spacer(Modifier.width(6.dp))
       }
-      Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { for (r in refs.take(3)) RefPlate(r, country) }
+      Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { for (r in refs.take(3)) RefPlate(r, country, night = night) }
     }
     for (t in towns.take(3)) {
       Text(t, color = fg, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+  }
+}
+
+/**
+ * The gantry over the lanes, as on the motorways before a split: one panel over each group of lanes
+ * going to the same place, a down arrow over every lane, the panels of the lanes to take lit.
+ */
+@Composable
+private fun LaneGantry(scene: JunctionScene, night: Boolean, modifier: Modifier) {
+  val lanes = scene.laneSigns ?: return
+  val active = scene.laneSignsActive
+  // consecutive lanes with the same destinations share one panel
+  val groups = mutableListOf<MutableList<Int>>()
+  for (i in lanes.indices) {
+    val g = groups.lastOrNull()
+    if (g != null && lanes[g.first()].samePanel(lanes[i])) g += i else groups += mutableListOf(i)
+  }
+  Row(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.Top) {
+    for (g in groups) {
+      val d = lanes[g.first()]
+      val motorwayRef = d.refs.any { it.uppercase().let { r -> (r.startsWith("A") || r.startsWith("E")) && r.getOrNull(1)?.isDigit() == true } }
+      val (bg0, fg0) = d.colour?.let { osmSignColors(it) } ?: signColors(scene.country, motorwayRef)
+      val bg = nightSign(bg0, night)
+      val fg = nightSign(fg0, night)
+      val taken = active == null || g.any { active.getOrNull(it) == true }
+      Column(
+          Modifier.weight(g.size.toFloat()).alpha(if (taken) 1f else 0.5f).shadow(if (taken) 6.dp else 0.dp, RoundedCornerShape(5.dp))
+              .clip(RoundedCornerShape(5.dp)).background(bg).border(2.dp, fg, RoundedCornerShape(5.dp))
+              .padding(horizontal = 6.dp, vertical = 4.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        if (d.refs.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+          for (r in d.refs.take(2)) RefPlate(r, scene.country, night = night)
+        }
+        for (t in d.towns.take(2)) {
+          Text(t, color = fg, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        // one arrow over each lane of the group, pointing down on it
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+          for (i in g) {
+            val on = active?.getOrNull(i) ?: true
+            Canvas(Modifier.width(16.dp).height(18.dp)) { drawDownArrow(if (on) fg else fg.copy(alpha = 0.45f)) }
+          }
+        }
+      }
+    }
+  }
+}
+
+/** The arrow of an overhead lane sign: a short shaft and a head pointing down. */
+private fun DrawScope.drawDownArrow(color: Color) {
+  val w = size.width
+  val h = size.height
+  drawLine(color, Offset(w / 2, 0f), Offset(w / 2, h * 0.55f), strokeWidth = w * 0.22f)
+  drawPath(Path().apply { moveTo(w * 0.1f, h * 0.45f); lineTo(w * 0.9f, h * 0.45f); lineTo(w / 2, h); close() }, color)
+}
+
+/**
+ * The gantry drawn in the scene: two posts standing beyond the road edges and a lattice beam across
+ * at the height of the signs (the panels hang in front of it). Grey steel by day, darker at night.
+ */
+private fun DrawScope.drawGantry(signsSpace: Float, night: Boolean) {
+  val w = size.width
+  val h = size.height
+  val steel = if (night) Color(0xFF454B53) else Color(0xFF8B9198)
+  val shade = if (night) Color(0xFF2C3137) else Color(0xFF666C73)
+  val y1 = signsSpace * 0.20f
+  val y2 = signsSpace * 0.46f
+  val postW = w * 0.016f
+  val left = w * 0.035f
+  val right = w - w * 0.03f
+  val foot = (signsSpace + h * 0.12f).coerceAtMost(h * 0.62f)
+  for (x in listOf(left, right)) {
+    drawRect(shade, topLeft = Offset(x - postW / 2 + postW * 0.35f, y1), size = androidx.compose.ui.geometry.Size(postW * 0.65f, foot - y1))
+    drawRect(steel, topLeft = Offset(x - postW / 2, y1), size = androidx.compose.ui.geometry.Size(postW * 0.65f, foot - y1))
+  }
+  val sw = w * 0.006f
+  drawLine(steel, Offset(left, y1), Offset(right, y1), strokeWidth = sw * 1.4f)
+  drawLine(steel, Offset(left, y2), Offset(right, y2), strokeWidth = sw * 1.4f)
+  // the lattice between the two chords
+  val stepX = (y2 - y1) * 0.9f
+  var x = left
+  var up = true
+  while (x + stepX <= right) {
+    drawLine(shade, Offset(x, if (up) y2 else y1), Offset(x + stepX, if (up) y1 else y2), strokeWidth = sw)
+    x += stepX
+    up = !up
   }
 }
 
@@ -441,6 +545,19 @@ fun junctionSceneOf(
       towards = parts.filterNot { refRe.matches(it) },
       exitNames = emptyList(),
   ).takeIf { !it.isEmpty }
+  // the signs over the lanes (destination:lanes) and which of those lanes the route takes: the
+  // lanes of the graph when they are as many, else the lanes whose sign says where the route goes
+  val laneDest = a?.laneSignsNear(at)?.lanes?.takeIf { l -> l.size >= 2 && l.any { !it.isEmpty } }
+  val takenSign = sign?.second ?: osm?.taken ?: fallback
+  val laneActive = laneDest?.let { ld ->
+    if (lanes.size == ld.size && lanes.any { it.active } && !lanes.all { it.active }) lanes.map { it.active }
+    else {
+      fun norm(t: String) = t.lowercase().replace(" ", "").replace("-", "")
+      val want = (takenSign?.towards.orEmpty() + takenSign?.branches.orEmpty() + parts).map { norm(it) }.filter { it.length >= 2 }.toSet()
+      val m = ld.map { d -> (d.towns + d.refs).any { norm(it) in want } }
+      m.takeIf { it.any { v -> v } && !it.all { v -> v } }
+    }
+  }
   return JunctionScene(
       side = side,
       lanes = lanes,
@@ -462,6 +579,8 @@ fun junctionSceneOf(
       turn = turnLike,
       roundabout = false,
       otherSign = other,
+      laneSigns = laneDest,
+      laneSignsActive = laneActive,
   )
 }
 
