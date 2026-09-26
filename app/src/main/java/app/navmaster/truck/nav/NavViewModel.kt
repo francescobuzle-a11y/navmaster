@@ -7,6 +7,14 @@ import app.navmaster.truck.AppGraph
 import app.navmaster.truck.core.Geo
 import app.navmaster.truck.data.RouteMatcher
 import app.navmaster.truck.limits.RouteLimit
+import app.navmaster.truck.live.GeoBox
+import app.navmaster.truck.live.LiveEvent
+import app.navmaster.truck.live.LiveKind
+import app.navmaster.truck.live.LiveMatch
+import app.navmaster.truck.live.LiveRules
+import app.navmaster.truck.live.RouteLiveEvent
+import app.navmaster.truck.live.SharedReports
+import app.navmaster.truck.live.TrafficFeeds
 import app.navmaster.truck.poi.RoutePoi
 import app.navmaster.truck.routing.CritKind
 import app.navmaster.truck.routing.Criticality
@@ -112,6 +120,9 @@ sealed class DriverPrompt {
   ) : DriverPrompt()
 
   data class Break(override val id: String, val drivenMin: Int, val parking: RoutePoi?) : DriverPrompt()
+
+  /** The road ahead is closed (official information): look for another way? */
+  data class Closure(override val id: String, val event: RouteLiveEvent, val distanceM: Double) : DriverPrompt()
 }
 
 data class NavExtras(
@@ -123,6 +134,12 @@ data class NavExtras(
     val prompt: DriverPrompt? = null,
     val drivenS: Long = 0,
     val recalculating: Boolean = false,
+    /** Traffic events and drivers' reports on the route ahead. */
+    val live: List<RouteLiveEvent> = emptyList(),
+    /** A driver's report just passed: "still there?". */
+    val liveAsk: RouteLiveEvent? = null,
+    /** Where the live information comes from and how fresh it is ("TomTom, segnalazioni · 1 min fa"). */
+    val liveInfo: String? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -447,9 +464,169 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     lastGeometryKey = geometryKey(v.route.geometry)
     _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, pois(v.route), v.analysis.length)
     if (navigationUiState.value.isNavigating()) core.replaceRoute(v.route) else core.startNavigation(v.route)
+    startLive()
+  }
+
+  // ------------------------------------------------------------------------------ live traffic and reports
+
+  private var liveJob: Job? = null
+  private var liveEvents: List<LiveEvent> = emptyList()
+  private var trafficEvents: List<LiveEvent> = emptyList()
+  private var localReports: List<LiveEvent> = emptyList()
+  private var lastTrafficAt = 0L
+  private var liveMatcher: Pair<String, RouteMatcher>? = null
+  private var liveSources: String? = null
+  private var trafficSources: List<String> = emptyList()
+
+  private fun traveledNow(): Double =
+      (_nav.value.routeLength - (navigationUiState.value.progress?.distanceRemaining ?: _nav.value.routeLength)).coerceAtLeast(0.0)
+
+  private fun deviceTag(): String {
+    val s = AppGraph.settings.settings.value
+    if (s.deviceTag.isNotBlank()) return s.deviceTag
+    val tag = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+    AppGraph.settings.update { it.copy(deviceTag = tag) }
+    return tag
+  }
+
+  /** Every minute while driving: the reports of the road ahead; every 4 minutes the official traffic. */
+  private fun startLive() {
+    liveJob?.cancel()
+    lastTrafficAt = 0L
+    liveJob = viewModelScope.launch(Dispatchers.IO) {
+      delay(3_000)
+      while (true) {
+        runCatching { refreshLive() }.onFailure { Log.w(TAG, "live: $it") }
+        delay(60_000)
+      }
+    }
+  }
+
+  private fun stopLive() {
+    liveJob?.cancel()
+    liveJob = null
+    liveEvents = emptyList()
+    trafficEvents = emptyList()
+  }
+
+  private fun refreshLive() {
+    val s = AppGraph.settings.settings.value
+    val a = _nav.value.analysis ?: return
+    if (!s.liveReports && !s.liveTraffic) {
+      _nav.update { it.copy(live = emptyList(), liveInfo = null) }
+      return
+    }
+    val traveled = traveledNow()
+    // the road ahead: points every 5 km for the next 80 km
+    val ahead = generateSequence(traveled) { it + 5000.0 }.takeWhile { it <= minOf(a.length, traveled + 80_000.0) }
+        .map { a.pointAt(it) }.toList() + a.pointAt(minOf(a.length, traveled + 80_000.0))
+    val sources = mutableListOf<String>()
+    var reports = emptyList<LiveEvent>()
+    if (s.liveReports) {
+      reports = SharedReports.read(s.reportsServer, SharedReports.topics(ahead), deviceTag())
+      sources += "segnalazioni ${reports.size}"
+    }
+    val now = System.currentTimeMillis()
+    if (s.liveTraffic && now - lastTrafficAt > 4 * 60_000L) {
+      lastTrafficAt = now
+      val list = mutableListOf<LiveEvent>()
+      // German motorways: open data, no key
+      val deRoads = a.edges.filter { it.endM > traveled && it.country?.uppercase() == "DE" && it.roadClass == "motorway" }
+          .flatMap { it.refs }.mapNotNull { r -> Regex("^A ?(\\d{1,3})$").find(r)?.let { "A" + it.groupValues[1] } }.distinct()
+      if (deRoads.isNotEmpty()) list += TrafficFeeds.autobahn(deRoads).also { sources += "Autobahn ${it.size}" }
+      val boxes = boxesAhead(a, traveled)
+      if (s.tomtomKey.isNotBlank()) list += runCatching { TrafficFeeds.tomtom(s.tomtomKey, boxes) }.getOrDefault(emptyList()).also { sources += "TomTom ${it.size}" }
+      if (s.hereKey.isNotBlank()) list += runCatching { TrafficFeeds.here(s.hereKey, boxes) }.getOrDefault(emptyList()).also { sources += "HERE ${it.size}" }
+      trafficEvents = list
+      trafficSources = sources.filterNot { it.startsWith("segnalazioni") }
+    }
+    // my own reports show at once, before ntfy gives them back
+    localReports = localReports.filter { now - it.timeMs < it.kind.ttlMin * 60_000L && reports.none { r -> r.mine && r.kind == it.kind && Geo.dist(r.lat, r.lon, it.lat, it.lon) < 300 } }
+    liveEvents = trafficEvents + reports + localReports
+    Log.i(TAG, "live: ${sources.joinToString()} -> ${liveEvents.size} events")
+    liveSources = (sources.filter { it.startsWith("segnalazioni") } + (if (s.liveTraffic) trafficSources else emptyList()))
+        .joinToString(" · ").ifBlank { null }
+    matchLive()
+  }
+
+  /** Squares of about 40 km along the next 120 km of route (TomTom accepts up to 10,000 km² each). */
+  private fun boxesAhead(a: RouteAnalysis, traveled: Double): List<GeoBox> {
+    val out = mutableListOf<GeoBox>()
+    var from = traveled
+    val end = minOf(a.length, traveled + 120_000.0)
+    while (from < end && out.size < 4) {
+      val to = minOf(end, from + 40_000.0)
+      val pts = generateSequence(from) { it + 1000.0 }.takeWhile { it <= to }.map { a.pointAt(it) }.toList() + a.pointAt(to)
+      val pad = 0.02
+      out += GeoBox(pts.minOf { it.lng } - pad, pts.minOf { it.lat } - pad, pts.maxOf { it.lng } + pad, pts.maxOf { it.lat } + pad)
+      from = to
+    }
+    return out
+  }
+
+  private fun matchLive() {
+    val info = liveSources
+    val a = _nav.value.analysis ?: return
+    val key = geometryKey(a.route.geometry)
+    val m = liveMatcher?.takeIf { it.first == key }?.second ?: RouteMatcher(a.route.geometry).also { liveMatcher = key to it }
+    val traveled = traveledNow()
+    val list = LiveMatch.onRoute(liveEvents, m).filter { it.endM > traveled - 300 }
+        // police checks only where announcing them is allowed
+        .filter { LiveRules.allowed(it.e.kind, a.edgeAt(it.startM)?.country) }
+    val stamp = java.time.LocalTime.now().let { String.format(java.util.Locale.ITALY, "%02d:%02d", it.hour, it.minute) }
+    _nav.update { it.copy(live = list, liveInfo = info?.let { i -> "$i · agg. $stamp" }) }
+  }
+
+  /** The driver reports something where he is now. */
+  fun report(kind: LiveKind) {
+    val loc = navigationUiState.value.location ?: lastLocation.value ?: return
+    val c = loc.coordinates
+    val heading = loc.courseOverGround?.degrees?.toDouble()
+    val s = AppGraph.settings.settings.value
+    val local = LiveEvent(id = "local:${System.currentTimeMillis()}", source = "La tua segnalazione", kind = kind, title = kind.label,
+        lat = c.lat, lon = c.lng, timeMs = System.currentTimeMillis(), official = false, mine = true, headingDeg = heading)
+    localReports = localReports + local
+    liveEvents = liveEvents + local
+    viewModelScope.launch(Dispatchers.IO) {
+      runCatching { matchLive() }
+      val id = SharedReports.publish(s.reportsServer, deviceTag(), kind, c.lat, c.lng, heading)
+      say(if (id != null) "Segnalazione inviata: ${kind.label.lowercase()}." else "Segnalazione salvata sul tablet: la invio appena c'è rete.")
+    }
+  }
+
+  /** Answer to "still there?" on a report just passed. */
+  fun voteLive(e: RouteLiveEvent, yes: Boolean) {
+    _nav.update { it.copy(liveAsk = null) }
+    if (e.e.official || e.e.mine) return
+    val s = AppGraph.settings.settings.value
+    viewModelScope.launch(Dispatchers.IO) {
+      if (!yes) {
+        liveEvents = liveEvents.filterNot { it.id == e.e.id }
+        runCatching { matchLive() }
+      }
+      SharedReports.vote(s.reportsServer, deviceTag(), e.e, yes)
+    }
+  }
+
+  fun dismissLiveAsk() = _nav.update { it.copy(liveAsk = null) }
+
+  /** The road ahead is closed: go around it (the closed stretch is avoided from here on). */
+  fun answerClosure(avoid: Boolean) {
+    val p = _nav.value.prompt as? DriverPrompt.Closure ?: return dismissPrompt()
+    dismissPrompt()
+    if (!avoid) return
+    val a = _nav.value.analysis
+    val pts = if (a != null) {
+      generateSequence(p.event.startM) { it + 150.0 }.takeWhile { it <= p.event.endM }.take(6).map { a.pointAt(it) }.toList()
+          .ifEmpty { listOf(a.pointAt(p.event.startM)) }
+    } else listOf(GeographicCoordinate(p.event.e.lat, p.event.e.lon))
+    val ex = pts.map { Geo.squareAround(it.lat, it.lng, 25.0) }
+    AppGraph.trip.value = AppGraph.trip.value.let { it.copy(excludePolygons = it.excludePolygons + ex) }
+    recalcFromHere("Cerco un percorso che eviti la strada chiusa")
   }
 
   override fun stopNavigation() {
+    stopLive()
     locationProvider.disableSimulation()
     _simulating.value = false
     core.stopNavigation()
@@ -503,11 +680,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       }
     }
     lastTick = now
+    onLiveUpdate(extras, traveled)
     if (extras.prompt != null) {
       // a question nobody answered in time goes away
       val p = extras.prompt
       if (p is DriverPrompt.TightRamp && p.crit.startM - traveled < 150) dismissPrompt()
       if (p is DriverPrompt.TollChoice && remaining < 0) dismissPrompt()
+      if (p is DriverPrompt.Closure && p.event.startM - traveled < 300) dismissPrompt()
       return
     }
     val settings = AppGraph.settings.settings.value
@@ -579,6 +758,49 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
+  private fun onLiveUpdate(extras: NavExtras, traveled: Double) {
+    val settings = AppGraph.settings.settings.value
+    val a = extras.analysis
+    val fast = a?.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
+    // said once, early enough to slow down: 2 km on motorways, 800 m elsewhere
+    val next = extras.live.firstOrNull { ev ->
+      ev.startM - traveled in 0.0..(if (fast) 2000.0 else 800.0) && "live:${ev.e.id}" !in asked
+    }
+    if (next != null && settings.voiceWarnings) {
+      asked += "live:${next.e.id}"
+      val d = Fmt.distanceText(next.startM - traveled).replace("km", "chilometri").replace(" m", " metri")
+      val what = LiveRules.label(next.e.kind, a?.edgeAt(next.startM)?.country)
+      val delay = if (next.e.delayS >= 120) ", ritardo circa ${next.e.delayS / 60} minuti" else ""
+      say(if (next.e.official) "$what tra $d$delay." else "$what segnalato tra $d.")
+    }
+    // a report of a driver just passed: still there? (one question at a time, 15 seconds)
+    if (extras.liveAsk == null && extras.prompt == null && settings.liveReports) {
+      val passed = extras.live.firstOrNull { ev ->
+        !ev.e.official && !ev.e.mine && traveled - ev.endM in 30.0..400.0 && "ask:${ev.e.id}" !in asked
+      }
+      if (passed != null) {
+        asked += "ask:${passed.e.id}"
+        _nav.update { it.copy(liveAsk = passed) }
+        viewModelScope.launch {
+          delay(15_000)
+          _nav.update { if (it.liveAsk?.e?.id == passed.e.id) it.copy(liveAsk = null) else it }
+        }
+      }
+    }
+    // a closed road ahead (official information): offer to go around it in time
+    if (extras.prompt == null) {
+      val closed = extras.live.firstOrNull { ev ->
+        ev.e.official && ev.e.kind == LiveKind.CLOSED && ev.startM - traveled in 1500.0..40_000.0 && "closed:${ev.e.id}" !in asked
+      }
+      if (closed != null) {
+        asked += "closed:${closed.e.id}"
+        val d = closed.startM - traveled
+        _nav.update { it.copy(prompt = DriverPrompt.Closure("closed:${closed.e.id}", closed, d)) }
+        say("Attenzione: tra ${Fmt.distanceText(d).replace("km", "chilometri").replace(" m", " metri")} la strada è chiusa. Cerco un'alternativa?")
+      }
+    }
+  }
+
   private fun checkTollFree(from: UserLocation, distToToll: Double, a: RouteAnalysis, traveled: Double, remainingS: Double) {
     viewModelScope.launch(Dispatchers.IO) {
       try {
@@ -605,25 +827,94 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
 
   fun dismissPrompt() = _nav.update { it.copy(prompt = null) }
 
-  /** A place chosen while driving becomes a stop on the way to the destination. */
-  fun addStopDuringNav(target: GeographicCoordinate, label: String) {
+  /**
+   * A place chosen while driving becomes a stop on the way to the destination ([via]: only pass
+   * there, the route goes on from that point to the destination).
+   */
+  fun addStopDuringNav(target: GeographicCoordinate, label: String, via: Boolean = false) {
     val p = _plan.value
     val dest = p.stops.lastOrNull()
-    _plan.value = p.copy(stops = listOfNotNull(Stop(target, label), dest))
+    _plan.value = p.copy(stops = listOfNotNull(Stop(target, label, via = via), dest))
     val from = navigationUiState.value.location ?: lastLocation.value ?: return
     _nav.update { it.copy(recalculating = true) }
     viewModelScope.launch(Dispatchers.IO) {
       try {
-        val waypoints = _plan.value.stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }
+        val stops = _plan.value.stops
+        val waypoints = stops.mapIndexed { i, st ->
+          Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+        }
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
           if (_simulating.value) locationProvider.enableSimulationOn(r)
           core.replaceRoute(r)
         }
-        say("Tappa aggiunta: $label.")
+        say(if (via) "Percorso ricalcolato: passi da quel punto e prosegui verso la destinazione." else "Tappa aggiunta: $label.")
       } catch (e: Exception) {
         Log.w(TAG, "add stop: $e")
-        say("Non riesco ad aggiungere la tappa.")
+        say(if (via) "Da quel punto non trovo un percorso verso la destinazione." else "Non riesco ad aggiungere la tappa.")
+      } finally {
+        _nav.update { it.copy(recalculating = false) }
+      }
+    }
+  }
+
+  /**
+   * Go to a point off the route and then back onto the route computed at the start, to drive the
+   * rest of it as planned: the route goes to the point, back to the nearest point of the old route
+   * still ahead, and then through points of the old route (with their direction of travel, so a
+   * motorway is taken on the right carriageway) to the destination.
+   */
+  fun detourAndReturn(target: GeographicCoordinate, label: String = "Punto sulla mappa") {
+    val a = _nav.value.analysis ?: return addStopDuringNav(target, label, via = true)
+    val dest = _plan.value.stops.lastOrNull() ?: return
+    val from = navigationUiState.value.location ?: lastLocation.value ?: return
+    val traveled = (_nav.value.routeLength - (navigationUiState.value.progress?.distanceRemaining ?: _nav.value.routeLength)).coerceAtLeast(0.0)
+    val g = a.route.geometry
+    val cum = Geo.cumulative(g)
+    // where to get back on the old route: its point nearest to the place, still ahead of us
+    var rejoin = -1.0
+    var best = Double.MAX_VALUE
+    for (i in g.indices) {
+      if (cum[i] < traveled + 50) continue
+      val d = Geo.dist(g[i], target)
+      if (d < best) {
+        best = d
+        rejoin = cum[i]
+      }
+    }
+    val length = cum.lastOrNull() ?: 0.0
+    val headings = HashMap<String, Double>()
+    val vias = mutableListOf<GeographicCoordinate>()
+    if (rejoin >= 0 && rejoin < length - 500) {
+      var at = rejoin
+      while (at < length - 2000 && vias.size < 12) {
+        val p = a.pointAt(at)
+        val h = Geo.bearing(a.pointAt((at - 15).coerceAtLeast(0.0)), a.pointAt(at + 15))
+        val c = GeographicCoordinate(Math.round(p.lat * 1e5) / 1e5, Math.round(p.lng * 1e5) / 1e5)
+        vias += c
+        headings[TripOptions.pointKey(c.lat, c.lng)] = h
+        at += if (vias.size == 1) 3000.0 else 15_000.0
+      }
+    }
+    Log.i(TAG, "detour to ${target.lat},${target.lng}, back on the route at ${rejoin.toInt()} m, ${vias.size} points of the old route")
+    _plan.value = _plan.value.copy(stops = listOf(Stop(target, label), dest))
+    _nav.update { it.copy(recalculating = true) }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val opts = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
+        val waypoints = listOf(Waypoint(coordinate = target, kind = WaypointKind.BREAK)) +
+            vias.map { Waypoint(coordinate = it, kind = WaypointKind.VIA) } +
+            Waypoint(coordinate = dest.coordinate, kind = WaypointKind.BREAK)
+        val r = AppGraph.routes.routes(from, waypoints, opts).firstOrNull() ?: throw IllegalStateException("nessun percorso")
+        AppGraph.trip.value = opts
+        withContext(Dispatchers.Main) {
+          if (_simulating.value) locationProvider.enableSimulationOn(r)
+          core.replaceRoute(r)
+        }
+        say("Ti porto al punto scelto, poi torni sul percorso di prima.")
+      } catch (e: Exception) {
+        Log.w(TAG, "detour: $e")
+        say("Non trovo un percorso per quel punto.")
       } finally {
         _nav.update { it.copy(recalculating = false) }
       }
@@ -719,6 +1010,40 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
           if (variant != null) selectVariant(variant)
           start(simulate)
         }
+      }
+    }
+  }
+
+  /**
+   * Emulator tests of the live functions, once the guidance runs: a report of "another driver"
+   * [aheadM] metres ahead on the route (sent and read back through ntfy), a detour to a point with
+   * the return onto the old route, and a check of the German open traffic data.
+   */
+  fun scheduleLiveTests(report: LiveKind?, aheadM: Double, detour: GeographicCoordinate?, selfTest: Boolean) {
+    if (selfTest) viewModelScope.launch(Dispatchers.IO) {
+      val ab = runCatching { TrafficFeeds.autobahn(listOf("A8")) }.getOrElse { Log.w(TAG, "livetest autobahn: $it"); emptyList() }
+      Log.i(TAG, "livetest autobahn A8: ${ab.size} events, first: ${ab.firstOrNull()?.let { "${it.kind} ${it.title} ${it.line.size} pts" }}")
+    }
+    if (report == null && detour == null) return
+    viewModelScope.launch {
+      while (!navigationUiState.value.isNavigating() || _nav.value.analysis == null) delay(500)
+      delay(6_000)
+      if (report != null) {
+        val a = _nav.value.analysis ?: return@launch
+        val at = traveledNow() + aheadM
+        val p = a.pointAt(at)
+        val h = Geo.bearing(a.pointAt(at - 15), a.pointAt(at + 15))
+        withContext(Dispatchers.IO) {
+          val id = SharedReports.publish(AppGraph.settings.settings.value.reportsServer, "ci-other", report, p.lat, p.lng, h)
+          Log.i(TAG, "livetest report ${report.name} at ${at.toInt()} m: $id")
+          delay(2_000)
+          runCatching { refreshLive() }.onFailure { Log.w(TAG, "livetest refresh: $it") }
+          Log.i(TAG, "livetest on route: ${_nav.value.live.map { "${it.e.kind} ${it.startM.toInt()} m ${it.e.source}" }}")
+        }
+      }
+      if (detour != null) {
+        delay(14_000)
+        detourAndReturn(detour, "Deviazione di prova")
       }
     }
   }

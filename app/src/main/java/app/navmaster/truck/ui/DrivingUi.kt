@@ -49,7 +49,7 @@ import kotlinx.coroutines.delay
 /** The question of the moment, in the middle of the screen with two big answers. */
 @Composable
 fun PromptCard(p: DriverPrompt, traveledM: Double, onRamp: (Boolean) -> Unit, onToll: (Boolean) -> Unit, onBreakGo: (RoutePoi) -> Unit,
-               onDismiss: () -> Unit) {
+               onDismiss: () -> Unit, onClosure: (Boolean) -> Unit = {}) {
   Box(Modifier.fillMaxSize().background(Color(0x55000000)), contentAlignment = Alignment.Center) {
     Panel(Modifier.widthIn(max = 620.dp).padding(18.dp), padding = 20.dp) {
       when (p) {
@@ -102,6 +102,21 @@ fun PromptCard(p: DriverPrompt, traveledM: Double, onRamp: (Boolean) -> Unit, on
             val pk = p.parking
             if (pk != null) BigButton("Portami lì", Modifier.weight(1f), Icons.Rounded.LocalParking) { onBreakGo(pk) }
             BigButton("Ok", Modifier.weight(1f), style = BtnStyle.SECONDARY, onClick = onDismiss)
+          }
+        }
+        is DriverPrompt.Closure -> {
+          val d = (p.event.startM - traveledM).coerceAtLeast(0.0)
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("⛔", fontSize = 34.sp)
+            Spacer(Modifier.width(10.dp))
+            Title("Strada chiusa tra ${Fmt.distanceText(d)}", size = 24)
+          }
+          Caption(listOfNotNull(p.event.e.title, p.event.e.detail).joinToString(" · ") + " (fonte: ${p.event.e.source})",
+              color = Nm.Text, size = 17, lines = 6)
+          Spacer(Modifier.height(14.dp))
+          Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            BigButton("Cerca un'alternativa", Modifier.weight(1.2f), Icons.Rounded.Route) { onClosure(true) }
+            BigButton("Proseguo", Modifier.weight(1f), Icons.Rounded.Check, BtnStyle.SECONDARY) { onClosure(false) }
           }
         }
       }

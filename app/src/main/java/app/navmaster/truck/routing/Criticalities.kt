@@ -317,13 +317,19 @@ class CriticalityFinder(regions: RegionManager) {
       }
       "steep" -> {
         val pct = r.value
-        val sev = when {
+        val fromTerrain = info?.get("dem")?.jsonPrimitive?.booleanOrNull == true
+        // estimated from the terrain: never "critical", and only the clear ones are warnings
+        val sev = if (fromTerrain) when {
+          heavy && pct >= 12 -> Severity.WARN
+          heavy && pct >= 10 -> Severity.INFO
+          pct >= 16 -> Severity.INFO
+          else -> return null
+        } else when {
           heavy && pct >= 12 -> Severity.CRITICAL
           heavy && pct >= 8 -> Severity.WARN
           pct >= 15 -> Severity.WARN
           else -> return null
         }
-        val fromTerrain = info?.get("dem")?.jsonPrimitive?.booleanOrNull == true
         c(CritKind.STEEP, sev, "Pendenza del ${pct.toInt()}%",
             "Salita o discesa ripida per ${Fmt.distanceText(len)}." +
                 if (fromTerrain) " Pendenza stimata dal rilievo del terreno (SRTM): verifica con le foto." else "")

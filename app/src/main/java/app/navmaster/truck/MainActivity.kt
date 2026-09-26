@@ -75,6 +75,13 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
         kv.split(':').takeIf { it.size == 2 }?.let { it[0] to (it[1].toDoubleOrNull() ?: return@mapNotNull null) } }?.toMap() ?: emptyMap()
       vm.probe(debugCosting = dbg, points = pr.split(';', '_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
     }
+    intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
+    val reportAhead = intent?.getStringExtra("nm_report_ahead")?.split(':')
+    val detour = intent?.getStringExtra("nm_detour")?.split(',')?.takeIf { it.size == 2 }?.let {
+      GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble())
+    }
+    vm.scheduleLiveTests(app.navmaster.truck.live.LiveKind.of(reportAhead?.getOrNull(0)), reportAhead?.getOrNull(1)?.toDoubleOrNull() ?: 2000.0,
+        detour, intent?.getBooleanExtra("nm_livetest", false) == true)
     val dest = intent?.getStringExtra("nm_dest") ?: return
     val parts = dest.split(',')
     if (parts.size != 2) return

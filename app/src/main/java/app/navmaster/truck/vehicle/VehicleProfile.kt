@@ -192,4 +192,13 @@ data class TripOptions(
     val excludePolygons: List<List<List<Double>>> = emptyList(),
     /** Diagnosis only: costing options that override the vehicle's ("use_highways" → 1.0 ...). */
     val debugCosting: Map<String, Double> = emptyMap(),
-)
+    /**
+     * Direction of travel at some pass-through points, by [pointKey]: points taken from a route
+     * already computed, so that Valhalla takes them on the right carriageway of a motorway.
+     */
+    val viaHeadings: Map<String, Double> = emptyMap(),
+) {
+  companion object {
+    fun pointKey(lat: Double, lon: Double): String = String.format(java.util.Locale.ROOT, "%.5f,%.5f", lat, lon)
+  }
+}

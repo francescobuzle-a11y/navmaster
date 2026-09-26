@@ -8,7 +8,7 @@ mkdir -p "$OUT"
 INFO="$OUT/preview_info.txt"
 shot() { adb exec-out screencap -p > "$OUT/$1.png"; echo "shot $1" >> "$INFO"; }
 log() { adb logcat -d -s NavMaster:* NavMasterRoute:* NavMasterLimits:* NavMasterVM:* NavMasterData:* NavMasterCrit:* \
-  NavMasterAnalysis:* NavMasterJV:* NavMasterCatalog:* NavMasterLocation:* AndroidRuntime:E FerrostarCore:* > "$OUT/logcat.txt" 2>&1; }
+  NavMasterAnalysis:* NavMasterJV:* NavMasterLive:* NavMasterCatalog:* NavMasterLocation:* AndroidRuntime:E FerrostarCore:* > "$OUT/logcat.txt" 2>&1; }
 start() { adb shell am force-stop $PKG; adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663" "$@"; }
 
 adb wait-for-device
@@ -84,6 +84,18 @@ sleep 16; shot 05f_guida_casello
 sleep 16; shot 05g_guida_casello_2
 sleep 3; shot 05j_guida_casello_3
 
+# live: a report of "another driver" 3 km ahead, sent and read back through ntfy (test topics, not
+# the drivers' ones), the "still there?" question once passed; the report tiles; a detour to
+# Riccione with the way back onto the motorway route computed at the start
+LIVE="--es nm_live_prefix navmaster-ci-$RANDOM-"
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_report_ahead POLICE:3000 --ez nm_livetest true
+sleep 24; shot 12_segnalazione_polizia
+sleep 24; shot 12c_ancora_li
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_sheet report
+sleep 18; shot 12b_segnala
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_detour 43.99007,12.64362
+sleep 42; shot 13_deviazione
+
 # guidance, articulated lorry (places panel: 3 places, closes after 12 s)
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ei nm_tollmax 5 --ei nm_poicount 3 --ei nm_poisec 12 --ez nm_sim true
 sleep 28; shot 06_guida_camion
@@ -95,6 +107,8 @@ adb shell settings put system user_rotation 0; sleep 4
 # the same trip seen in 2D, from above
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --es nm_view 2d --ez nm_sim true
 sleep 28; shot 07b_guida_2d
+# a point long-pressed while driving: go on from there, or go there and back onto the route
+adb shell input swipe 500 650 500 650 1600; sleep 3; shot 07c_punto_in_guida
 
 # same trip for the camper: the route may differ where the lorry is not allowed
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camper --es nm_load 0.4 --ei nm_poisec 0 --es nm_view 3d --ez nm_sim true
@@ -105,7 +119,9 @@ start --es nm_sheet settings; sleep 8; shot 10_impostazioni
 start --es nm_sheet settings_poi; sleep 8; shot 10b_impostazioni_poi
 adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10c_impostazioni_poi_2
 start --es nm_sheet settings_map; sleep 8; shot 10d_impostazioni_mappa
+start --es nm_sheet settings_live; sleep 8; shot 10e_impostazioni_traffico
 start --es nm_sheet regions; sleep 12; shot 11_paesi
 log
+grep -E "live|detour|direction of travel|report" "$OUT/logcat.txt" | head -40 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

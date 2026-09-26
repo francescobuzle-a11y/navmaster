@@ -58,6 +58,7 @@ import app.navmaster.truck.settings.VoiceLevel
 private enum class SettingsPage(val id: String, val title: String, val icon: String) {
   ROUTE("route", "Percorso e pedaggi", "🛣"),
   DRIVING("driving", "Guida e avvisi", "🧭"),
+  LIVE("live", "Traffico e segnalazioni", "🚦"),
   MAP("map", "Mappa e vista", "🗺"),
   POI("poi", "Punti di interesse", "📍"),
   OFFLINE("offline", "Mappe offline", "📥"),
@@ -86,6 +87,7 @@ fun SettingsScreen(onClose: () -> Unit, onRegions: () -> Unit, initialPage: Stri
         when (page) {
           SettingsPage.ROUTE -> RoutePage(s, ::set)
           SettingsPage.DRIVING -> DrivingPage(s, ::set)
+          SettingsPage.LIVE -> LivePage(s, ::set)
           SettingsPage.MAP -> MapPage(s, ::set)
           SettingsPage.POI -> PoiPage(s, ::set)
           SettingsPage.OFFLINE -> OfflinePage(s, ::set, onRegions)
@@ -108,6 +110,12 @@ private fun summary(p: SettingsPage, s: Settings): String =
           if (s.askTightRamps) "domanda sugli svincoli stretti" else null,
           if (s.driveTimeReminder) "pause di guida" else null,
       ).filterNotNull().joinToString(" · ").replaceFirstChar { it.uppercase() }
+      SettingsPage.LIVE -> listOfNotNull(
+          if (s.liveReports) "segnalazioni degli autisti" else null,
+          if (s.liveTraffic) "traffico" + listOfNotNull(if (s.tomtomKey.isNotBlank()) "TomTom" else null,
+              if (s.hereKey.isNotBlank()) "HERE" else null).joinToString(", ", " (", ")").takeIf { s.tomtomKey.isNotBlank() || s.hereKey.isNotBlank() }.orEmpty()
+          else null,
+      ).joinToString(" · ").ifBlank { "Spento" }.replaceFirstChar { it.uppercase() }
       SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
@@ -209,6 +217,53 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Velocità") {
     Stepper("Avviso quando superi il limite di", s.speedWarningKmh.toDouble(), "km/h", 1.0, 0.0, 20.0, 0) { v ->
       set { it.copy(speedWarningKmh = v.toInt()) }
+    }
+  }
+}
+
+@Composable
+private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  Card("Segnalazioni degli autisti") {
+    ToggleRow("Segnalazioni condivise", "Polizia, code, incidenti, pericoli, strade chiuse, controlli ai mezzi pesanti segnalati dagli " +
+        "altri autisti NavMaster sulla tua strada, e il pulsante ⚠ per segnalare. Senza account e senza il tuo nome.", s.liveReports) { v ->
+      set { it.copy(liveReports = v) }
+    }
+    Caption("In Germania e Svizzera i controlli di polizia non si possono annunciare e non compaiono; in Francia si mostra " +
+        "solo la «zona di controllo». Viaggiano su ntfy (gratuito, open source): puoi indicare anche un tuo server.", size = 13, lines = 5)
+    OutlinedTextField(
+        s.reportsServer, { v -> set { it.copy(reportsServer = v.trim()) } }, label = { Text("Server ntfy") },
+        singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
+        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
+    )
+  }
+  Card("Traffico") {
+    ToggleRow("Informazioni sul traffico", "Code, incidenti, lavori e chiusure sul percorso, dette a voce in tempo; se la strada è chiusa " +
+        "ti propone un'alternativa. Autostrade tedesche sempre (dati aperti Autobahn GmbH); tutta Europa con una chiave gratuita.",
+        s.liveTraffic) { v -> set { it.copy(liveTraffic = v) } }
+    if (s.liveTraffic) {
+      OutlinedTextField(
+          s.tomtomKey, { v -> set { it.copy(tomtomKey = v.trim()) } }, label = { Text("Chiave TomTom (facoltativa)") },
+          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
+      )
+      if (s.tomtomKey.isBlank()) {
+        Caption("Registrazione gratuita su developer.tomtom.com, poi copia la «API key» (2.500 richieste al giorno gratis: bastano " +
+            "per un giorno intero di guida).", size = 13, lines = 4)
+        BigButton("Crea la chiave TomTom gratuita", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), style = BtnStyle.SECONDARY) {
+          app.navmaster.truck.photos.StreetPhotos.openPhoto(context, "https://developer.tomtom.com/user/register")
+        }
+      } else {
+        ToggleRow("Colori del traffico sulla mappa", "Verde, arancio e rosso sulle strade secondo la velocità del traffico", s.trafficOnMap) { v ->
+          set { it.copy(trafficOnMap = v) }
+        }
+      }
+      OutlinedTextField(
+          s.hereKey, { v -> set { it.copy(hereKey = v.trim()) } }, label = { Text("Chiave HERE (facoltativa)") },
+          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
+          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
+      )
+      if (s.hereKey.isBlank()) Caption("In alternativa o in aggiunta: chiave gratuita su platform.here.com.", size = 13)
     }
   }
 }
@@ -376,7 +431,9 @@ private fun AboutPage() {
     Caption("Mappe, limiti, divieti, autovelox e punti di interesse © OpenStreetMap contributors (ODbL). " +
         "Punti di interesse aggiuntivi © Overture Maps Foundation (CDLA Permissive 2.0). " +
         "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale). " +
-        "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA).", size = 14, lines = 7)
+        "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA). " +
+        "Traffico: Autobahn GmbH (dati aperti), TomTom e HERE con la chiave dell'utente. Segnalazioni: autisti NavMaster via ntfy. " +
+        "Nessun dato Waze.", size = 14, lines = 10)
   }
   Card("Avvertenze") {
     Caption("I divieti nazionali di circolazione sono indicativi: verifica sempre il calendario ufficiale. " +

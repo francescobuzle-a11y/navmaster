@@ -3,7 +3,7 @@
 
 The elevation comes from the public Terrain Tiles on AWS (Skadi format, 1 degree SRTM-based tiles,
 open data: https://registry.opendata.aws/terrain-tiles/). Each road of the kinds a lorry uses on
-hills (primary to residential) is sampled every 20 m; the gradient is measured over 200 m so that
+hills (primary to residential) is sampled every 20 m; the gradient is measured over 300 m (both halves climbing) so that
 the few metres of error of the terrain model do not make false slopes, and roads on bridges, in
 tunnels or on embankments (where the road is not on the ground) are left out.
 
@@ -21,8 +21,8 @@ import numpy as np
 BASE = "https://elevation-tiles-prod.s3.amazonaws.com/skadi"
 CLASSES = {"primary", "secondary", "tertiary", "unclassified", "residential", "living_street", "road"}
 STEP_M = 20.0
-WINDOW_M = 200.0
-MIN_PCT = 9.0           # a bit above the 8 % of the mapped slopes: the model is less precise
+WINDOW_M = 300.0
+MIN_PCT = 10.0          # above the 8 % of the mapped slopes: the model is less precise
 MAX_PCT = 30.0          # above this it is the valley side, not the road
 
 
@@ -173,7 +173,20 @@ def max_grade(dem, coords):
     w = int(WINDOW_M / STEP_M)
     if len(hs) <= w:
         return None
-    g = np.abs(hs[w:] - hs[:-w]) / WINDOW_M * 100
+    # a light smoothing (60 m) against the noise of single cells of the model
+    if len(hs) >= 3:
+        hs = np.concatenate(([hs[0]], (hs[:-2] + hs[1:-1] + hs[2:]) / 3, [hs[-1]]))
+    diff = hs[w:] - hs[:-w]
+    g = np.abs(diff) / WINDOW_M * 100
+    # the terrain model is a few metres off here and there: a real slope climbs (or falls) all the
+    # way, so both halves of the window must go the same way and be steep too
+    h = w // 2
+    first = hs[h:h + len(diff)] - hs[:len(diff)]
+    second = hs[w:] - hs[h:h + len(diff)]
+    half = WINDOW_M / 2
+    ok = (np.sign(first) == np.sign(diff)) & (np.sign(second) == np.sign(diff)) & \
+        (np.abs(first) / half * 100 >= MIN_PCT * 0.6) & (np.abs(second) / half * 100 >= MIN_PCT * 0.6)
+    g = np.where(ok, g, 0.0)
     at = int(np.argmax(g))
     best = float(g[at])
     if best < MIN_PCT or best > MAX_PCT:

@@ -142,7 +142,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var sheet by remember {
     mutableStateOf(when (initialSheet) {
       "vehicle" -> Sheet.VEHICLE
-      "settings", "settings_poi", "settings_map" -> Sheet.SETTINGS
+      "settings", "settings_poi", "settings_map", "settings_live" -> Sheet.SETTINGS
       "regions" -> Sheet.REGIONS
       "search", "search_guided" -> Sheet.SEARCH
       else -> Sheet.NONE
@@ -160,8 +160,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
   var openPoi by remember { mutableStateOf<RoutePoi?>(null) }
+  var reportOpen by remember { mutableStateOf(initialSheet == "report") }
   var countryHintClosed by remember { mutableStateOf(false) }
-  val styleUri = remember(installed, night, satellite) { MapStyles.styleUri(context, installed, night, satellite) }
+  val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && settings.tomtomKey.isNotBlank())
+    app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(settings.tomtomKey, night) else null
+  val styleUri = remember(installed, night, satellite, trafficTiles) { MapStyles.styleUri(context, installed, night, satellite, trafficTiles) }
 
   // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible. Near a
   // turn in town it comes closer and leans a little more, smoothly, and goes back after it
@@ -274,6 +277,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       CritMarkers(if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList())
       LimitMarkers((if (navigating) nav.limits else plan.current?.limits ?: emptyList()).filter { it.kind != "speed_camera" })
       StopMarkers(plan.stops.map { it.coordinate })
+      if (navigating) LiveMarkers(nav.live)
     }
     }
 
@@ -282,7 +286,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           ?.let { b -> Triple(b, nav.analysis?.boothRole(b), b.alongM - traveled) }
           ?.takeIf { it.third <= 2500 }
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
-          settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it })
+          settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it },
+          live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -295,7 +300,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       nav.prompt?.let { p ->
         PromptCard(p, traveled, onRamp = vm::answerRamp, onToll = vm::answerToll,
             onBreakGo = { pk -> vm.dismissPrompt(); vm.addStopDuringNav(pk.poi.coordinate, pk.poi.title.ifBlank { "Parcheggio" }) },
-            onDismiss = vm::dismissPrompt)
+            onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure)
+      }
+      if (reportOpen) {
+        ReportPicker(nav.analysis?.edgeAt(traveled)?.country ?: here?.iso, onPick = { k -> reportOpen = false; vm.report(k) },
+            onClose = { reportOpen = false })
       }
     } else {
       BrowsingOverlay(
@@ -342,7 +351,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       PointChooser(
           navigating = navigating,
           modifier = Modifier.align(Alignment.Center),
-          onVia = { if (navigating) vm.addStopDuringNav(pt, "Passa di qui") else vm.addVia(pt); pendingPoint = null },
+          onVia = { if (navigating) vm.addStopDuringNav(pt, "Passa di qui", via = true) else vm.addVia(pt); pendingPoint = null },
+          onDetour = { vm.detourAndReturn(pt); pendingPoint = null },
           onGo = { vm.selectDestination(pt, "Punto sulla mappa"); pendingPoint = null },
           onAvoid = { vm.avoidArea(pt); pendingPoint = null },
           onDismiss = { pendingPoint = null },
@@ -474,6 +484,10 @@ private fun NavigatingOverlay(
     countryIso: String?,
     onCrit: (Criticality) -> Unit,
     onPoi: (RoutePoi) -> Unit,
+    live: List<app.navmaster.truck.live.RouteLiveEvent> = emptyList(),
+    liveAsk: app.navmaster.truck.live.RouteLiveEvent? = null,
+    onSettings: () -> Unit = {},
+    onReport: () -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
   // buttons: shown for a few seconds after the map is touched (and at the start), then only the
@@ -484,11 +498,15 @@ private fun NavigatingOverlay(
     delay(8_000)
     controls = false
   }
-  val jv = if (settings.junctionView) junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso) else null
+  // junction view and lane guidance only at motorway junctions and complicated multi-lane ones
+  val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso)
+  val jv = if (settings.junctionView) scene else null
+  val fastRoad = analysis?.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
+  val nextLive = live.firstOrNull { it.endM - traveled > -20 && it.startM - traveled < (if (fastRoad) 5000.0 else 2000.0) }
   val speedKmh = ui.location?.speed?.value?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
-    TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth())
+    TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = scene != null)
     Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
         RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
@@ -497,6 +515,7 @@ private fun NavigatingOverlay(
       }
       if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
       if (camera != null) CameraBanner(camera, (camera.alongM - traveled).coerceAtLeast(0.0), cameraZoneOnly)
+      if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
     if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp))
     Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -515,6 +534,15 @@ private fun NavigatingOverlay(
       }
       Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
           horizontalAlignment = Alignment.End) {
+        // always there: report something on the road, and the settings (changed any time while driving)
+        if (settings.liveReports) {
+          Box(
+              Modifier.size(56.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.Amber).border(1.dp, Nm.Line, CircleShape)
+                  .clickable(onClick = onReport),
+              contentAlignment = Alignment.Center,
+          ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
+        }
+        RoundAction(Icons.Rounded.Settings, "Impostazioni", size = 56.dp, onClick = onSettings)
         // the map was moved by hand: "centre" stays until the driver uses it
         if (!mapState.isTrackingUser) RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
         androidx.compose.animation.AnimatedVisibility(controls, enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
@@ -537,6 +565,10 @@ private fun NavigatingOverlay(
         }
         // muted: a small reminder stays even when the buttons are away
         if (!controls && ui.isMuted == true) RoundAction(Icons.Rounded.VolumeOff, "Voce", size = 48.dp, container = Nm.Red) { vm.toggleMute() }
+      }
+      if (liveAsk != null) {
+        LiveAskCard(liveAsk, analysis?.edgeAt(liveAsk.startM)?.country, onAnswer = { yes -> vm.voteLive(liveAsk, yes) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
       }
       if (simulating) {
         Text("SIMULAZIONE", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp,
@@ -581,6 +613,19 @@ private fun CritMarkers(list: List<Criticality>) {
   CircleLayer(id = "nm-crit-bad", source = crit, color = const(Nm.Red), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
 
+/** Traffic events and reports on the route: red closures and queues, amber hazards, blue checks. */
+@Composable
+@MaplibreComposable
+private fun LiveMarkers(list: List<app.navmaster.truck.live.RouteLiveEvent>) {
+  fun json(color: Long) = GeoJsonData.JsonString(points(list.filter { it.e.kind.color == color }.map { it.e.lat to it.e.lon }))
+  val red = rememberGeoJsonSource(json(0xFFE03131))
+  val amber = rememberGeoJsonSource(json(0xFFFFB300))
+  val blue = rememberGeoJsonSource(json(0xFF1E6FD9))
+  CircleLayer(id = "nm-live-red", source = red, color = const(Color(0xFFE03131)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
+  CircleLayer(id = "nm-live-amber", source = amber, color = const(Color(0xFFFFB300)), radius = const(9.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
+  CircleLayer(id = "nm-live-blue", source = blue, color = const(Color(0xFF1E6FD9)), radius = const(9.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
+}
+
 @Composable
 @MaplibreComposable
 private fun StopMarkers(stops: List<GeographicCoordinate>) {
@@ -597,12 +642,24 @@ private fun PointChooser(
     onGo: () -> Unit,
     onAvoid: () -> Unit,
     onDismiss: () -> Unit,
+    onDetour: () -> Unit = {},
 ) {
-  Panel(modifier.widthIn(max = 420.dp).padding(16.dp), padding = 16.dp) {
+  Panel(modifier.widthIn(max = 460.dp).padding(16.dp), padding = 16.dp) {
     Title("Punto sulla mappa", size = 20)
-    Caption("Il passaggio va da solo nel punto del viaggio dove allunga meno.", size = 13)
-    Spacer(Modifier.height(10.dp))
-    BigButton("Passa di qui", Modifier.fillMaxWidth(), Icons.Rounded.AddLocationAlt, onClick = onVia)
+    if (navigating) {
+      Caption("Come vuoi passarci?", size = 14)
+      Spacer(Modifier.height(10.dp))
+      BigButton("Passa di qui e prosegui", Modifier.fillMaxWidth(), Icons.Rounded.AddLocationAlt, onClick = onVia)
+      Caption("Ricalcola il percorso da quel punto in poi verso la destinazione (se c'è una strada adatta al mezzo).",
+          Modifier.padding(start = 6.dp, top = 4.dp, bottom = 8.dp), size = 13)
+      BigButton("Vai lì e torna sul percorso", Modifier.fillMaxWidth(), Icons.Rounded.Navigation, BtnStyle.SECONDARY, onClick = onDetour)
+      Caption("Arrivi al punto, poi torni sul percorso calcolato all'inizio e lo segui fino alla destinazione.",
+          Modifier.padding(start = 6.dp, top = 4.dp), size = 13)
+    } else {
+      Caption("Il passaggio va da solo nel punto del viaggio dove allunga meno.", size = 13)
+      Spacer(Modifier.height(10.dp))
+      BigButton("Passa di qui", Modifier.fillMaxWidth(), Icons.Rounded.AddLocationAlt, onClick = onVia)
+    }
     if (!navigating) {
       Spacer(Modifier.height(8.dp))
       BigButton("Vai qui (nuova destinazione)", Modifier.fillMaxWidth(), Icons.Rounded.Navigation, BtnStyle.SECONDARY, onClick = onGo)

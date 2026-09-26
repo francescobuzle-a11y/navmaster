@@ -377,12 +377,19 @@ private fun DrawScope.drawIntoLane(angle: Float, color: Color, cell: Float) {
   drawCircle(color, s * 0.12f, Offset(tipX, tipY))
 }
 
+/** Only some of the lanes go the right way: the driver has to keep the right one. */
+fun lanesMatter(lanes: List<uniffi.ferrostar.LaneInfo>?): Boolean =
+    lanes != null && lanes.size >= 2 && lanes.count { it.active } in 1 until lanes.size
+
+private val MOTORWAY_CLASSES = setOf("motorway", "trunk")
+private val MINOR_CLASSES = setOf("residential", "service", "living_street", "unclassified", "service_other")
+
 /**
- * When to show the junction view: exits and forks (on motorways from 1 km, elsewhere from 350 m),
- * and turns where only some of three or more lanes go the right way. Null the rest of the time,
- * so the map stays free.
+ * When to show the junction view and the lane guidance (the driver's choice of 26/09): only
+ * - motorway junctions: exits, forks and slip roads on a motorway (or leading onto one), from 1 km;
+ * - complicated junctions of multi-lane roads, where only some lanes lead the right way, from 350 m.
+ * Ordinary turns and roundabouts do not open it: the map stays free. Null the rest of the time.
  */
-private var lastLoggedJunction = -1e9
 
 fun junctionSceneOf(
     instruction: uniffi.ferrostar.VisualInstruction?,
@@ -404,15 +411,21 @@ fun junctionSceneOf(
   }
   val lanes = instruction.subContent?.laneInfo ?: p.laneInfo ?: emptyList()
   val here = a?.edgeAt(traveled)
-  val motorway = here?.roadClass in setOf("motorway", "trunk")
-  val exitLike = type.contains("OFFRAMP") || type.contains("FORK") || (type.contains("ONRAMP") && side != 0)
-  val lanesMatter = lanes.size >= 3 && lanes.count { it.active } in 1 until lanes.size
-  // ordinary turns and roundabouts: the live view in the last 160 m, to see the turn as it comes
-  val turnLike = !exitLike && !motorway && (roundabout || ((type.contains("TURN") || type.contains("ENDOFROAD")) && side != 0))
-  if (!exitLike && !lanesMatter && !turnLike) return null
-  val range = if (turnLike && !lanesMatter) 160.0 else if (motorway) 1000.0 else 350.0
-  if (distanceM > range) return null
   val at = traveled + distanceM
+  val after = a?.edgeAt(at + 80)
+  val motorway = here?.roadClass in MOTORWAY_CLASSES
+  val exitLike = type.contains("OFFRAMP") || type.contains("FORK") || (type.contains("ONRAMP") && side != 0)
+  // a motorway junction: leaving, splitting or joining a motorway (the analysis missing: trust the
+  // instruction, an exit or a fork is almost always one)
+  val motorwayJunction = exitLike && (a == null || motorway || after?.roadClass in MOTORWAY_CLASSES ||
+      (here?.isRamp == true && (after?.isRamp == true || after?.roadClass in MOTORWAY_CLASSES)))
+  // a complicated junction: a road with more lanes where only some go the right way
+  val multiLane = (here?.lanes ?: 0) >= 2 || lanes.size >= 3
+  val complex = lanesMatter(lanes) && multiLane && here?.roadClass !in MINOR_CLASSES && !roundabout
+  if (!motorwayJunction && !complex) return null
+  val turnLike = false
+  val range = if (motorway || motorwayJunction) 1000.0 else 350.0
+  if (distanceM > range) return null
   val sign = a?.signNear(at)
   // the signs mapped in OSM at this junction: the road taken and the one left aside
   val osm = a?.osmSignNear(at)
@@ -428,13 +441,6 @@ fun junctionSceneOf(
       towards = parts.filterNot { refRe.matches(it) },
       exitNames = emptyList(),
   ).takeIf { !it.isEmpty }
-  val after = a?.edgeAt(at + 80)
-  if (kotlin.math.abs(at - lastLoggedJunction) > 30) {
-    lastLoggedJunction = at
-    android.util.Log.d("NavMasterJV", "junction @${at.toInt()} type=$type side=$side here=${here?.roadClass}/${here?.country} " +
-        "after=${after?.roadClass}/${after?.country} fallback=$countryFallback catalog=${a?.pointAt(at)?.let { pt ->
-          app.navmaster.truck.AppGraph.catalog.countryAt(pt.lat, pt.lng)?.iso }} osm=${osm?.taken?.towards}/${other?.towards}")
-  }
   return JunctionScene(
       side = side,
       lanes = lanes,
@@ -454,7 +460,7 @@ fun junctionSceneOf(
       traveledM = traveled,
       maneuverAtM = at,
       turn = turnLike,
-      roundabout = roundabout,
+      roundabout = false,
       otherSign = other,
   )
 }

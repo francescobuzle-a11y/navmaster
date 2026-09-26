@@ -35,16 +35,17 @@ object MapStyles {
         NightMode.AUTO -> now.hour >= 20 || now.hour < 7
       }
 
-  fun styleUri(context: Context, regions: List<InstalledRegion>, night: Boolean, satellite: Boolean): String {
+  /** [traffic]: tile address of the traffic colours drawn over the roads (TomTom, with the driver's key). */
+  fun styleUri(context: Context, regions: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String? = null): String {
     val maps = regions.filter { it.map.exists() }
-    val name = "style-${if (night) "n" else "d"}${if (satellite) "s" else ""}.json"
+    val name = "style-${if (night) "n" else "d"}${if (satellite) "s" else ""}${if (traffic != null) "t" else ""}.json"
     val out = File(context.filesDir, name)
-    val text = if (maps.isEmpty() && !satellite) EMPTY.replace("{BG}", if (night) "#1B1F24" else "#F2EFE9") else build(context, maps, night, satellite)
+    val text = if (maps.isEmpty() && !satellite) EMPTY.replace("{BG}", if (night) "#1B1F24" else "#F2EFE9") else build(context, maps, night, satellite, traffic)
     if (!out.exists() || out.readText() != text) out.writeText(text)
     return "file://" + out.absolutePath
   }
 
-  private fun build(context: Context, maps: List<InstalledRegion>, night: Boolean, satellite: Boolean): String {
+  private fun build(context: Context, maps: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String?): String {
     val asset = if (night) "style/style-night.json" else "style/style-day.json"
     val base = json.parseToJsonElement(context.assets.open(asset).bufferedReader().use { it.readText() }).jsonObject
     val omt = base["sources"]?.jsonObject?.get("omt")?.jsonObject
@@ -64,12 +65,33 @@ object MapStyles {
             put("attribution", ESRI_ATTRIBUTION)
           }
         }
+        if (traffic != null) {
+          putJsonObject("traffic") {
+            put("type", "raster")
+            putJsonArray("tiles") { add(JsonPrimitive(traffic)) }
+            put("tileSize", 256)
+            put("minzoom", 6)
+            put("maxzoom", 18)
+            put("attribution", "Traffico © TomTom")
+          }
+        }
       }
       putJsonArray("layers") {
+        var trafficAdded = traffic == null
         for (l in layers) {
           val layer = l.jsonObject
           val type = layer["type"]?.jsonPrimitive?.contentOrNull
           val src = layer["source"]?.jsonPrimitive?.contentOrNull
+          // the traffic colours over the roads, under the names
+          if (!trafficAdded && type == "symbol") {
+            trafficAdded = true
+            add(buildJsonObject {
+              put("id", "traffic")
+              put("type", "raster")
+              put("source", "traffic")
+              putJsonObject("paint") { put("raster-opacity", 0.85) }
+            })
+          }
           if (src == null) {
             add(layer)
             if (type == "background" && satellite) {

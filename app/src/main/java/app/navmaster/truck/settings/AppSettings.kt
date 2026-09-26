@@ -142,6 +142,20 @@ data class Settings(
     /** Optional free Mapillary token: with it the street photos also come from Mapillary. */
     val mapillaryToken: String = "",
     val speedWarningKmh: Int = 5,
+    /** Reports of the other NavMaster drivers on the road ahead (and the button to send one). */
+    val liveReports: Boolean = true,
+    /** Official traffic information (road operators; TomTom / HERE with the driver's free key). */
+    val liveTraffic: Boolean = true,
+    /** Free TomTom key (developer.tomtom.com): incidents and queues of all Europe, traffic on the map. */
+    val tomtomKey: String = "",
+    /** Free HERE key (platform.here.com): incidents of all Europe. */
+    val hereKey: String = "",
+    /** Traffic colours on the map roads (with the TomTom key). */
+    val trafficOnMap: Boolean = true,
+    /** The ntfy server the reports travel on (the public one, or one's own). */
+    val reportsServer: String = "https://ntfy.sh",
+    /** Random tag of this device, to count a driver's confirmations once (not who he is). */
+    val deviceTag: String = "",
 )
 
 class SettingsStore(context: Context) {

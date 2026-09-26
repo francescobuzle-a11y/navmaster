@@ -54,7 +54,7 @@ val NmAmber = Color(0xFFFFB300)
  * road or the text of the sign, and on the right the lane assist with every lane of the road.
  */
 @Composable
-fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier: Modifier = Modifier) {
+fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier: Modifier = Modifier, showLanes: Boolean = true) {
   if (instruction == null) return
   val primary = instruction.primaryContent
   val lanes = instruction.subContent?.laneInfo ?: primary.laneInfo
@@ -104,7 +104,8 @@ fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier
         Text(it, color = Color(0xDDFFFFFF), fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
       }
     }
-    if (!lanes.isNullOrEmpty() && lanes.size >= 2) {
+    // the lanes only where keeping one matters (motorway junctions, complicated junctions)
+    if (showLanes && !lanes.isNullOrEmpty() && lanesMatter(lanes)) {
       Spacer(Modifier.width(10.dp))
       LaneAssist(lanes)
     }
