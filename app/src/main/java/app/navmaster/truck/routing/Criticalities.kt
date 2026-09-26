@@ -323,7 +323,10 @@ class CriticalityFinder(regions: RegionManager) {
           pct >= 15 -> Severity.WARN
           else -> return null
         }
-        c(CritKind.STEEP, sev, "Pendenza del ${pct.toInt()}%", "Salita o discesa ripida per ${Fmt.distanceText(len)}.")
+        val fromTerrain = info?.get("dem")?.jsonPrimitive?.booleanOrNull == true
+        c(CritKind.STEEP, sev, "Pendenza del ${pct.toInt()}%",
+            "Salita o discesa ripida per ${Fmt.distanceText(len)}." +
+                if (fromTerrain) " Pendenza stimata dal rilievo del terreno (SRTM): verifica con le foto." else "")
       }
       "ford" -> c(CritKind.FORD, Severity.CRITICAL, "Guado", "La strada attraversa un corso d'acqua.")
       "curve" -> {

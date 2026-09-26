@@ -375,7 +375,8 @@ private fun AboutPage() {
   Card("Fonti dei dati") {
     Caption("Mappe, limiti, divieti, autovelox e punti di interesse © OpenStreetMap contributors (ODbL). " +
         "Punti di interesse aggiuntivi © Overture Maps Foundation (CDLA Permissive 2.0). " +
-        "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale).", size = 14, lines = 6)
+        "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale). " +
+        "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA).", size = 14, lines = 7)
   }
   Card("Avvertenze") {
     Caption("I divieti nazionali di circolazione sono indicativi: verifica sempre il calendario ufficiale. " +

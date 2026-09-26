@@ -8,7 +8,8 @@ Kinds
   narrow  carriageway narrower than a lorry needs (width / est_width / narrow=yes / one lane
           on a two-way road); value = width in metres (0 when unknown)
   rough   unpaved or badly maintained surface; value = 1 (poor) .. 3 (very bad)
-  steep   signed or mapped gradient of 8 % or more; value = percent
+  steep   signed or mapped gradient of 8 % or more; value = percent. Where OSM has no incline,
+          the terrain model gives it (dem_steep.py, 9 % or more over 200 m; info "dem": true)
   curve   tight curve: exit ramps under 40 m radius, other roads under 22 m (hairpins);
           value = radius in metres
   ford    the road crosses water
@@ -128,6 +129,35 @@ def main():
             cells.append((c, cid))
         counts[kind] = counts.get(kind, 0) + 1
 
+    # roads for the terrain slopes, grouped by 1° tile so each terrain tile is read once
+    import os
+    try:
+        import numpy  # noqa: F401
+    except ImportError:  # the runner's Python may not have it: install it for the terrain slopes
+        import subprocess
+        for extra in (["--break-system-packages"], []):
+            if subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", *extra, "numpy"]).returncode == 0:
+                break
+    import tempfile
+    buckets_dir = tempfile.mkdtemp(prefix="dem_", dir=os.path.dirname(os.path.abspath(dst)) or ".")
+    buckets = {}
+
+    def bucket(f, t, coords):
+        try:
+            from dem_steep import eligible, tile_name
+        except Exception:
+            return
+        if not eligible(t) or len(coords) < 2:
+            return
+        name = tile_name(coords[0][1], coords[0][0])[1]
+        fh = buckets.get(name)
+        if fh is None:
+            if len(buckets) > 900:
+                return
+            fh = buckets[name] = open(os.path.join(buckets_dir, name), "w", encoding="utf-8")
+        fh.write(json.dumps([f.get("id"), {k: t[k] for k in ("highway", "name", "ref", "lanes", "oneway") if k in t}, coords],
+                            separators=(",", ":")) + "\n")
+
     for f in read_geojsonseq(src):
         t = f.get("properties") or {}
         hw = t.get("highway")
@@ -167,6 +197,8 @@ def main():
             if v is not None and 8 <= abs(v) <= 40:
                 add(f, "steep", abs(v), t, coords)
 
+        bucket(f, t, coords)
+
         if t.get("ford") == "yes":
             add(f, "ford", 0.0, t, coords)
 
@@ -183,12 +215,47 @@ def main():
             db.executemany("INSERT INTO crit_cells VALUES (?,?)", cells)
             rows, cells = [], []
 
+    # terrain slopes (after the OSM ones: a way with a mapped incline is never measured again)
+    for fh in buckets.values():
+        fh.close()
+    dem_started = time.time()
+    try:
+        from dem_steep import Dem, max_grade
+        dem = Dem(os.path.join(buckets_dir, "tiles"))
+        n_dem = 0
+        for name in sorted(buckets):
+            with open(os.path.join(buckets_dir, name), encoding="utf-8") as fh:
+                for line in fh:
+                    osm_id, t, coords = json.loads(line)
+                    r = max_grade(dem, coords)
+                    if r is None:
+                        continue
+                    pct, at = r
+                    add({"id": osm_id}, "steep", pct, dict(t, incline=f"{pct}%"), coords, at)
+                    json_info = json.loads(rows[-1][4])
+                    json_info["dem"] = True
+                    rows[-1] = rows[-1][:4] + (json.dumps(json_info, separators=(",", ":")),) + rows[-1][5:]
+                    n_dem += 1
+            os.remove(os.path.join(buckets_dir, name))
+            if len(rows) >= 50000:
+                db.executemany("INSERT INTO crit VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                db.executemany("INSERT INTO crit_cells VALUES (?,?)", cells)
+                rows, cells = [], []
+        print(f"criticita: {n_dem} terrain slopes from {len(buckets)} tiles "
+              f"({dem.downloaded} downloaded, {len(dem.missing)} missing) in {time.time() - dem_started:.0f}s")
+    except Exception as ex:
+        print(f"criticita: terrain slopes skipped ({ex})")
+    finally:
+        import shutil
+        shutil.rmtree(buckets_dir, ignore_errors=True)
+
     db.executemany("INSERT INTO crit VALUES (?,?,?,?,?,?,?,?,?)", rows)
     db.executemany("INSERT INTO crit_cells VALUES (?,?)", cells)
     db.execute("CREATE INDEX crit_cells_cell ON crit_cells(cell)")
     db.executemany("INSERT INTO meta VALUES (?,?)", [
         ("region", region), ("built", time.strftime("%Y-%m-%d")), ("format", "1"),
-        ("counts", json.dumps(counts)), ("source", "OpenStreetMap contributors, ODbL"),
+        ("counts", json.dumps(counts)),
+        ("source", "OpenStreetMap contributors, ODbL; terrain: Terrain Tiles on AWS (SRTM, NASA)"),
     ])
     db.commit()
     db.execute("VACUUM")
