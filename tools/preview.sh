@@ -74,6 +74,9 @@ sleep 36; shot 05e_pedaggi_consiglio
 TOLLIN="--es nm_from 44.08767,12.46958 --es nm_dest 43.96360,12.69205 --es nm_label Cattolica --es nm_profile camion --es nm_load 12 --es nm_tolls allow"
 start $TOLLIN --ez nm_plan true
 sleep 36; shot 05k_ingresso_piano
+# the same trip for the camper (no weight limits): does it enter the motorway at Rimini Nord? (see the log)
+start $TOLLIN --es nm_profile camper --es nm_load 0.4 --ez nm_plan true
+sleep 36; shot 05l_ingresso_piano_camper
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2

@@ -209,7 +209,13 @@ fun CritRow(c: Criticality, onClick: () -> Unit) {
       verticalAlignment = Alignment.CenterVertically,
   ) {
     Box(Modifier.size(40.dp).clip(CircleShape).background(severityColor(c.severity).copy(alpha = 0.22f)), contentAlignment = Alignment.Center) {
-      Text(c.kind.icon, fontSize = 18.sp)
+      // the icon turns the way the road does
+      val left = c.title.contains("sinistra", ignoreCase = true)
+      Text(when {
+        left && c.kind.name == "JUNCTION" -> "↰"
+        left && c.kind.name == "CURVE" -> "↩"
+        else -> c.kind.icon
+      }, fontSize = 18.sp)
     }
     Spacer(Modifier.width(10.dp))
     Column(Modifier.weight(1f)) {
