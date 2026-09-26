@@ -92,6 +92,7 @@ sleep 3; shot 05j_guida_casello_3
 start $TOLLOUT --ei nm_variant 0 --ez nm_sim true --es nm_night night
 sleep 16; shot 05n_svincolo_notte
 sleep 14; shot 05o_svincolo_notte_2
+sleep 5; shot 05p_svincolo_notte_3
 start --es nm_night auto; sleep 6
 
 # live: a report of "another driver" 3 km ahead, sent and read back through ntfy (test topics, not

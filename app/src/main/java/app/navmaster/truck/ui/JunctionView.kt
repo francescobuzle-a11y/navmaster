@@ -111,6 +111,10 @@ fun osmSignColors(colour: String): Pair<Color, Color>? = when (colour.substringB
 private fun nightSign(c: Color, night: Boolean): Color =
     if (!night) c else if (c == Color.White || c == SignWhite) Color(0xFFDCDFE3) else androidx.compose.ui.graphics.lerp(c, Color.Black, 0.25f)
 
+/** A sign of a road not taken: still solid (the gantry must not show through it), but faded. */
+private fun dimSign(c: Color, taken: Boolean, night: Boolean): Color =
+    if (taken) c else androidx.compose.ui.graphics.lerp(c, if (night) Color(0xFF1C232B) else Color(0xFF8A96A3), 0.45f)
+
 /** The small plate of a road number, coloured like on the signs ("A1" green in Italy, "E45" green, "SS16" blue). */
 @Composable
 fun RefPlate(ref: String, country: String?, big: Boolean = false, night: Boolean = false) {
@@ -218,10 +222,10 @@ private fun SignPanel(
     modifier: Modifier, bg: Color, fg: Color, arrow: Float, exitNumber: String?, refs: List<String>, towns: List<String>,
     taken: Boolean, country: String?, night: Boolean = false,
 ) {
-  val bg = nightSign(bg, night)
-  val fg = nightSign(fg, night)
+  val bg = dimSign(nightSign(bg, night), taken, night)
+  val fg = dimSign(nightSign(fg, night), taken, night)
   Column(
-      modifier.alpha(if (taken) 1f else 0.55f).shadow(if (taken) 6.dp else 0.dp, RoundedCornerShape(6.dp))
+      modifier.shadow(if (taken) 6.dp else 0.dp, RoundedCornerShape(6.dp))
           .clip(RoundedCornerShape(6.dp)).background(bg).border(2.dp, fg, RoundedCornerShape(6.dp))
           .padding(horizontal = 8.dp, vertical = 6.dp),
   ) {
@@ -260,11 +264,11 @@ private fun LaneGantry(scene: JunctionScene, night: Boolean, modifier: Modifier)
       val d = lanes[g.first()]
       val motorwayRef = d.refs.any { it.uppercase().let { r -> (r.startsWith("A") || r.startsWith("E")) && r.getOrNull(1)?.isDigit() == true } }
       val (bg0, fg0) = d.colour?.let { osmSignColors(it) } ?: signColors(scene.country, motorwayRef)
-      val bg = nightSign(bg0, night)
-      val fg = nightSign(fg0, night)
       val taken = active == null || g.any { active.getOrNull(it) == true }
+      val bg = dimSign(nightSign(bg0, night), taken, night)
+      val fg = dimSign(nightSign(fg0, night), taken, night)
       Column(
-          Modifier.weight(g.size.toFloat()).alpha(if (taken) 1f else 0.5f).shadow(if (taken) 6.dp else 0.dp, RoundedCornerShape(5.dp))
+          Modifier.weight(g.size.toFloat()).shadow(if (taken) 6.dp else 0.dp, RoundedCornerShape(5.dp))
               .clip(RoundedCornerShape(5.dp)).background(bg).border(2.dp, fg, RoundedCornerShape(5.dp))
               .padding(horizontal = 6.dp, vertical = 4.dp),
           horizontalAlignment = Alignment.CenterHorizontally,
@@ -306,10 +310,11 @@ private fun DrawScope.drawGantry(signsSpace: Float, night: Boolean) {
   val shade = if (night) Color(0xFF2C3137) else Color(0xFF666C73)
   val y1 = signsSpace * 0.20f
   val y2 = signsSpace * 0.46f
-  val postW = w * 0.016f
+  val postW = w * 0.024f
   val left = w * 0.035f
   val right = w - w * 0.03f
-  val foot = (signsSpace + h * 0.12f).coerceAtMost(h * 0.62f)
+  // the posts stand on the ground, just below the horizon of the junction view
+  val foot = max(h * 0.40f, signsSpace + h * 0.06f).coerceAtMost(h * 0.55f) + h * 0.015f
   for (x in listOf(left, right)) {
     drawRect(shade, topLeft = Offset(x - postW / 2 + postW * 0.35f, y1), size = androidx.compose.ui.geometry.Size(postW * 0.65f, foot - y1))
     drawRect(steel, topLeft = Offset(x - postW / 2, y1), size = androidx.compose.ui.geometry.Size(postW * 0.65f, foot - y1))
