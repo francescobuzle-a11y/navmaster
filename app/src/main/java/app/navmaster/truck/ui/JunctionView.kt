@@ -157,7 +157,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
               .clickable { closed = true }.padding(horizontal = 10.dp, vertical = 0.dp))
       // the signs, on a gantry above the road
       if (hasSigns) Row(
-          Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+          Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 50.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
           verticalAlignment = Alignment.Top,
       ) {
@@ -446,7 +446,9 @@ fun junctionSceneOf(
       motorway = motorway,
       // the graph knows the country when its admin data is complete; else the catalogue by position
       country = (here?.country ?: after?.country ?: countryFallback?.takeIf { it.length == 2 }
-          ?: a?.pointAt(at)?.let { pt -> app.navmaster.truck.AppGraph.catalog.countryAt(pt.lat, pt.lng)?.iso })?.uppercase(),
+          ?: a?.pointAt(at)?.let { pt -> app.navmaster.truck.AppGraph.catalog.countryAt(pt.lat, pt.lng)?.iso })?.uppercase()
+          // San Marino has no motorways: a graph with cut borders can still put them there
+          ?.let { if (it == "SM" && motorway) "IT" else it },
       exit = type.contains("OFFRAMP") || type.contains("FORK"),
       analysis = a,
       traveledM = traveled,
@@ -511,7 +513,7 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
 
   val m = scene.maneuverAtM
   // far: the road ahead up to well beyond the junction; near: framed on the junction
-  val lead = if (near) (if (scene.turn) 45.0 else 70.0) else 200.0
+  val lead = if (near) (if (scene.turn) 45.0 else 70.0) else 150.0
   val anchor = max(pos, m - lead).coerceAtMost(a.length)
   val here = a.pointAt(anchor)
   val plane = app.navmaster.truck.core.LocalPlane(here.lat, here.lng)
@@ -521,13 +523,14 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
     val p = plane.toXY(c)
     return app.navmaster.truck.core.XY(p.x * hv.y - p.y * hv.x, p.x * hv.x + p.y * hv.y)
   }
-  val zMax = (m - anchor) + if (near) (if (scene.turn) 50.0 else 90.0) else 260.0
-  val k = if (near) 0.02 else 0.012
+  val zMax = (m - anchor) + if (near) (if (scene.turn) 50.0 else 110.0) else 170.0
+  val k = if (near) 0.02 else 0.016
   fun persp(z: Double) = 1.0 / (1.0 + max(z, -10.0) * k)
   val bottomY = h * 1.0
   val topY = horizon + (h - horizon) * 0.01
   val span = 1.0 - persp(zMax)
-  val xs = w / (if (near) (if (scene.turn) 22.0 else 26.0) else 30.0)
+  // the road fills the bottom of the panel, as seen from the cab of the reference view
+  val xs = w / (if (near) (if (scene.turn) 20.0 else 22.0) else 16.0)
   val cx = w / 2.0
   fun proj(p: app.navmaster.truck.core.XY): Offset? {
     if (p.y > zMax + 5 || p.y < -10) return null
@@ -627,10 +630,12 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
     ribbon(center, { i -> bandCenter(i) - bw / 4 }, { i -> bandCenter(i) + bw / 4 })?.let { drawPath(it, violetLight.copy(alpha = 0.55f)) }
   } else {
     // junction view: one big violet arrow painted on the lane, through the manoeuvre
-    val sel = center.indices.filter { along[it] >= max(pos + 2, m - 55) && along[it] <= m + 35 }
+    val sel = center.indices.filter { along[it] >= max(pos + 2, m - 60) && along[it] <= m + 70 }
     val aw = laneW * 0.62
-    if (sel.size >= 3) {
-      val body = sel.dropLast(2)
+    // the head is 9 m long, so it reads well even far in the picture
+    val headSamples = (9.0 / step).toInt().coerceAtLeast(2)
+    if (sel.size > headSamples + 1) {
+      val body = sel.dropLast(headSamples)
       val pts = body.map { center[it] }
       val offs = body.map { bandCenter(it) }
       val left = pts.indices.mapNotNull { j -> proj(pts[j] + nrm[body[j]] * (offs[j] - aw / 2)) }
@@ -638,8 +643,8 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
       val tipI = sel.last()
       val baseI = body.last()
       val tip = proj(center[tipI] + nrm[tipI] * bandCenter(tipI))
-      val hl = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) - aw * 1.25))
-      val hr = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) + aw * 1.25))
+      val hl = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) - aw * 1.5))
+      val hr = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) + aw * 1.5))
       if (left.size >= 2 && right.size >= 2 && tip != null && hl != null && hr != null) {
         val arrow = Path().apply {
           moveTo(left[0].x, left[0].y); for (o in left.drop(1)) lineTo(o.x, o.y)
