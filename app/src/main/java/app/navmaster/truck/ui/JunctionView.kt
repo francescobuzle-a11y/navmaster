@@ -186,7 +186,8 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
         val (brBg, brFg) = signColors(scene.country, branchMotorway || scene.motorway)
         val main: @Composable (Modifier) -> Unit = { m ->
           val o = scene.otherSign
-          if (scene.mainRefs.isNotEmpty() || scene.side != 0 || o != null) {
+          // only a panel with something written on it (an empty blue board says nothing)
+          if (scene.mainRefs.isNotEmpty() || o?.branches?.isNotEmpty() == true || o?.towards?.isNotEmpty() == true) {
             val (oBg, oFg) = o?.colour?.let { osmSignColors(it) } ?: (mainBg to mainFg)
             SignPanel(m, oBg, oFg, arrow = 0f, exitNumber = null,
                 refs = ((o?.branches ?: emptyList()) + scene.mainRefs).distinct().take(3),

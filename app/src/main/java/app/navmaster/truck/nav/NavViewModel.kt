@@ -484,6 +484,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var personalEvents: List<LiveEvent> = emptyList()
   private var lastPersonalAt = 0L
   private var personalMoveAt = 0L
+  private var nationalMoveAt = 0L
+  private var nationalEvents: List<LiveEvent> = emptyList()
+  private var nationalCounts: List<String> = emptyList()
 
   /**
    * TomTom incidents of the road ahead (60 km on motorways, 30 km elsewhere), read as zoom 12
@@ -553,6 +556,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     trafficEvents = emptyList()
     openEvents = emptyList()
     tomtomEvents = emptyList()
+    nationalEvents = emptyList()
     tomtomTiles.clear()
     lastTrafficAt = 0L
   }
@@ -592,7 +596,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       sources += "TomTom ${tomtomEvents.size}"
       trafficSources = trafficSources.filterNot { it.startsWith("TomTom") } + "TomTom ${tomtomEvents.size}"
     } else tomtomEvents = emptyList()
-    trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents else emptyList()
+    // the traffic centres of the countries crossed (open data), each file at its own pace (5 - 15
+    // minutes, see NationalFeeds), only while moving
+    if (s.liveTraffic && s.nationalTraffic) {
+      val speed = navigationUiState.value.location?.speed?.value ?: 0.0
+      if (speed > 2.0 || nationalMoveAt == 0L) nationalMoveAt = now
+      val (nat, counts) = runCatching {
+        app.navmaster.truck.live.NationalFeeds.read(boxesAhead(a, traveled), s.trafikverketKey, now - nationalMoveAt < 5 * 60_000L)
+      }.getOrElse { Log.w(TAG, "national: $it"); emptyList<LiveEvent>() to emptyList() }
+      nationalEvents = nat
+      nationalCounts = counts
+      sources += counts
+    } else {
+      nationalEvents = emptyList()
+      nationalCounts = emptyList()
+    }
+    trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents + nationalEvents else emptyList()
     // personal test (see PersonalFeed): Waze asked by the tablet itself, or the owner's own server;
     // every 2 minutes, only the stretch of route ahead, never while standing still
     val direct = s.personalFeedDirect
@@ -612,14 +631,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         }
         if (got != null) personalEvents = got
       }
-      sources += (if (direct) "Waze prova " else "server personale ") + personalEvents.size
+      sources += (if (direct) "Waze " else "Waze (computer) ") + personalEvents.size
     } else personalEvents = emptyList()
     // my own reports show at once, before ntfy gives them back
     localReports = localReports.filter { now - it.timeMs < it.kind.ttlMin * 60_000L && reports.none { r -> r.mine && r.kind == it.kind && Geo.dist(r.lat, r.lon, it.lat, it.lon) < 300 } }
     liveEvents = trafficEvents + reports + localReports + personalEvents
     Log.i(TAG, "live: ${sources.joinToString()} -> ${liveEvents.size} events")
-    liveSources = (sources.filter { it.startsWith("segnalazioni") || it.startsWith("server personale") || it.startsWith("Waze prova") } +
-        (if (s.liveTraffic) trafficSources else emptyList()))
+    liveSources = (sources.filter { it.startsWith("segnalazioni") || it.startsWith("Waze") } +
+        (if (s.liveTraffic) trafficSources + nationalCounts else emptyList()))
         .joinToString(" · ").ifBlank { null }
     matchLive()
   }
@@ -1244,6 +1263,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
             "roads ${roads.size}, first road point $first, props ${roads.firstOrNull()?.props}")
       }.onFailure { Log.w(TAG, "livetest mvt: $it") }
       Log.i(TAG, "livetest tomtom guard: ${app.navmaster.truck.live.TomTomGuard.summary()}")
+      // the national traffic centres, every open feed read whole: how many events of each kind
+      for (line in app.navmaster.truck.live.NationalFeeds.selfTest()) Log.i(TAG, "livetest national $line")
     }
     if (report == null && detour == null) return
     viewModelScope.launch {

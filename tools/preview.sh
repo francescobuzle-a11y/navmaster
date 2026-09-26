@@ -163,6 +163,6 @@ start --es nm_sheet regions; sleep 12; shot 11_paesi
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
 log
-grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs" "$OUT/logcat.txt" | head -60 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national" "$OUT/logcat.txt" | head -60 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

@@ -296,6 +296,21 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       if (s.hereKey.isBlank()) Caption("In alternativa o in aggiunta: chiave gratuita su platform.here.com.", size = 13)
     }
   }
+  Card("Informazioni ufficiali dei Paesi") {
+    ToggleRow("Dati ufficiali del traffico", "Incidenti, code, chiusure, lavori, pericoli e limiti per i mezzi pesanti dalle centrali " +
+        "del traffico nazionali: Spagna (DGT, Catalogna, Paesi Baschi), Paesi Bassi, Belgio (Fiandre), Lussemburgo, Francia, " +
+        "Germania, Finlandia, Polonia, Lituania e Svezia (con chiave). Gratuiti, senza chiave, letti solo per i Paesi che " +
+        "attraversi e solo in movimento.", s.nationalTraffic) { v -> set { it.copy(nationalTraffic = v) } }
+    if (s.nationalTraffic) {
+      OutlinedTextField(
+          s.trafikverketKey, { v -> set { it.copy(trafikverketKey = v.trim()) } }, label = { Text("Chiave Trafikverket – Svezia (facoltativa)") },
+          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
+          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
+      )
+      Caption("Italia, Austria, Svizzera, Norvegia e gli altri Paesi non hanno dati aperti di questo tipo: lì restano TomTom, " +
+          "HERE e le segnalazioni.", size = 13, lines = 3)
+    }
+  }
 }
 
 @Composable
@@ -462,7 +477,10 @@ private fun AboutPage() {
         "Punti di interesse aggiuntivi © Overture Maps Foundation (CDLA Permissive 2.0). " +
         "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale). " +
         "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA). " +
-        "Traffico: Autobahn GmbH (dati aperti), TomTom e HERE con la chiave dell'utente. Segnalazioni: autisti NavMaster via ntfy. " +
+        "Traffico: Autobahn GmbH (dati aperti), TomTom e HERE con la chiave dell'utente. " +
+        "Dati ufficiali: DGT (CC BY), Servei Català de Trànsit, Open Data Euskadi, NDW, Vlaams Verkeerscentrum, CITA (CC0), " +
+        "Bison Futé (Licence Ouverte 2.0), Fintraffic / digitraffic.fi (CC BY 4.0), GDDKiA, Via Lietuva, Trafikverket. " +
+        "Segnalazioni: autisti NavMaster via ntfy. " +
         "Waze: segnalazioni dalla mappa pubblica, solo se attivate.", size = 14, lines = 10)
   }
   Card("Avvertenze") {

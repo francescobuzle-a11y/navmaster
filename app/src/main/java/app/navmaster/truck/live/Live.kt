@@ -48,6 +48,8 @@ data class LiveEvent(
     val denies: Int = 0,
     val mine: Boolean = false,
     val headingDeg: Double? = null,
+    /** The stretch concerns both directions (or the source does not say which): no order check. */
+    val bothWays: Boolean = false,
 ) {
   val ageMin: Long
     get() = ((System.currentTimeMillis() - timeMs) / 60_000).coerceAtLeast(0)
@@ -68,7 +70,7 @@ object LiveMatch {
       // of a motorway has the points in the opposite order)
       val hits = e.line.mapNotNull { p -> m.nearest(p)?.takeIf { it.first <= tol }?.second }
       if (hits.isEmpty()) return null
-      if (hits.size >= 2 && hits.first() > hits.last() + 60) return null
+      if (!e.bothWays && hits.size >= 2 && hits.first() > hits.last() + 60) return null
       return RouteLiveEvent(e, hits.min(), hits.max().coerceAtLeast(hits.min()))
     }
     val (d, along) = m.nearest(GeographicCoordinate(e.lat, e.lon)) ?: return null
