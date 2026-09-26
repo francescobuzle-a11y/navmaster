@@ -234,6 +234,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val firstDiff = refWays.indices.firstOrNull { it >= lorryWays.size || refWays[it] != lorryWays[it] }
         Log.i(TAG, "probecmp ${ref.name} ${r.distance.toInt()} m ways ${refWays.size}: $refWays")
         Log.i(TAG, "probecmp ${lorry.name} matched ${lorryA.edges.size} edges ways ${lorryWays.size}: $lorryWays")
+        for (line in listOf(RouteAnalysis.speedsDebug(AppGraph.engine, r, ref, load),
+            runCatching { RouteAnalysis.speedsDebug(AppGraph.engine, r, lorry, load) }.getOrElse { "lorry map_snap: $it" },
+            runCatching { RouteAnalysis.speedsDebug(AppGraph.engine, r, lorry, load, "edge_walk") }.getOrElse { "lorry edge_walk: $it" })) {
+          line.chunked(3000).forEach { Log.i(TAG, "probespeed $it") }
+        }
         Log.i(TAG, "probecmp first difference at ${firstDiff ?: "none"}: ref ${firstDiff?.let { refWays.subList((it - 2).coerceAtLeast(0), (it + 3).coerceAtMost(refWays.size)) }} " +
             "lorry ${firstDiff?.let { lorryWays.subList((it - 2).coerceAtLeast(0).coerceAtMost(lorryWays.size), (it + 3).coerceAtMost(lorryWays.size)) }}")
       } catch (e: Exception) {

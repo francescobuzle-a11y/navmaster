@@ -212,6 +212,51 @@ class RouteAnalysis(
       return out
     }
 
+    /**
+     * Diagnosis: the speed the graph gives [vehicle] on every road of [route] (map_snap, so the
+     * vehicle's own rules apply), summed per OSM way: "way:metres@kmh", and the total time.
+     */
+    fun speedsDebug(engine: RoutingEngine, route: Route, vehicle: VehicleProfile, loadT: Double, match: String = "map_snap"): String {
+      val options = vehicle.valhallaOptions(loadT)
+      val first = route.geometry.first()
+      val req = buildJsonObject {
+        put("encoded_polyline", Geo.encodePolyline6(route.geometry))
+        put("shape_match", match)
+        put("costing", vehicle.costing)
+        options["costing_options"]?.let { put("costing_options", it) }
+        put("filters", buildJsonObject {
+          put("action", "include")
+          put("attributes", JsonArray(listOf("edge.way_id", "edge.length", "edge.speed", "edge.truck_speed", "edge.speed_limit",
+              "edge.road_class", "edge.truck_route", "edge.toll", "edge.use").map { JsonPrimitive(it) }))
+        })
+      }
+      val raw = engine.use(first.lat, first.lng) { it.traceAttributesRaw(req.toString()) }
+      val root = json.parseToJsonElement(raw).jsonObject
+      val edges = root["edges"]?.jsonArray ?: return "no edges: ${raw.take(300)}"
+      var total = 0.0
+      val parts = mutableListOf<String>()
+      var lastWay = -1L
+      var wayLen = 0.0
+      var waySpeed = 0.0
+      fun flush() {
+        if (lastWay >= 0) parts += "$lastWay:${wayLen.toInt()}@${waySpeed.toInt()}"
+      }
+      for (e in edges) {
+        val o = e.jsonObject
+        val way = o["way_id"]?.jsonPrimitive?.longOrNull ?: 0L
+        val lenM = (o["length"]?.jsonPrimitive?.doubleOrNull ?: 0.0) * 1000
+        val sp = o["speed"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+        if (sp > 0) total += lenM / (sp / 3.6)
+        if (way != lastWay) { flush(); lastWay = way; wayLen = 0.0; waySpeed = sp }
+        wayLen += lenM
+        waySpeed = minOf(waySpeed, sp)
+      }
+      flush()
+      val t = edges.firstOrNull()?.jsonObject
+      return "$match ${vehicle.name}: ${edges.size} edges, ${total.toInt()} s at the graph speeds; truck_speed/limit of first " +
+          "${t?.get("truck_speed")}/${t?.get("speed_limit")}; " + parts.joinToString(" ")
+    }
+
     /** trace_attributes on the route shape; an analysis without edges when the graph refuses it. */
     fun analyse(engine: RoutingEngine, route: Route, vehicle: VehicleProfile, loadT: Double): RouteAnalysis {
       if (route.geometry.size < 2) return RouteAnalysis(route, emptyList())
