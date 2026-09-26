@@ -99,13 +99,13 @@ data class VehicleProfile(
           put("axle_load", axleLoadT)
           put("axle_count", axleCount)
           put("hazmat", hazmat)
-          // Valhalla makes roads signed for lorries (hgv=designated) much cheaper as this grows: at
-          // 0.6 they cost about half, and a lorry left the A14 for 25 km of local "truck roads" that
-          // take 65% longer. A light preference keeps them as a tie-breaker, never a detour.
+          // roads signed for lorries (hgv=designated) as a tie-breaker, never worth a long detour
           put("use_truck_route", if (preferTruckRoutes) 0.15 else 0.0)
           put("hgv_no_access_penalty", 43200)
         }
-        put("top_speed", topSpeedKmh)
+        // not the vehicle's own top speed: Valhalla would also avoid every faster road (a lorry at
+        // 80 km/h left the motorway for local roads). The times are capped afterwards (SpeedCap).
+        put("top_speed", ROUTING_TOP_SPEED)
         put("use_tolls", if (trip.avoidTolls) 0.0 else 0.5)
         if (trip.avoidTolls) put("exclude_tolls", true)
         put("use_ferry", if (avoidFerries) 0.0 else 0.5)
@@ -127,6 +127,9 @@ data class VehicleProfile(
   }
 
   companion object {
+    /** The top speed given to Valhalla: above every road's speed, so no road is avoided for it. */
+    const val ROUTING_TOP_SPEED = 140
+
     /** Typical geometry of each kind of vehicle for its length (used when type or length change). */
     fun withTypicalGeometry(p: VehicleProfile): VehicleProfile = with(p) {
       when (type) {

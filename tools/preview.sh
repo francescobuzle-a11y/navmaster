@@ -74,16 +74,6 @@ sleep 36; shot 05e_pedaggi_consiglio
 TOLLIN="--es nm_from 44.08767,12.46958 --es nm_dest 43.96360,12.69205 --es nm_label Cattolica --es nm_profile camion --es nm_load 12 --es nm_tolls allow"
 start $TOLLIN --ez nm_plan true
 sleep 36; shot 05k_ingresso_piano
-# the same trip for the camper (no weight limits): does it enter the motorway at Rimini Nord? (see the log)
-start $TOLLIN --es nm_profile camper --es nm_load 0.4 --ez nm_plan true
-sleep 36; shot 05l_ingresso_piano_camper
-# which road stops the lorry on the A14? the camper's route matched again with the lorry's rules (log: probecmp)
-start --es nm_profile camion --es nm_load 12 --es nm_probecmp "44.08381,12.46547_43.9932705,12.6218864"; sleep 30
-# the lorry's own route there with one costing option changed at a time: which one sends it off the A14?
-P3="44.08381,12.46547_43.9932705,12.6218864"
-for opt in "top_speed:85" "top_speed:90" "top_speed:95" "top_speed:100" "top_speed:110" "top_speed:120" "top_speed:90,use_highways:1"; do
-  start --es nm_profile camion --es nm_load 12 --es nm_probe "$P3" --es nm_costing "$opt"; sleep 12
-done
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2

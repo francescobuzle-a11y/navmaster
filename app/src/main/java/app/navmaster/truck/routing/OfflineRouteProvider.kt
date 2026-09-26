@@ -48,7 +48,7 @@ class OfflineRouteProvider(
             "avoid=${options.excludePolygons.size} request=${body.take(400)}")
         val started = System.currentTimeMillis()
         val c = userLocation.coordinates
-        val raw = engine.use(c.lat, c.lng) { it.routeRaw(body) }
+        val raw = SpeedCap.apply(engine.use(c.lat, c.lng) { it.routeRaw(body) }, vehicle.topSpeedKmh)
         Log.i(TAG, "route computed in ${System.currentTimeMillis() - started} ms, ${raw.length} bytes")
         parser.parseResponse(raw.encodeToByteArray()).also(onRoutes)
       }
