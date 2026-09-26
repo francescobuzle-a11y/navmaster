@@ -77,6 +77,11 @@ sleep 36; shot 05k_ingresso_piano
 # the same trip for the camper (no weight limits): does it enter the motorway at Rimini Nord? (see the log)
 start $TOLLIN --es nm_profile camper --es nm_load 0.4 --ez nm_plan true
 sleep 36; shot 05l_ingresso_piano_camper
+# which stretch stops the lorry? routes between points of the Rimini Nord entry, lorry then camper (log: probe)
+PROBE="44.08767,12.46958;44.08690,12.46887;44.08588,12.46840;44.08381,12.46547;43.96360,12.69205"
+start --es nm_profile camion --es nm_load 12 --es nm_probe "$PROBE"; sleep 25
+start --es nm_profile camion --es nm_load 12 --es nm_probe "44.08767,12.46958;43.96360,12.69205;44.08588,12.46840;43.96360,12.69205;44.08690,12.46887;44.08588,12.46840"; sleep 25
+start --es nm_profile camper --es nm_load 0.4 --es nm_probe "$PROBE"; sleep 20
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2
@@ -110,5 +115,5 @@ adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10c_impostazioni_poi
 start --es nm_sheet settings_map; sleep 8; shot 10d_impostazioni_mappa
 start --es nm_sheet regions; sleep 12; shot 11_paesi
 log
-grep -E "route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
+grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

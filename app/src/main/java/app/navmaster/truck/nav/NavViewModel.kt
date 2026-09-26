@@ -182,6 +182,34 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     lastLocation.value = l.toUserLocation()
   }
 
+  /**
+   * Emulator diagnosis: the route of the active vehicle between consecutive points, in the log
+   * (distance, time, toll), to find which stretch a vehicle cannot use. From tools/preview.sh.
+   */
+  fun probe(points: List<GeographicCoordinate>) {
+    viewModelScope.launch(Dispatchers.IO) {
+      val v = AppGraph.profiles.garage.value.active
+      for (i in 0 until points.size - 1) {
+        val a = points[i]
+        val b = points[i + 1]
+        val from = android.location.Location("probe").apply {
+          latitude = a.lat; longitude = a.lng; accuracy = 5f; time = System.currentTimeMillis()
+        }.toUserLocation()
+        val msg = try {
+          val r = AppGraph.routes.routes(from, listOf(Waypoint(coordinate = b, kind = WaypointKind.BREAK)), TripOptions()).firstOrNull()
+          if (r == null) "no route" else {
+            val an = RouteAnalysis.analyse(AppGraph.engine, r, v, AppGraph.profiles.garage.value.loadT)
+            "${"%.0f".format(r.distance)} m, ${"%.0f".format(r.steps.sumOf { it.duration })} s, toll ${"%.1f".format(an.tollKm)} km, " +
+                "ways ${an.edges.map { it.wayId }.distinct().take(25)}"
+          }
+        } catch (e: Exception) {
+          "error $e"
+        }
+        Log.i(TAG, "probe ${v.name} $i ${a.lat},${a.lng} -> ${b.lat},${b.lng}: $msg")
+      }
+    }
+  }
+
   // ------------------------------------------------------------------------------ planning
 
   fun selectDestination(coordinate: GeographicCoordinate, label: String?) {

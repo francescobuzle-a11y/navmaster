@@ -299,7 +299,7 @@ class RouteAnalysis(
             lanes = e.int("lane_count") ?: 1,
             wayId = e["way_id"]?.jsonPrimitive?.longOrNull ?: 0,
             name = e["names"]?.jsonArray?.firstOrNull()?.jsonPrimitive?.contentOrNull,
-            country = adminIdx?.let { admins.getOrNull(it) },
+            country = adminIdx?.let { admins.getOrNull(it) }?.trim()?.uppercase()?.takeIf { it.length == 2 && it.all(Char::isLetter) },
             tunnel = e.bool("tunnel") ?: false,
             bridge = e.bool("bridge") ?: false,
             maxUpGrade = e["max_upward_grade"]?.jsonPrimitive?.doubleOrNull,

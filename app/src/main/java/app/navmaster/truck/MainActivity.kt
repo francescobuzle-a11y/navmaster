@@ -63,6 +63,11 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     }
     intent?.getIntExtra("nm_poicount", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailCount = v) } }
     intent?.getIntExtra("nm_poisec", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailSeconds = v) } }
+    intent?.getStringExtra("nm_probe")?.let { pr ->
+      intent?.getStringExtra("nm_profile")?.let { AppGraph.profiles.select(it) }
+      intent?.getStringExtra("nm_load")?.toDoubleOrNull()?.let { AppGraph.profiles.setLoad(it) }
+      vm.probe(pr.split(';').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
+    }
     val dest = intent?.getStringExtra("nm_dest") ?: return
     val parts = dest.split(',')
     if (parts.size != 2) return

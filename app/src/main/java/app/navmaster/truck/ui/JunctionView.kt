@@ -434,7 +434,7 @@ fun junctionSceneOf(
       branchRefs = (sign?.first?.refs ?: emptyList()) + (after?.refs ?: emptyList()),
       mainRefs = here?.refs ?: emptyList(),
       motorway = motorway,
-      country = here?.country ?: after?.country ?: countryFallback,
+      country = (here?.country ?: after?.country ?: countryFallback)?.uppercase()?.takeIf { it.length == 2 },
       exit = type.contains("OFFRAMP") || type.contains("FORK"),
       analysis = a,
       traveledM = traveled,
