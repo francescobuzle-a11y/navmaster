@@ -630,7 +630,13 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
     ribbon(center, { i -> bandCenter(i) - bw / 4 }, { i -> bandCenter(i) + bw / 4 })?.let { drawPath(it, violetLight.copy(alpha = 0.55f)) }
   } else {
     // junction view: one big violet arrow painted on the lane, through the manoeuvre
-    val sel = center.indices.filter { along[it] >= max(pos + 2, m - 45) && along[it] <= m + 55 }
+    val sel0 = center.indices.filter { along[it] >= max(pos + 2, m - 45) && along[it] <= m + 55 }
+    // the arrow ends where the path turns away from the view (past 50°): beyond that it would be
+    // a flat line on the horizon; its head there points the way to go, like on the reference
+    val cut = sel0.indexOfFirst { i ->
+      along[i] > m && i + 1 < center.size && (center[i + 1] - center[i]).let { d -> kotlin.math.abs(d.x) > kotlin.math.abs(d.y) * 1.2 }
+    }
+    val sel = if (cut > 0) sel0.take(cut + 1) else sel0
     val aw = laneW * 0.62
     // the head is 9 m long, so it reads well even far in the picture
     val headSamples = (9.0 / step).toInt().coerceAtLeast(2)
@@ -643,8 +649,8 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
       val tipI = sel.last()
       val baseI = body.last()
       val tip = proj(center[tipI] + nrm[tipI] * bandCenter(tipI))
-      val hl = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) - aw * 1.5))
-      val hr = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) + aw * 1.5))
+      val hl = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) - aw * 1.8))
+      val hr = proj(center[baseI] + nrm[baseI] * (bandCenter(baseI) + aw * 1.8))
       if (left.size >= 2 && right.size >= 2 && tip != null && hl != null && hr != null) {
         val arrow = Path().apply {
           moveTo(left[0].x, left[0].y); for (o in left.drop(1)) lineTo(o.x, o.y)
