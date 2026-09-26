@@ -238,6 +238,35 @@ def signs(dst):
                 os.remove(f)
 
 
+def debug_area(region):
+    """Test package only: every road around the points under investigation, with all its tags, in
+    the build log (the truck avoids the Rimini Nord entry: which road stops it?)."""
+    import os
+    import subprocess
+    if region != "test" or not os.path.exists("region.osm.pbf"):
+        return
+    try:
+        subprocess.run(["osmium", "extract", "-b", "12.455,44.078,12.485,44.097", "region.osm.pbf", "-o", "dbg.osm.pbf", "--overwrite"],
+                       check=True)
+        out = subprocess.run(["osmium", "export", "dbg.osm.pbf", "-f", "geojsonseq", "--add-unique-id=type_id",
+                              "--format-option", "print_record_separator=false"], check=True, capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            f = json.loads(line)
+            t = f.get("properties") or {}
+            if "highway" in t or "barrier" in t or t.get("type") == "restriction":
+                g = f.get("geometry") or {}
+                c = g.get("coordinates")
+                first = c[0] if g.get("type") == "LineString" else c
+                print("DBG", f.get("id"), g.get("type"), first, json.dumps(t, ensure_ascii=False))
+        rel = subprocess.run(["osmium", "tags-filter", "dbg.osm.pbf", "r/type=restriction", "-f", "opl", "-o", "-"],
+                             capture_output=True, text=True).stdout
+        for line in rel.splitlines():
+            print("DBGREL", line[:400])
+    except Exception as ex:
+        print(f"debug: {ex}")
+
+
 if __name__ == "__main__":
     main()
     signs(sys.argv[2])
+    debug_area(sys.argv[3])
