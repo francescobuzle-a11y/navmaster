@@ -513,7 +513,7 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
 
   val m = scene.maneuverAtM
   // far: the road ahead up to well beyond the junction; near: framed on the junction
-  val lead = if (near) (if (scene.turn) 40.0 else 50.0) else 150.0
+  val lead = if (near) (if (scene.turn) 30.0 else 32.0) else 150.0
   val anchor = max(pos, m - lead).coerceAtMost(a.length)
   val here = a.pointAt(anchor)
   val plane = app.navmaster.truck.core.LocalPlane(here.lat, here.lng)
@@ -523,8 +523,9 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
     val p = plane.toXY(c)
     return app.navmaster.truck.core.XY(p.x * hv.y - p.y * hv.x, p.x * hv.x + p.y * hv.y)
   }
-  val zMax = (m - anchor) + if (near) (if (scene.turn) 45.0 else 75.0) else 170.0
-  val k = if (near) 0.028 else 0.016
+  // near: the fork sits in the middle of the picture, as in a photo taken just before it
+  val zMax = (m - anchor) + if (near) (if (scene.turn) 40.0 else 50.0) else 170.0
+  val k = if (near) 0.012 else 0.016
   fun persp(z: Double) = 1.0 / (1.0 + max(z, -10.0) * k)
   val bottomY = h * 1.0
   val topY = horizon + (h - horizon) * 0.01
