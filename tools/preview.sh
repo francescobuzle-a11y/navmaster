@@ -77,15 +77,8 @@ sleep 36; shot 05k_ingresso_piano
 # the same trip for the camper (no weight limits): does it enter the motorway at Rimini Nord? (see the log)
 start $TOLLIN --es nm_profile camper --es nm_load 0.4 --ez nm_plan true
 sleep 36; shot 05l_ingresso_piano_camper
-# which stretch stops the lorry? routes between points of the Rimini Nord entry, lorry then camper (log: probe)
-PROBE="44.08767,12.46958_44.08690,12.46887_44.08588,12.46840_44.08381,12.46547_43.96360,12.69205"
-start --es nm_profile camion --es nm_load 12 --es nm_probe "$PROBE"; sleep 25
-start --es nm_profile camion --es nm_load 12 --es nm_probe "44.08767,12.46958_43.96360,12.69205_44.08588,12.46840_43.96360,12.69205_44.08690,12.46887_44.08588,12.46840"; sleep 25
-start --es nm_profile camper --es nm_load 0.4 --es nm_probe "$PROBE"; sleep 20
-# along the A14 southbound (emergency bays on the carriageway): where does the lorry leave it?
-PROBE2="44.08381,12.46547_44.0379331,12.5659003_44.08381,12.46547_44.0351525,12.5702794_44.08381,12.46547_43.9932705,12.6218864_44.08381,12.46547_43.9873413,12.6354979_44.08381,12.46547_43.9848509,12.6421863"
-start --es nm_profile camion --es nm_load 12 --es nm_probe "$PROBE2"; sleep 25
-start --es nm_profile camper --es nm_load 0.4 --es nm_probe "$PROBE2"; sleep 20
+# which road stops the lorry on the A14? the camper's route matched again with the lorry's rules (log: probecmp)
+start --es nm_profile camion --es nm_load 12 --es nm_probecmp "44.08381,12.46547_43.9932705,12.6218864"; sleep 30
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2

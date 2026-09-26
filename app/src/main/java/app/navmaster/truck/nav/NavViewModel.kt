@@ -210,6 +210,38 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
+  /**
+   * Emulator diagnosis: the route of [refProfile] between two points, matched again on the graph
+   * with the lorry's rules. Where the lorry's match leaves the reference route is the road the
+   * lorry may not use (logged with its OSM way id).
+   */
+  fun probeCompare(a: GeographicCoordinate, b: GeographicCoordinate, refProfile: String, lorryProfile: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val from = android.location.Location("probe").apply {
+          latitude = a.lat; longitude = a.lng; accuracy = 5f; time = System.currentTimeMillis()
+        }.toUserLocation()
+        AppGraph.profiles.select(refProfile)
+        val load = AppGraph.profiles.garage.value.loadT
+        val ref = AppGraph.profiles.garage.value.active
+        val r = AppGraph.routes.routes(from, listOf(Waypoint(coordinate = b, kind = WaypointKind.BREAK)), TripOptions()).firstOrNull()
+            ?: run { Log.i(TAG, "probecmp: no reference route"); return@launch }
+        val refWays = RouteAnalysis.analyse(AppGraph.engine, r, ref, load).edges.map { it.wayId }.distinct()
+        AppGraph.profiles.select(lorryProfile)
+        val lorry = AppGraph.profiles.garage.value.active
+        val lorryA = RouteAnalysis.analyse(AppGraph.engine, r, lorry, load)
+        val lorryWays = lorryA.edges.map { it.wayId }.distinct()
+        val firstDiff = refWays.indices.firstOrNull { it >= lorryWays.size || refWays[it] != lorryWays[it] }
+        Log.i(TAG, "probecmp ${ref.name} ${r.distance.toInt()} m ways ${refWays.size}: $refWays")
+        Log.i(TAG, "probecmp ${lorry.name} matched ${lorryA.edges.size} edges ways ${lorryWays.size}: $lorryWays")
+        Log.i(TAG, "probecmp first difference at ${firstDiff ?: "none"}: ref ${firstDiff?.let { refWays.subList((it - 2).coerceAtLeast(0), (it + 3).coerceAtMost(refWays.size)) }} " +
+            "lorry ${firstDiff?.let { lorryWays.subList((it - 2).coerceAtLeast(0).coerceAtMost(lorryWays.size), (it + 3).coerceAtMost(lorryWays.size)) }}")
+      } catch (e: Exception) {
+        Log.w(TAG, "probecmp: $e")
+      }
+    }
+  }
+
   // ------------------------------------------------------------------------------ planning
 
   fun selectDestination(coordinate: GeographicCoordinate, label: String?) {
