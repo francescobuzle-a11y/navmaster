@@ -380,6 +380,8 @@ private fun DrawScope.drawIntoLane(angle: Float, color: Color, cell: Float) {
  * and turns where only some of three or more lanes go the right way. Null the rest of the time,
  * so the map stays free.
  */
+private var lastLoggedJunction = -1e9
+
 fun junctionSceneOf(
     instruction: uniffi.ferrostar.VisualInstruction?,
     distanceM: Double?,
@@ -425,6 +427,12 @@ fun junctionSceneOf(
       exitNames = emptyList(),
   ).takeIf { !it.isEmpty }
   val after = a?.edgeAt(at + 80)
+  if (kotlin.math.abs(at - lastLoggedJunction) > 30) {
+    lastLoggedJunction = at
+    android.util.Log.d("NavMasterJV", "junction @${at.toInt()} type=$type side=$side here=${here?.roadClass}/${here?.country} " +
+        "after=${after?.roadClass}/${after?.country} fallback=$countryFallback catalog=${a?.pointAt(at)?.let { pt ->
+          app.navmaster.truck.AppGraph.catalog.countryAt(pt.lat, pt.lng)?.iso }} osm=${osm?.taken?.towards}/${other?.towards}")
+  }
   return JunctionScene(
       side = side,
       lanes = lanes,

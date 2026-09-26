@@ -82,6 +82,10 @@ PROBE="44.08767,12.46958_44.08690,12.46887_44.08588,12.46840_44.08381,12.46547_4
 start --es nm_profile camion --es nm_load 12 --es nm_probe "$PROBE"; sleep 25
 start --es nm_profile camion --es nm_load 12 --es nm_probe "44.08767,12.46958_43.96360,12.69205_44.08588,12.46840_43.96360,12.69205_44.08690,12.46887_44.08588,12.46840"; sleep 25
 start --es nm_profile camper --es nm_load 0.4 --es nm_probe "$PROBE"; sleep 20
+# along the A14 southbound (emergency bays on the carriageway): where does the lorry leave it?
+PROBE2="44.08381,12.46547_44.0605455,12.5041465_44.0468582,12.5384873_44.0425525,12.5582804_44.0271647,12.5790617_44.0066451,12.5993048_43.9900104,12.6287726"
+start --es nm_profile camion --es nm_load 12 --es nm_probe "$PROBE2"; sleep 25
+start --es nm_profile camper --es nm_load 0.4 --es nm_probe "$PROBE2"; sleep 20
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true
 sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2
