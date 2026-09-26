@@ -16,6 +16,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="NavMaster"
         android:largeHeap="true"
+        android:usesCleartextTraffic="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.NavMaster">
 

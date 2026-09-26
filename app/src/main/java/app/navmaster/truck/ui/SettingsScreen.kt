@@ -240,6 +240,20 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
     )
   }
+  Card("Prova personale") {
+    ToggleRow("Server personale (solo prova)", "Legge polizia, incidenti, pericoli e code da un server che fai girare tu sul tuo " +
+        "computer, nel formato del progetto waze-api / JMoore335. Solo per te e a scopo dimostrativo: quello che legge resta sul " +
+        "tablet e non va agli altri autisti.", s.personalFeed) { v -> set { it.copy(personalFeed = v) } }
+    if (s.personalFeed) {
+      OutlinedTextField(
+          s.personalFeedUrl, { v -> set { it.copy(personalFeedUrl = v.trim()) } }, label = { Text("Indirizzo del server (es. http://192.168.1.20:8080)") },
+          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
+          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
+      )
+      Caption("Il tablet e il computer devono essere sulla stessa rete Wi-Fi. Richiesta al massimo ogni 2 minuti, solo in guida.",
+          size = 13, lines = 3)
+    }
+  }
   Card("Traffico") {
     ToggleRow("Informazioni sul traffico", "Code, incidenti, lavori e chiusure sul percorso, dette a voce in tempo; se la strada è chiusa " +
         "ti propone un'alternativa. Autostrade tedesche sempre (dati aperti Autobahn GmbH); tutta Europa con una chiave gratuita.",

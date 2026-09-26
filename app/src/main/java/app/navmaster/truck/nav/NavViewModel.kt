@@ -481,6 +481,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var tomtomEvents: List<LiveEvent> = emptyList()
   private val tomtomTiles = HashMap<String, Pair<Long, List<LiveEvent>>>()
   private var lastMoveAt = 0L
+  private var personalEvents: List<LiveEvent> = emptyList()
+  private var lastPersonalAt = 0L
 
   /**
    * TomTom incidents of the road ahead (60 km on motorways, 30 km elsewhere), read as zoom 12
@@ -590,11 +592,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       trafficSources = trafficSources.filterNot { it.startsWith("TomTom") } + "TomTom ${tomtomEvents.size}"
     } else tomtomEvents = emptyList()
     trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents else emptyList()
+    // personal test: the owner's own server (see PersonalFeed), at most every 2 minutes
+    if (s.personalFeed && s.personalFeedUrl.isNotBlank()) {
+      if (now - lastPersonalAt > 120_000L) {
+        lastPersonalAt = now
+        boxesAhead(a, traveled).firstOrNull()?.let { box ->
+          runCatching { app.navmaster.truck.live.PersonalFeed.read(s.personalFeedUrl, box) }.getOrNull()?.let { personalEvents = it }
+        }
+      }
+      sources += "server personale ${personalEvents.size}"
+    } else personalEvents = emptyList()
     // my own reports show at once, before ntfy gives them back
     localReports = localReports.filter { now - it.timeMs < it.kind.ttlMin * 60_000L && reports.none { r -> r.mine && r.kind == it.kind && Geo.dist(r.lat, r.lon, it.lat, it.lon) < 300 } }
-    liveEvents = trafficEvents + reports + localReports
+    liveEvents = trafficEvents + reports + localReports + personalEvents
     Log.i(TAG, "live: ${sources.joinToString()} -> ${liveEvents.size} events")
-    liveSources = (sources.filter { it.startsWith("segnalazioni") } + (if (s.liveTraffic) trafficSources else emptyList()))
+    liveSources = (sources.filter { it.startsWith("segnalazioni") || it.startsWith("server personale") } +
+        (if (s.liveTraffic) trafficSources else emptyList()))
         .joinToString(" · ").ifBlank { null }
     matchLive()
   }
@@ -647,7 +660,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   /** Answer to "still there?" on a report just passed. */
   fun voteLive(e: RouteLiveEvent, yes: Boolean) {
     _nav.update { it.copy(liveAsk = null) }
-    if (e.e.official || e.e.mine) return
+    if (e.e.official || e.e.mine || !e.e.id.startsWith("nx:")) return
     val s = AppGraph.settings.settings.value
     viewModelScope.launch(Dispatchers.IO) {
       if (!yes) {
@@ -826,7 +839,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     // a report of a driver just passed: still there? (one question at a time, 15 seconds)
     if (extras.liveAsk == null && extras.prompt == null && settings.liveReports) {
       val passed = extras.live.firstOrNull { ev ->
-        !ev.e.official && !ev.e.mine && traveled - ev.endM in 30.0..400.0 && "ask:${ev.e.id}" !in asked
+        ev.e.id.startsWith("nx:") && !ev.e.mine && traveled - ev.endM in 30.0..400.0 && "ask:${ev.e.id}" !in asked
       }
       if (passed != null) {
         asked += "ask:${passed.e.id}"

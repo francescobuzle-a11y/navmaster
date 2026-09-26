@@ -98,6 +98,19 @@ sleep 24; shot 12_segnalazione_polizia
 sleep 24; shot 12c_ancora_li
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true $LIVE --es nm_sheet report
 sleep 18; shot 12b_segnala
+# personal test server (format of the waze-api server used by the JMoore335 script): here a
+# fixed sample file served on the runner, reached by the emulator at 10.0.2.2
+mkdir -p /tmp/pf/waze
+cat > /tmp/pf/waze/traffic-notifications <<'JSON'
+{"alerts":[{"country":"IT","numOfThumbsUp":3,"type":"POLICE","subType":"POLICE_VISIBLE","placeNearBy":"A14","latitude":"44.07414","longitude":"12.49037"},
+{"country":"IT","numOfThumbsUp":0,"type":"HAZARD","subType":"HAZARD_ON_ROAD_CAR_STOPPED","latitude":"44.06","longitude":"12.55"}],
+"jams":[{"severity":3,"type":"NONE","street":"A14","startLatitude":"44.05","startLongitude":"12.56","endLatitude":"44.04","endLongitude":"12.57","delayInSec":240}]}
+JSON
+(cd /tmp/pf && nohup python3 -m http.server 8088 >/dev/null 2>&1 &)
+sleep 2
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_personal_feed http://10.0.2.2:8088
+sleep 22; shot 16_server_personale
+start --es nm_personal_feed none; sleep 5
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true --es nm_detour 43.99007,12.64362 --es nm_sheet stops
 sleep 42; shot 13_deviazione_tappe
 # all the places (along the route, nearest first) while driving
@@ -134,6 +147,6 @@ start --es nm_sheet regions; sleep 12; shot 11_paesi
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
 log
-grep -E "live|detour|direction of travel|report" "$OUT/logcat.txt" | head -40 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed" "$OUT/logcat.txt" | head -60 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

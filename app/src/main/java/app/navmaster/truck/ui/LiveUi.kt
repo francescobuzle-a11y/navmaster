@@ -61,7 +61,9 @@ fun LiveBanner(ev: RouteLiveEvent, distanceM: Double, country: String?, modifier
       Text(if (distanceM < 30) "qui" else "tra " + Fmt.distanceText(distanceM), color = Color(0xFFFFD54F), fontSize = 20.sp,
           fontWeight = FontWeight.Bold)
       Text(
-          if (e.official) e.source else "segnalato ${ago(e.ageMin)}" + (if (e.confirms > 0) " · ${e.confirms} conferme" else ""),
+          if (e.official) e.source
+          else if (e.source == app.navmaster.truck.live.PersonalFeed.SOURCE) e.source + (if (e.confirms > 0) " · ${e.confirms} 👍" else "")
+          else "segnalato ${ago(e.ageMin)}" + (if (e.confirms > 0) " · ${e.confirms} conferme" else ""),
           color = Nm.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
   }

@@ -159,6 +159,12 @@ data class Settings(
      * about them (Germany, Switzerland; France only "control zone"): the driver's choice.
      */
     val enforcementEverywhere: Boolean = true,
+    /**
+     * Personal test only: reports read from a server the owner runs on his own computer (format of
+     * the waze-api server used by the JMoore335 script). Off by default, never shared.
+     */
+    val personalFeed: Boolean = false,
+    val personalFeedUrl: String = "",
     /** Random tag of this device, to count a driver's confirmations once (not who he is). */
     val deviceTag: String = "",
 )

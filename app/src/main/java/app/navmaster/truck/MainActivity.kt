@@ -77,6 +77,9 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     }
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
     intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = if (k == "none") "" else k) } }
+    intent?.getStringExtra("nm_personal_feed")?.let { u ->
+      AppGraph.settings.update { it.copy(personalFeed = u != "none", personalFeedUrl = if (u == "none") "" else u) }
+    }
     if (intent?.hasExtra("nm_traffic_map") == true) {
       val v = intent?.getBooleanExtra("nm_traffic_map", false) == true
       AppGraph.settings.update { it.copy(trafficOnMap = v) }
