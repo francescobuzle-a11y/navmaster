@@ -44,7 +44,8 @@ import uniffi.ferrostar.GeographicCoordinate
  */
 object NationalFeeds {
   private const val TAG = "NavMasterLive"
-  private val client = OkHttpClient.Builder().callTimeout(25, TimeUnit.SECONDS).build()
+  private val client = OkHttpClient.Builder().callTimeout(25, TimeUnit.SECONDS)
+      .apply { runCatching { Trust.manager }.getOrNull()?.let { tm -> sslSocketFactory(Trust.factory(tm), tm) } }.build()
   private val json = Json { ignoreUnknownKeys = true }
 
   enum class Format { DATEX, DATEX_LAMBERT72, CATALONIA, EUSKADI, DIGITRAFFIC, POLAND, LITHUANIA, SWEDEN }
@@ -461,4 +462,92 @@ object NationalFeeds {
     else "${f.id}: ${ev.size} events ${ev.groupingBy { it.kind }.eachCount()} in $ms ms; e.g. " +
         ev.take(2).joinToString(" | ") { "${it.title} @${"%.5f".format(Locale.ROOT, it.lat)},${"%.5f".format(Locale.ROOT, it.lon)} line=${it.line.size} ${it.detail?.take(60) ?: ""}" }
   }
+}
+
+/**
+ * The system certificates plus the HARICA roots of 2021 (Luxembourg CITA uses a GEANT certificate
+ * that older Android versions do not know yet): only for the traffic files, all public data.
+ */
+private object Trust {
+  private const val HARICA_RSA = """-----BEGIN CERTIFICATE-----
+MIIFpDCCA4ygAwIBAgIQOcqTHO9D88aOk8f0ZIk4fjANBgkqhkiG9w0BAQsFADBs
+MQswCQYDVQQGEwJHUjE3MDUGA1UECgwuSGVsbGVuaWMgQWNhZGVtaWMgYW5kIFJl
+c2VhcmNoIEluc3RpdHV0aW9ucyBDQTEkMCIGA1UEAwwbSEFSSUNBIFRMUyBSU0Eg
+Um9vdCBDQSAyMDIxMB4XDTIxMDIxOTEwNTUzOFoXDTQ1MDIxMzEwNTUzN1owbDEL
+MAkGA1UEBhMCR1IxNzA1BgNVBAoMLkhlbGxlbmljIEFjYWRlbWljIGFuZCBSZXNl
+YXJjaCBJbnN0aXR1dGlvbnMgQ0ExJDAiBgNVBAMMG0hBUklDQSBUTFMgUlNBIFJv
+b3QgQ0EgMjAyMTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAIvC569l
+mwVnlskNJLnQDmT8zuIkGCyEf3dRywQRNrhe7Wlxp57kJQmXZ8FHws+RFjZiPTgE
+4VGC/6zStGndLuwRo0Xua2s7TL+MjaQenRG56Tj5eg4MmOIjHdFOY9TnuEFE+2uv
+a9of08WRiFukiZLRgeaMOVig1mlDqa2YUlhu2wr7a89o+uOkXjpFc5gH6l8Cct4M
+pbOfrqkdtx2z/IpZ525yZa31MJQjB/OCFks1mJxTuy/K5FrZx40d/JiZ+yykgmvw
+Kh+OC19xXFyuQnspiYHLA6OZyoieC0AJQTPb5lh6/a6ZcMBaD9YThnEvdmn8kN3b
+LW7R8pv1GmuebxWMevBLKKAiOIAkbDakO/IwkfN4E8/BPzWr8R0RI7VDIp4BkrcY
+AuUR0YLbFQDMYTfBKnya4dC6s1BG7oKsnTH4+yPiAwBIcKMJJnkVU2DzOFytOOqB
+AGMUuTNe3QvboEUHGjMJ+E20pwKmafTCWQWIZYVWrkvL4N48fS0ayOn7H6NhStYq
+E613TBoYm5EPWNgGVMWX+Ko/IIqmhaZ39qb8HOLubpQzKoNQhArlT4b4UEV4AIHr
+W2jjJo3Me1xR9BQsQL4aYB16cmEdH2MtiKrOokWQCPxrvrNQKlr9qEgYRtaQQJKQ
+CoReaDH46+0N0x3GfZkYVVYnZS6NRcUk7M7jAgMBAAGjQjBAMA8GA1UdEwEB/wQF
+MAMBAf8wHQYDVR0OBBYEFApII6ZgpJIKM+qTW8VX6iVNvRLuMA4GA1UdDwEB/wQE
+AwIBhjANBgkqhkiG9w0BAQsFAAOCAgEAPpBIqm5iFSVmewzVjIuJndftTgfvnNAU
+X15QvWiWkKQUEapobQk1OUAJ2vQJLDSle1mESSmXdMgHHkdt8s4cUCbjnj1AUz/3
+f5Z2EMVGpdAgS1D0NTsY9FVqQRtHBmg8uwkIYtlfVUKqrFOFrJVWNlar5AWMxaja
+H6NpvVMPxP/cyuN+8kyIhkdGGvMA9YCRotxDQpSbIPDRzbLrLFPCU3hKTwSUQZqP
+JzLB5UkZv/HywouoCjkxKLR9YjYsTewfM7Z+d21+UPCfDtcRj88YxeMn/ibvBZ3P
+zzfF0HvaO7AWhAw6k9a+F9sPPg4ZeAnHqQJyIkv3N3a6dcSFA1pj1bF1BcK5vZSt
+jBWZp5N99sXzqnTPBIWUmAD04vnKJGW/4GKvyMX6ssmeVkjaef2WdhW+o45WxLM0
+/L5H9MG0qPzVMIho7suuyWPEdr6sOBjhXlzPrjoiUevRi7PzKzMHVIf6tLITe7pT
+BGIBnfHAT+7hOtSLIBD6Alfm78ELt5BGnBkpjNxvoEppaZS3JGWg/6w/zgH7IS79
+aPib8qXPMThcFarmlwDB31qlpzmq6YR/PFGoOtmUW4y/Twhx5duoXNTSpv4Ao8YW
+xw/ogM4cKGR0GQjTQuPOAF1/sdwTsOEFy9EgqoZ0njnnkf3/W9b3raYvAwtt41dU
+63ZTGI0RmLo=
+-----END CERTIFICATE-----"""
+
+  private const val HARICA_ECC = """-----BEGIN CERTIFICATE-----
+MIICVDCCAdugAwIBAgIQZ3SdjXfYO2rbIvT/WeK/zjAKBggqhkjOPQQDAzBsMQsw
+CQYDVQQGEwJHUjE3MDUGA1UECgwuSGVsbGVuaWMgQWNhZGVtaWMgYW5kIFJlc2Vh
+cmNoIEluc3RpdHV0aW9ucyBDQTEkMCIGA1UEAwwbSEFSSUNBIFRMUyBFQ0MgUm9v
+dCBDQSAyMDIxMB4XDTIxMDIxOTExMDExMFoXDTQ1MDIxMzExMDEwOVowbDELMAkG
+A1UEBhMCR1IxNzA1BgNVBAoMLkhlbGxlbmljIEFjYWRlbWljIGFuZCBSZXNlYXJj
+aCBJbnN0aXR1dGlvbnMgQ0ExJDAiBgNVBAMMG0hBUklDQSBUTFMgRUNDIFJvb3Qg
+Q0EgMjAyMTB2MBAGByqGSM49AgEGBSuBBAAiA2IABDgI/rGgltJ6rK9JOtDA4MM7
+KKrxcm1lAEeIhPyaJmuqS7psBAqIXhfyVYf8MLA04jRYVxqEU+kw2anylnTDUR9Y
+STHMmE5gEYd103KUkE+bECUqqHgtvpBBWJAVcqeht6NCMEAwDwYDVR0TAQH/BAUw
+AwEB/zAdBgNVHQ4EFgQUyRtTgRL+BNUW0aq8mm+3oJUZbsowDgYDVR0PAQH/BAQD
+AgGGMAoGCCqGSM49BAMDA2cAMGQCMBHervjcToiwqfAircJRQO9gcS3ujwLEXQNw
+SaSS6sUUiHCm0w2wqsosQJz76YJumgIwK0eaB8bRwoF8yguWGEEbo/QwCZ61IygN
+nxS2PFOiTAZpffpskcYqSUXm7LcT4Tps
+-----END CERTIFICATE-----"""
+
+  private fun tmOf(ks: java.security.KeyStore?): javax.net.ssl.X509TrustManager {
+    val f = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+    f.init(ks)
+    return f.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().first()
+  }
+
+  val manager: javax.net.ssl.X509TrustManager by lazy {
+    val system = tmOf(null)
+    val cf = java.security.cert.CertificateFactory.getInstance("X.509")
+    val ks = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply { load(null, null) }
+    listOf(HARICA_RSA, HARICA_ECC).forEachIndexed { i, pem ->
+      ks.setCertificateEntry("harica$i", cf.generateCertificate(pem.byteInputStream()))
+    }
+    val extra = tmOf(ks)
+    object : javax.net.ssl.X509TrustManager {
+      override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) = system.checkClientTrusted(chain, authType)
+
+      override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
+        try {
+          system.checkServerTrusted(chain, authType)
+        } catch (e: java.security.cert.CertificateException) {
+          extra.checkServerTrusted(chain, authType)
+        }
+      }
+
+      override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = system.acceptedIssuers + extra.acceptedIssuers
+    }
+  }
+
+  fun factory(tm: javax.net.ssl.X509TrustManager): javax.net.ssl.SSLSocketFactory =
+      javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), null) }.socketFactory
 }
