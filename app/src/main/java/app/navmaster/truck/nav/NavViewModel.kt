@@ -186,7 +186,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
    * Emulator diagnosis: the route of the active vehicle between consecutive points, in the log
    * (distance, time, toll), to find which stretch a vehicle cannot use. From tools/preview.sh.
    */
-  fun probe(points: List<GeographicCoordinate>) {
+  fun probe(points: List<GeographicCoordinate>, debugCosting: Map<String, Double> = emptyMap()) {
     viewModelScope.launch(Dispatchers.IO) {
       val v = AppGraph.profiles.garage.value.active
       for (i in 0 until points.size - 1) {
@@ -196,7 +196,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
           latitude = a.lat; longitude = a.lng; accuracy = 5f; time = System.currentTimeMillis()
         }.toUserLocation()
         val msg = try {
-          val r = AppGraph.routes.routes(from, listOf(Waypoint(coordinate = b, kind = WaypointKind.BREAK)), TripOptions()).firstOrNull()
+          val r = AppGraph.routes.routes(from, listOf(Waypoint(coordinate = b, kind = WaypointKind.BREAK)),
+              TripOptions(debugCosting = debugCosting)).firstOrNull()
           if (r == null) "no route" else {
             val an = RouteAnalysis.analyse(AppGraph.engine, r, v, AppGraph.profiles.garage.value.loadT)
             "${"%.0f".format(r.distance)} m, ${"%.0f".format(r.steps.sumOf { it.duration })} s, toll ${"%.1f".format(an.tollKm)} km, " +
@@ -205,7 +206,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         } catch (e: Exception) {
           "error $e"
         }
-        Log.i(TAG, "probe ${v.name} $i ${a.lat},${a.lng} -> ${b.lat},${b.lng}: $msg")
+        Log.i(TAG, "probe ${v.name} $debugCosting $i ${a.lat},${a.lng} -> ${b.lat},${b.lng}: $msg")
       }
     }
   }

@@ -111,6 +111,7 @@ data class VehicleProfile(
         put("use_ferry", if (avoidFerries) 0.0 else 0.5)
         put("exclude_unpaved", avoidUnpaved)
         if (trip.shortest) put("shortest", true)
+        for ((k, v) in trip.debugCosting) put(k, v)
       }
     }
     if (trip.excludePolygons.isNotEmpty()) {
@@ -186,4 +187,6 @@ data class TripOptions(
     val alternates: Int = 0,
     /** Rings of [lon, lat] the route must not touch (points the driver chose to avoid). */
     val excludePolygons: List<List<List<Double>>> = emptyList(),
+    /** Diagnosis only: costing options that override the vehicle's ("use_highways" → 1.0 ...). */
+    val debugCosting: Map<String, Double> = emptyMap(),
 )
