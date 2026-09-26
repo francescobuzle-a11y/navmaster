@@ -99,7 +99,10 @@ data class VehicleProfile(
           put("axle_load", axleLoadT)
           put("axle_count", axleCount)
           put("hazmat", hazmat)
-          put("use_truck_route", if (preferTruckRoutes) 0.6 else 0.3)
+          // Valhalla makes roads signed for lorries (hgv=designated) much cheaper as this grows: at
+          // 0.6 they cost about half, and a lorry left the A14 for 25 km of local "truck roads" that
+          // take 65% longer. A light preference keeps them as a tie-breaker, never a detour.
+          put("use_truck_route", if (preferTruckRoutes) 0.15 else 0.0)
           put("hgv_no_access_penalty", 43200)
         }
         put("top_speed", topSpeedKmh)
