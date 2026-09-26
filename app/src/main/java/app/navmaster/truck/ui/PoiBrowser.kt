@@ -88,6 +88,12 @@ fun PoiBrowser(
     }
   }
   var area by rememberSaveable { mutableStateOf(areas.firstOrNull() ?: PoiArea.HERE) }
+  var areaChosen by rememberSaveable { mutableStateOf(false) }
+  // the route arrives after the list was opened: along the route is the default, unless the
+  // driver already chose another place
+  LaunchedEffect(areas) {
+    if (!areaChosen && PoiArea.ROUTE in areas) area = PoiArea.ROUTE
+  }
   var order by rememberSaveable { mutableStateOf(PoiOrder.NEAR) }
   // the categories of the settings first; "all" is one touch away
   var cats by remember { mutableStateOf(settings.poiCategories.ifEmpty { PoiCategories.all.map { it.id }.toSet() }) }
@@ -140,7 +146,7 @@ fun PoiBrowser(
   AdaptiveSheet("Punti di interesse", onClose, wide = true) {
     Text("DOVE", color = Nm.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     FlowRow(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      for (a in areas) Pill(a.label, area == a) { area = a }
+      for (a in areas) Pill(a.label, area == a) { area = a; areaChosen = true }
     }
     Text("ORDINE", color = Nm.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     FlowRow(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
