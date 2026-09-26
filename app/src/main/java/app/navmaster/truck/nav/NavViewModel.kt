@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -458,6 +459,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   fun start(simulate: Boolean) {
     val v = _plan.value.current ?: return
     _simulating.value = simulate
+    simBase = null
+    simOffset = 0.0
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     AppGraph.trip.value = v.options.copy(alternates = 0)
     asked.clear()
@@ -586,13 +589,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       val deRoads = a.edges.filter { it.endM > traveled && it.country?.uppercase() == "DE" && it.roadClass == "motorway" }
           .flatMap { it.refs }.mapNotNull { r -> Regex("^A ?(\\d{1,3})$").find(r)?.let { "A" + it.groupValues[1] } }.distinct()
       if (deRoads.isNotEmpty()) list += TrafficFeeds.autobahn(deRoads).also { sources += "Autobahn ${it.size}" }
-      if (s.hereKey.isNotBlank()) list += runCatching { TrafficFeeds.here(s.hereKey, boxesAhead(a, traveled)) }.getOrDefault(emptyList()).also { sources += "HERE ${it.size}" }
+      val hereKey = app.navmaster.truck.live.ApiKeys.here(s)
+      if (hereKey.isNotBlank()) list += runCatching { TrafficFeeds.here(hereKey, boxesAhead(a, traveled)) }.getOrDefault(emptyList()).also { sources += "HERE ${it.size}" }
       openEvents = list
       trafficSources = sources.filterNot { it.startsWith("segnalazioni") }
     }
     // TomTom: incident tiles along the road ahead, each asked again only when old (see TomTomGuard)
-    if (s.liveTraffic && s.tomtomKey.isNotBlank()) {
-      runCatching { refreshTomTom(s.tomtomKey, a, traveled) }.onFailure { Log.w(TAG, "TomTom: $it") }
+    val tomtomKey = app.navmaster.truck.live.ApiKeys.tomtom(s)
+    if (s.liveTraffic && tomtomKey.isNotBlank()) {
+      runCatching { refreshTomTom(tomtomKey, a, traveled) }.onFailure { Log.w(TAG, "TomTom: $it") }
       sources += "TomTom ${tomtomEvents.size}"
       trafficSources = trafficSources.filterNot { it.startsWith("TomTom") } + "TomTom ${tomtomEvents.size}"
     } else tomtomEvents = emptyList()
@@ -602,7 +607,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       val speed = navigationUiState.value.location?.speed?.value ?: 0.0
       if (speed > 2.0 || nationalMoveAt == 0L) nationalMoveAt = now
       val (nat, counts) = runCatching {
-        app.navmaster.truck.live.NationalFeeds.read(boxesAhead(a, traveled), s.trafikverketKey, now - nationalMoveAt < 5 * 60_000L)
+        app.navmaster.truck.live.NationalFeeds.read(boxesAhead(a, traveled), app.navmaster.truck.live.ApiKeys.trafikverket(s), now - nationalMoveAt < 5 * 60_000L)
       }.getOrElse { Log.w(TAG, "national: $it"); emptyList<LiveEvent>() to emptyList() }
       nationalEvents = nat
       nationalCounts = counts
@@ -755,6 +760,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val key = geometryKey(geometry)
     if (key != lastGeometryKey && geometry.size > 1) {
       lastGeometryKey = key
+      if (simJumpPending) simJumpPending = false else if (simBase != null) {
+        simBase = null
+        simOffset = 0.0
+      }
       reanalyse(geometry)
     }
     val remaining = ui.progress?.distanceRemaining ?: return
@@ -775,6 +784,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
     lastTick = now
     onLiveUpdate(extras, traveled)
+    runCatching { announce(ui, geometry, key) }.onFailure { Log.w(TAG, "voice: $it") }
     if (extras.prompt != null) {
       // a question nobody answered in time goes away
       val p = extras.prompt
@@ -1077,30 +1087,89 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     AppGraph.simulator.warpFactor = v.toUInt()
   }
 
+  // ---- simulation jumps. The route of the simulation is kept whole (simBase): after a jump the
+  // guidance runs on a new route that starts where the vehicle was put, so "back" and "previous
+  // manoeuvre" are measured on the whole route, not on the new one. Several taps in a row add up
+  // and only one new route is computed, after the last tap.
+  private var simBase: RouteAnalysis? = null
+  private var simOffset = 0.0
+  private var simTarget: Double? = null
+  private var simJob: Job? = null
+  @Volatile private var simJumpPending = false
+  private var curLenKey = ""
+  private var curLen = 0.0
+
+  /** Where the vehicle is on the whole route of the simulation (metres). */
+  private fun simPosition(): Double {
+    val ui = navigationUiState.value
+    val g = ui.routeGeometry ?: return traveledNow()
+    val key = geometryKey(g)
+    if (key != curLenKey) {
+      curLenKey = key
+      curLen = Geo.cumulative(g).lastOrNull() ?: 0.0
+    }
+    val remaining = ui.progress?.distanceRemaining ?: return simOffset
+    return simOffset + (curLen - remaining).coerceAtLeast(0.0)
+  }
+
   /** A bit ahead or back on the route (metres, negative = back). */
   fun simJump(deltaM: Double) {
     if (!_simulating.value) return
-    simJumpTo(traveledNow() + deltaM)
+    queueSimJump((simTarget ?: simPosition()) + deltaM)
   }
 
   /** To the next (or previous) manoeuvre, a little before it so it is seen coming. */
   fun simManeuver(next: Boolean) {
     if (!_simulating.value) return
-    val a = _nav.value.analysis ?: return
-    val traveled = traveledNow()
+    val a = simBase ?: _nav.value.analysis ?: return
+    val pos = simTarget?.plus(250) ?: simPosition()
     var acc = 0.0
     val starts = mutableListOf<Double>()
     for (st in a.route.steps) {
       if (acc > 0) starts += acc
       acc += st.distance
     }
-    val target = if (next) starts.firstOrNull { it > traveled + 200 } else starts.lastOrNull { it < traveled - 350 }
-    simJumpTo((target ?: if (next) a.length - 100 else 0.0) - 250)
+    val target = if (next) starts.firstOrNull { it > pos + 200 } else starts.lastOrNull { it < pos - 350 }
+    queueSimJump((target ?: if (next) a.length - 100 else 250.0) - 250)
   }
 
-  private fun simJumpTo(alongM: Double) {
-    val a = _nav.value.analysis ?: return
-    val t = alongM.coerceIn(0.0, (a.length - 60).coerceAtLeast(0.0))
+  /** Emulator test of the simulation controls: ahead, back twice in a row, previous manoeuvre. */
+  fun simSelfTest() {
+    viewModelScope.launch {
+      delay(20_000)
+      Log.i(TAG, "simtest start at ${simPosition().toInt()}")
+      simJump(2000.0)
+      delay(12_000)
+      Log.i(TAG, "simtest after +2000: ${simPosition().toInt()}")
+      simJump(-500.0)
+      delay(150)
+      simJump(-500.0)
+      delay(12_000)
+      Log.i(TAG, "simtest after -500 -500: ${simPosition().toInt()}")
+      simManeuver(false)
+      delay(12_000)
+      Log.i(TAG, "simtest after previous manoeuvre: ${simPosition().toInt()}")
+    }
+  }
+
+  private fun queueSimJump(target: Double) {
+    val base = simBase ?: _nav.value.analysis ?: return
+    if (simBase == null) {
+      simBase = base
+      simOffset = 0.0
+    }
+    val t = target.coerceIn(0.0, (base.length - 60).coerceAtLeast(0.0))
+    simTarget = t
+    _nav.update { it.copy(recalculating = true) }
+    simJob?.cancel()
+    simJob = viewModelScope.launch {
+      delay(350)
+      simJumpTo(t)
+    }
+  }
+
+  private suspend fun simJumpTo(t: Double) {
+    val a = simBase ?: return
     val p = a.pointAt(t)
     val h = Geo.bearing(a.pointAt((t - 15).coerceAtLeast(0.0)), a.pointAt(t + 15))
     val loc = android.location.Location("sim").apply {
@@ -1114,35 +1183,37 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     // the stops still ahead of the new position, then the destination
     val stops = _plan.value.stops
     val g = a.route.geometry
-    val cum = Geo.cumulative(g)
     fun alongOf(c: GeographicCoordinate): Double {
       var best = Double.MAX_VALUE
       var at = 0.0
       for (i in g.indices) {
         val d = Geo.dist(g[i], c)
-        if (d < best) { best = d; at = cum[i] }
+        if (d < best) { best = d; at = a.cum[i] }
       }
       return at
     }
     val ahead = stops.dropLast(1).filter { alongOf(it.coordinate) > t + 50 } + listOfNotNull(stops.lastOrNull())
     Log.i(TAG, "simulation: jump to ${t.toInt()} m of ${a.length.toInt()} m")
-    _nav.update { it.copy(recalculating = true) }
-    viewModelScope.launch(Dispatchers.IO) {
-      try {
+    try {
+      val r = withContext(Dispatchers.IO) {
         val waypoints = ahead.mapIndexed { i, st ->
           Waypoint(coordinate = st.coordinate, kind = if (st.via && i < ahead.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
         }
-        val r = AppGraph.routes.routes(loc, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
-            ?: throw IllegalStateException("nessun percorso")
-        withContext(Dispatchers.Main) {
-          locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
-        }
-      } catch (e: Exception) {
-        Log.w(TAG, "simulation jump: $e")
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
-      }
+        AppGraph.routes.routes(loc, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
+      } ?: throw IllegalStateException("nessun percorso")
+      kotlinx.coroutines.currentCoroutineContext().ensureActive()
+      simOffset = t
+      simTarget = null
+      simJumpPending = true
+      locationProvider.enableSimulationOn(r)
+      core.replaceRoute(r)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      Log.w(TAG, "simulation jump: $e")
+      simTarget = null
+    } finally {
+      if (simTarget == null) _nav.update { it.copy(recalculating = false) }
     }
   }
 
@@ -1210,6 +1281,32 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         Log.w(TAG, "reanalyse: $e")
       }
     }
+  }
+
+  // ---- the voice of the manoeuvres (see Announcer): one at a time, at the right moment
+  private val announcer = Announcer { text ->
+    if (AppGraph.ferrostar.spokenInstructionObserver?.isMuted != true) {
+      runCatching { AppGraph.tts.tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "nm-man-${text.hashCode()}") }
+    }
+  }
+  private var announceRoute: Pair<String, uniffi.ferrostar.Route>? = null
+
+  private fun announce(ui: NavigationUiState, geometry: List<GeographicCoordinate>, key: String) {
+    val route = announceRoute?.takeIf { it.first == key }?.second
+        ?: (_nav.value.analysis?.route?.takeIf { geometryKey(it.geometry) == key } ?: AppGraph.findRoute(geometry))
+            ?.also { announceRoute = key to it }
+        ?: return
+    val remaining = ui.progress?.distanceRemaining ?: return
+    val toManeuver = ui.progress?.distanceToNextManeuver ?: return
+    if (key != curLenKey) {
+      curLenKey = key
+      curLen = Geo.cumulative(geometry).lastOrNull() ?: 0.0
+    }
+    val along = (curLen - remaining).coerceAtLeast(0.0)
+    val speed = ui.location?.speed?.value ?: 0.0
+    val a = _nav.value.analysis?.takeIf { geometryKey(it.route.geometry) == key }
+    val fast = speed > 19.0 || a?.edgeAt(along)?.roadClass in setOf("motorway", "trunk")
+    announcer.update(route, key, along, toManeuver, speed, fast, AppGraph.settings.settings.value.voiceLevel)
   }
 
   private val saidAt = HashMap<String, Long>()

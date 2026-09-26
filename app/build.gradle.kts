@@ -19,6 +19,11 @@ android {
     vectorDrawables { useSupportLibrary = true }
     // MapLibre + Valhalla are native: tablets are arm64, the CI emulator is x86_64
     ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    // service keys built into the app (GitHub secrets of the repository, when present): the driver
+    // never has to ask for or type a key
+    for (k in listOf("TOMTOM_KEY", "HERE_KEY", "TRAFIKVERKET_KEY", "MAPILLARY_TOKEN")) {
+      buildConfigField("String", k, "\"" + (System.getenv(k) ?: "").replace("\"", "") + "\"")
+    }
   }
 
   signingConfigs {

@@ -93,10 +93,10 @@ fun CriticalitySheet(
     // what is checked in the background, fetched once for all the tabs
     val hasSource = c.osm != null || c.limitKind != null
     val report by produceState<app.navmaster.truck.photos.EvidenceReport?>(null, c.id) {
-      if (hasSource) value = app.navmaster.truck.photos.Evidence.check(c.osm, c.lat, c.lon, c.limitKind, settings.mapillaryToken)
+      if (hasSource) value = app.navmaster.truck.photos.Evidence.check(c.osm, c.lat, c.lon, c.limitKind, app.navmaster.truck.live.ApiKeys.mapillary(settings))
     }
     val photos by produceState<List<StreetPhoto>?>(null, c.id) {
-      value = StreetPhotos.near(c.lat, c.lon, c.headingDeg, settings.mapillaryToken)
+      value = StreetPhotos.near(c.lat, c.lon, c.headingDeg, app.navmaster.truck.live.ApiKeys.mapillary(settings))
     }
     val r = report
     if (r != null) {

@@ -679,13 +679,17 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
   var s0 = start
   while (s0 <= end) { center += loc(a.pointAt(s0)); along += s0; s0 += step }
   val lanes = scene.lanes.take(8)
-  val n = max(lanes.size, if (scene.motorway) 3 else 2).coerceAtLeast(1)
+  // the real number of lanes: the lane data of the junction, else the graph's lanes of the road
+  val js = a.junctionShapeNear(m)
+  val graphLanes = a.edgeAt((m - 40).coerceAtLeast(0.0))?.lanes ?: 0
+  val n = (if (lanes.size >= 2) lanes.size else if (graphLanes >= 1) graphLanes else if (scene.motorway) 3 else 2).coerceIn(1, 8)
   val laneW = 3.6
-  val taken = lanes.count { it.active }.let { if (it == 0) (if (scene.exit) 1 else n) else it }
+  val taken = lanes.count { it.active }.let { if (it == 0) (if (scene.exit) (js?.outLanes?.coerceIn(1, n) ?: 1) else n) else it }
   val merge = if (near) 40.0 else 70.0
   fun widthAt(s: Double): Double {
     val before = n * laneW
-    val after = (if (scene.exit || scene.turn) max(1, if (scene.turn) min(n, 2) else taken) else n) * laneW
+    val after = (if (scene.exit || scene.turn) max(1, if (scene.turn) min(n, 2) else taken)
+                 else (js?.outLanes?.takeIf { it >= 1 } ?: n)) * laneW
     val t = ((s - m) / merge).coerceIn(0.0, 1.0)
     return before + (after - before) * t
   }
@@ -714,18 +718,40 @@ private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.ro
   val dashW = w * 0.011f
   val dash = PathEffect.dashPathEffect(floatArrayOf(w * 0.035f, w * 0.05f))
 
-  // the road not taken (the motorway after an exit, the other arm of a fork)
+  // the roads not taken (the motorway after an exit, the other arm of a fork, a ramp the route
+  // passes by), each with its real direction and its own lanes, from the graph
   if (!scene.roundabout) {
-    val mi = along.indexOfFirst { it >= m }.let { if (it < 0) along.size - 1 else it }
+    val mi = along.indexOfFirst { it >= (js?.atM ?: m) }.let { if (it < 0) along.size - 1 else it }
     if (mi in 2 until center.size) {
       val inDir = (center[mi] - center[max(0, mi - 6)]).unit()
-      if (inDir.len() > 0.5) {
-        val gw = if (scene.exit) n * laneW else n * laneW
-        val ghost = (0..60).map { j -> center[mi] + inDir * (j * 4.0) }
+      val nrmMi = normals(center)[mi]
+      fun dirOf(h: Double): app.navmaster.truck.core.XY {
+        val dx = kotlin.math.sin(Math.toRadians(h))
+        val dy = kotlin.math.cos(Math.toRadians(h))
+        return app.navmaster.truck.core.XY(dx * hv.y - dy * hv.x, dx * hv.x + dy * hv.y)
+      }
+      fun angle(h1: Double, h2: Double) = kotlin.math.abs(((h1 - h2 + 540.0) % 360.0) - 180.0)
+      val minor = setOf("service_other", "living_street", "residential")
+      val oh = js?.outHeading
+      val ih = js?.inHeading
+      val branches = js?.branches.orEmpty().filter { b ->
+        (oh == null || angle(b.heading, oh) > 6) && (ih == null || angle(b.heading, ih) < 100) &&
+            !(scene.motorway && b.roadClass in minor)
+      }
+      val outs: List<Pair<app.navmaster.truck.core.XY, Int>> =
+          if (branches.isNotEmpty()) branches.map { dirOf(it.heading) to it.lanes.coerceIn(1, 6) }
+          else if (inDir.len() > 0.5) listOf(inDir to n) else emptyList()
+      for ((dir, bl) in outs) {
+        if (dir.len() < 0.5) continue
+        val gw = bl * laneW
+        // it leaves from the edge of the carriageway on its own side
+        val side = if (dir.x * nrmMi.x + dir.y * nrmMi.y >= 0) 1.0 else -1.0
+        val start = center[mi] + nrmMi * (side * max(0.0, (n * laneW) / 2 - gw / 2))
+        val ghost = (0..60).map { j -> start + dir * (j * 4.0) }
         ribbon(ghost, { -gw / 2 }, { gw / 2 })?.let { drawPath(it, asphalt) }
         polyline(ghost) { -gw / 2 }?.let { drawPath(it, marking, style = Stroke(edgeW)) }
         polyline(ghost) { gw / 2 }?.let { drawPath(it, marking, style = Stroke(edgeW)) }
-        for (kk in 1 until n) polyline(ghost) { -gw / 2 + kk * laneW }?.let { drawPath(it, marking, style = Stroke(dashW, pathEffect = dash)) }
+        for (kk in 1 until bl) polyline(ghost) { -gw / 2 + kk * laneW }?.let { drawPath(it, marking, style = Stroke(dashW, pathEffect = dash)) }
       }
     }
   }

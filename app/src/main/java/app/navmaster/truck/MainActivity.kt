@@ -25,6 +25,11 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     // the voice says each thing once; how much it says is in the settings
     AppGraph.ferrostar.spokenInstructionObserver =
         app.navmaster.truck.nav.VoiceFilter(AppGraph.tts) { AppGraph.settings.settings.value.voiceLevel }
+    // ready to use on a real tablet: the traffic from Waze on (once; the driver can turn it off)
+    val emulator = Build.FINGERPRINT.contains("generic") || Build.HARDWARE.contains("ranchu") || Build.PRODUCT.contains("sdk")
+    if (!emulator && AppGraph.settings.settings.value.readyDefaults < 1) {
+      AppGraph.settings.update { it.copy(personalFeed = true, personalFeedDirect = true, readyDefaults = 1) }
+    }
     createFerrostarLogger()
     enableEdgeToEdge()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) window.isNavigationBarContrastEnforced = false
@@ -80,6 +85,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
         else -> app.navmaster.truck.settings.NightMode.AUTO }
       AppGraph.settings.update { it.copy(nightMode = mode) }
     }
+    if (intent?.getBooleanExtra("nm_simtest", false) == true) vm.simSelfTest()
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
     intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = if (k == "none") "" else k) } }
     // emulator test of the direct mode on a sample file (never the real service from the tests)

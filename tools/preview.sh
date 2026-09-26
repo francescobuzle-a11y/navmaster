@@ -8,7 +8,7 @@ mkdir -p "$OUT"
 INFO="$OUT/preview_info.txt"
 shot() { adb exec-out screencap -p > "$OUT/$1.png"; echo "shot $1" >> "$INFO"; }
 log() { adb logcat -d -s NavMaster:* NavMasterRoute:* NavMasterLimits:* NavMasterVM:* NavMasterData:* NavMasterCrit:* \
-  NavMasterAnalysis:* NavMasterJV:* NavMasterLive:* DEBUG:* libc:* Mbgl:* mbgl:* NavMasterCatalog:* NavMasterLocation:* AndroidRuntime:E FerrostarCore:* > "$OUT/logcat.txt" 2>&1; }
+  NavMasterAnalysis:* NavMasterJV:* NavMasterLive:* NavMasterVoice:I DEBUG:* libc:* Mbgl:* mbgl:* NavMasterCatalog:* NavMasterLocation:* AndroidRuntime:E FerrostarCore:* > "$OUT/logcat.txt" 2>&1; }
 start() { adb shell am force-stop $PKG; adb shell am start -n $PKG/.MainActivity --es nm_from "44.0587,12.5663" "$@"; }
 
 adb wait-for-device
@@ -94,6 +94,9 @@ sleep 16; shot 05n_svincolo_notte
 sleep 14; shot 05o_svincolo_notte_2
 sleep 5; shot 05p_svincolo_notte_3
 start --es nm_night auto; sleep 6
+# simulation controls: +2 km, back 500 m twice in a row, previous manoeuvre (positions in the log)
+start $TOLLIN --ei nm_variant 0 --ez nm_sim true --ez nm_simtest true
+sleep 62; shot 05q_simulazione_salti
 
 # live: a report of "another driver" 3 km ahead, sent and read back through ntfy (test topics, not
 # the drivers' ones), the "still there?" question once passed; the report tiles; a detour to
@@ -163,6 +166,6 @@ start --es nm_sheet regions; sleep 12; shot 11_paesi
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
 log
-grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national" "$OUT/logcat.txt" | head -60 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

@@ -98,8 +98,8 @@ object PoiCategories {
 @Serializable
 enum class VoiceLevel(val label: String, val detail: String) {
   ESSENTIAL("Essenziale", "Una volta prima della manovra e alla manovra; il resto lo mostra lo schermo"),
-  NORMAL("Normale", "Anche il preavviso da lontano, senza i \"prosegui per…\""),
-  FULL("Completa", "Tutte le indicazioni del percorso"),
+  NORMAL("Normale", "Anche il preavviso a circa 2 km su autostrade e superstrade"),
+  FULL("Completa", "Come Normale: le manovre arrivano sempre una alla volta, al momento giusto"),
 }
 
 /** How the map looks while driving. */
@@ -148,6 +148,8 @@ data class Settings(
     val liveTraffic: Boolean = true,
     /** Free TomTom key (developer.tomtom.com): incidents and queues of all Europe, traffic on the map. */
     val tomtomKey: String = "",
+    /** Defaults applied once on a real tablet (1: Waze on), so the app comes ready to use. */
+    val readyDefaults: Int = 0,
     /** Free HERE key (platform.here.com): incidents of all Europe. */
     val hereKey: String = "",
     /** Official traffic information of the European countries (national access points, open data). */

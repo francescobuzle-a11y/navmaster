@@ -7,32 +7,16 @@ import kotlinx.coroutines.flow.StateFlow
 import uniffi.ferrostar.SpokenInstruction
 
 /**
- * Between the route and the voice: says what matters once, and leaves the rest to the screen.
- *  - ESSENTIAL: no "keep going for 5 km", no far warnings (more than 1.2 km before), no repeats;
- *  - NORMAL: the far warning too, still no "keep going" and no repeats;
- *  - FULL: everything the route has.
+ * Between the route and the voice: the route's own cues are not spoken (see Announcer, which says
+ * each manoeuvre itself); only the mute state goes through.
  */
 class VoiceFilter(private val inner: SpokenInstructionObserver, private val level: () -> VoiceLevel) : SpokenInstructionObserver {
   private val recent = ArrayDeque<Pair<String, Long>>()
 
   override fun onSpokenInstructionTrigger(spokenInstruction: SpokenInstruction) {
-    val text = spokenInstruction.text.trim()
-    val lv = level()
-    val now = System.currentTimeMillis()
-    val drop = when {
-      lv == VoiceLevel.FULL -> false
-      KEEP_GOING.containsMatchIn(text) -> true
-      recent.any { it.first.equals(text, true) && now - it.second < 60_000 } -> true
-      lv == VoiceLevel.ESSENTIAL && spokenInstruction.triggerDistanceBeforeManeuver > 1_200 -> true
-      else -> false
-    }
-    if (drop) {
-      Log.d("NavMasterVoice", "silent ($lv): $text")
-      return
-    }
-    recent.addLast(text to now)
-    while (recent.size > 20) recent.removeFirst()
-    inner.onSpokenInstructionTrigger(spokenInstruction)
+    // the manoeuvres are said by the Announcer, one at a time and at the right moment (the
+    // route's own voice cues come too early on long steps and chain the next manoeuvre)
+    Log.d("NavMasterVoice", "route cue left to the Announcer: ${spokenInstruction.text}")
   }
 
   override fun stopAndClearQueue() = inner.stopAndClearQueue()

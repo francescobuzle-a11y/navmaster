@@ -83,6 +83,15 @@ data class LaneDest(val towns: List<String>, val refs: List<String>, val colour:
 /** The signs over the lanes before a junction of the route (left to right), where the lanes split. */
 data class LaneSigns(val atM: Double, val lanes: List<LaneDest>)
 
+/** A road leaving a junction of the route that the route does not take (from the graph). */
+data class Branch(val heading: Double, val roadClass: String, val lanes: Int, val use: String)
+
+/**
+ * The shape of a junction of the route: the direction the route arrives with and leaves with,
+ * and the other roads that leave the node (their real directions), for the junction view.
+ */
+data class JunctionShape(val atM: Double, val inHeading: Double?, val outHeading: Double?, val outLanes: Int, val branches: List<Branch>)
+
 /** The signs of one junction of the route, from the OSM destination tags (limiti.sqlite). */
 data class RouteSign(val atM: Double, val taken: EdgeSign?, val others: List<SideSign>)
 
@@ -183,6 +192,13 @@ class RouteAnalysis(
    */
   fun signNear(alongM: Double): Pair<EdgeInfo, EdgeSign>? =
       edges.firstOrNull { it.sign != null && it.startM >= alongM - 40 && it.startM <= alongM + 300 }?.let { it to it.sign!! }
+
+  /** The junctions of the route with the directions of their roads (from the graph). */
+  @Volatile var junctionShapes: List<JunctionShape> = emptyList()
+
+  /** The junction closest to this point of the route (within [tolM]). */
+  fun junctionShapeNear(alongM: Double, tolM: Double = 45.0): JunctionShape? =
+      junctionShapes.filter { kotlin.math.abs(it.atM - alongM) <= tolM }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
 
   /** Signs of the junctions of the route from the OSM destination tags, filled by LimitsIndex.scan. */
   @Volatile var osmSigns: List<RouteSign> = emptyList()
@@ -301,6 +317,7 @@ class RouteAnalysis(
           val p = parse(raw)
           if (p.edges.isNotEmpty()) {
             val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
+            a.junctionShapes = p.shapes
             Log.i(TAG, "$match: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
                 "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
                 "junctions ${p.junctions.size}, signs " +
@@ -323,10 +340,13 @@ class RouteAnalysis(
             "edge.bridge", "edge.roundabout", "edge.sign.exit_number", "edge.sign.exit_branch", "edge.sign.exit_toward",
             "edge.sign.exit_name", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
             "node.admin_index", "node.type", "node.intersecting_edge.driveability", "node.intersecting_edge.use",
+            "node.intersecting_edge.begin_heading", "node.intersecting_edge.road_class", "node.intersecting_edge.lane_count",
+            "edge.begin_heading", "edge.end_heading",
             "admin.country_code", "admin.country_text", "shape",
         )
 
-    private class Parsed(val edges: List<EdgeInfo>, val nodes: List<RouteNode>, val junctions: DoubleArray)
+    private class Parsed(val edges: List<EdgeInfo>, val nodes: List<RouteNode>, val junctions: DoubleArray,
+                         val shapes: List<JunctionShape> = emptyList())
 
     private fun parse(raw: String): Parsed {
       val none = Parsed(emptyList(), emptyList(), DoubleArray(0))
@@ -337,11 +357,12 @@ class RouteAnalysis(
       val edges = root["edges"]?.jsonArray ?: return none
       val nodes = mutableListOf<RouteNode>()
       val junctions = mutableListOf<Double>()
-      val list = edges.mapNotNull { el ->
+      val shapes = mutableListOf<JunctionShape>()
+      val list = edges.mapIndexedNotNull { idx, el ->
         val e = el.jsonObject
-        val b = e.int("begin_shape_index") ?: return@mapNotNull null
-        val en = e.int("end_shape_index") ?: return@mapNotNull null
-        if (b !in cum.indices || en !in cum.indices) return@mapNotNull null
+        val b = e.int("begin_shape_index") ?: return@mapIndexedNotNull null
+        val en = e.int("end_shape_index") ?: return@mapIndexedNotNull null
+        if (b !in cum.indices || en !in cum.indices) return@mapIndexedNotNull null
         val endNode = e["end_node"] as? JsonObject
         val adminIdx = endNode?.int("admin_index")
         endNode?.str("type")?.takeIf { it in NODE_TYPES }?.let { nodes += RouteNode(cum[en], it) }
@@ -356,6 +377,18 @@ class RouteAnalysis(
           o.str("driveability") in DRIVABLE && o.str("use") !in NOT_ROADS
         } ?: false
         if (crossing) junctions += cum[en]
+        // the other roads leaving this node, with their real direction (for the junction view)
+        val branches = (endNode?.get("intersecting_edges") as? JsonArray)?.mapNotNull { x ->
+          val o = x as? JsonObject ?: return@mapNotNull null
+          if (o.str("driveability") !in setOf("forward", "both") || o.str("use") in NOT_ROADS) return@mapNotNull null
+          val h = o["begin_heading"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
+          Branch(h, o.str("road_class") ?: "", o.int("lane_count") ?: 1, o.str("use") ?: "road")
+        } ?: emptyList()
+        if (branches.isNotEmpty()) {
+          val next = edges.getOrNull(idx + 1) as? JsonObject
+          shapes += JunctionShape(cum[en], e["end_heading"]?.jsonPrimitive?.doubleOrNull,
+              next?.get("begin_heading")?.jsonPrimitive?.doubleOrNull, next?.int("lane_count") ?: 1, branches)
+        }
         EdgeInfo(
             startM = cum[b],
             endM = cum[en],
@@ -376,7 +409,7 @@ class RouteAnalysis(
             sign = sign,
         )
       }
-      return Parsed(list, nodes, junctions.sorted().toDoubleArray())
+      return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes)
     }
 
     private val NODE_TYPES = setOf("toll_booth", "toll_gantry", "border_control")

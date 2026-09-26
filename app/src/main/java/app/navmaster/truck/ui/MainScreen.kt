@@ -167,8 +167,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var stopsOpen by remember { mutableStateOf(initialSheet == "stops") }
   var poiOpen by remember { mutableStateOf(initialSheet == "pois") }
   var countryHintClosed by remember { mutableStateOf(false) }
-  val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && settings.tomtomKey.isNotBlank())
-    app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(settings.tomtomKey, night) else null
+  val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && app.navmaster.truck.live.ApiKeys.tomtom(settings).isNotBlank())
+    app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(app.navmaster.truck.live.ApiKeys.tomtom(settings), night) else null
   val styleUri = remember(installed, night, satellite, trafficTiles) { MapStyles.styleUri(context, installed, night, satellite, trafficTiles) }
 
   // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible. Near a

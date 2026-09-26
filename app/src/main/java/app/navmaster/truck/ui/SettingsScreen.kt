@@ -112,16 +112,15 @@ private fun summary(p: SettingsPage, s: Settings): String =
       ).filterNotNull().joinToString(" · ").replaceFirstChar { it.uppercase() }
       SettingsPage.LIVE -> listOfNotNull(
           if (s.liveReports) "segnalazioni degli autisti" else null,
-          if (s.liveTraffic) "traffico" + listOfNotNull(if (s.tomtomKey.isNotBlank()) "TomTom" else null,
-              if (s.hereKey.isNotBlank()) "HERE" else null).joinToString(", ", " (", ")").takeIf { s.tomtomKey.isNotBlank() || s.hereKey.isNotBlank() }.orEmpty()
-          else null,
+          if (s.liveTraffic) "traffico" else null,
+          if (s.liveTraffic && s.personalFeed) "Waze" else null,
       ).joinToString(" · ").ifBlank { "Spento" }.replaceFirstChar { it.uppercase() }
       SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
       SettingsPage.OFFLINE -> (if (s.wifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con dati mobili") +
           if (s.useEuropeGraph) " · grafo Europa" else ""
-      SettingsPage.PHOTOS -> if (s.mapillaryToken.isBlank()) "Panoramax e KartaView" else "Panoramax, KartaView e Mapillary"
+      SettingsPage.PHOTOS -> if (app.navmaster.truck.live.ApiKeys.mapillary(s).isBlank()) "Panoramax e KartaView" else "Panoramax, KartaView e Mapillary"
       SettingsPage.ABOUT -> "OpenStreetMap, Esri, divieti di circolazione"
     }
 
@@ -240,75 +239,24 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
     )
   }
-  Card("Waze") {
-    ToggleRow("Da Waze", "Polizia, incidenti, pericoli, veicoli fermi, lavori, chiusure e code dalla mappa " +
-        "pubblica di Waze, solo sul tratto di percorso davanti, ogni 2 minuti e mai da fermo. " +
-        "Restano su questo tablet e non vanno agli altri autisti.", s.personalFeed) { v ->
-      set { it.copy(personalFeed = v) }
-    }
-    if (s.personalFeed) {
-      Pills {
-        Pill("Dal tablet", s.personalFeedDirect) { set { it.copy(personalFeedDirect = true) } }
-        Pill("Dal mio computer", !s.personalFeedDirect) { set { it.copy(personalFeedDirect = false) } }
-      }
-    }
-    if (s.personalFeed && !s.personalFeedDirect) {
-      OutlinedTextField(
-          s.personalFeedUrl, { v -> set { it.copy(personalFeedUrl = v.trim()) } }, label = { Text("Indirizzo del server (es. http://192.168.1.20:8080)") },
-          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
-          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-      )
-      Caption("Il tablet e il computer devono essere sulla stessa rete Wi-Fi. Richiesta al massimo ogni 2 minuti, solo in guida.",
-          size = 13, lines = 3)
-    }
-  }
   Card("Traffico") {
-    ToggleRow("Informazioni sul traffico", "Code, incidenti, lavori e chiusure sul percorso, dette a voce in tempo; se la strada è chiusa " +
-        "ti propone un'alternativa. Autostrade tedesche sempre (dati aperti Autobahn GmbH); tutta Europa con una chiave gratuita.",
+    ToggleRow("Informazioni sul traffico", "Code, incidenti, lavori, chiusure e pericoli sul percorso, detti a voce in tempo; se la " +
+        "strada è chiusa ti propone un'alternativa. Tutto già pronto: nessuna chiave o registrazione da fare.",
         s.liveTraffic) { v -> set { it.copy(liveTraffic = v) } }
     if (s.liveTraffic) {
-      OutlinedTextField(
-          s.tomtomKey, { v -> set { it.copy(tomtomKey = v.trim()) } }, label = { Text("Chiave TomTom (facoltativa)") },
-          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-      )
-      if (s.tomtomKey.isBlank()) {
-        Caption("Registrazione gratuita su developer.tomtom.com, poi copia la «API key» (2.500 richieste al giorno gratis: bastano " +
-            "per un giorno intero di guida).", size = 13, lines = 4)
-        BigButton("Crea la chiave TomTom gratuita", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), style = BtnStyle.SECONDARY) {
-          app.navmaster.truck.photos.StreetPhotos.openPhoto(context, "https://developer.tomtom.com/user/register")
-        }
-      } else {
-        ToggleRow("Colori del traffico sulla mappa (prova)", "Giallo, arancio e rosso sulle strade rallentate", s.trafficOnMap) { v ->
+      ToggleRow("Da Waze", "Polizia, incidenti, pericoli, veicoli fermi, lavori, chiusure e code dalla mappa pubblica di Waze, " +
+          "solo sul tratto di percorso davanti, ogni 2 minuti e mai da fermo.", s.personalFeed) { v ->
+        set { it.copy(personalFeed = v, personalFeedDirect = true) }
+      }
+      ToggleRow("Centrali del traffico dei Paesi", "Dati ufficiali di Spagna, Paesi Bassi, Belgio, Lussemburgo, Francia, Germania, " +
+          "Finlandia, Polonia, Lituania e Svezia, letti solo per i Paesi che attraversi.", s.nationalTraffic) { v ->
+        set { it.copy(nationalTraffic = v) }
+      }
+      if (app.navmaster.truck.live.ApiKeys.tomtom(s).isNotBlank()) {
+        ToggleRow("Colori del traffico sulla mappa", "Giallo, arancio e rosso sulle strade rallentate", s.trafficOnMap) { v ->
           set { it.copy(trafficOnMap = v) }
         }
-        val usage by app.navmaster.truck.live.TomTomGuard.usage.collectAsState()
-        Caption("Sempre dentro la quota gratuita: solo richieste «a riquadri», al massimo " +
-            "${app.navmaster.truck.live.TomTomGuard.DAY_TILES} al giorno e ${app.navmaster.truck.live.TomTomGuard.MONTH_TILES} al mese, " +
-            "niente richieste da fermo; oltre il limite TomTom si ferma fino al giorno dopo e restano le altre fonti.", size = 13, lines = 5)
-        Caption(usage.let { app.navmaster.truck.live.TomTomGuard.summary() }, color = Nm.Text, size = 13, lines = 3)
       }
-      OutlinedTextField(
-          s.hereKey, { v -> set { it.copy(hereKey = v.trim()) } }, label = { Text("Chiave HERE (facoltativa)") },
-          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
-          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-      )
-      if (s.hereKey.isBlank()) Caption("In alternativa o in aggiunta: chiave gratuita su platform.here.com.", size = 13)
-    }
-  }
-  Card("Informazioni ufficiali dei Paesi") {
-    ToggleRow("Dati ufficiali del traffico", "Incidenti, code, chiusure, lavori, pericoli e limiti per i mezzi pesanti dalle centrali " +
-        "del traffico nazionali: Spagna (DGT, Catalogna, Paesi Baschi), Paesi Bassi, Belgio (Fiandre), Lussemburgo, Francia, " +
-        "Germania, Finlandia, Polonia, Lituania e Svezia (con chiave). Gratuiti, senza chiave, letti solo per i Paesi che " +
-        "attraversi e solo in movimento.", s.nationalTraffic) { v -> set { it.copy(nationalTraffic = v) } }
-    if (s.nationalTraffic) {
-      OutlinedTextField(
-          s.trafikverketKey, { v -> set { it.copy(trafikverketKey = v.trim()) } }, label = { Text("Chiave Trafikverket – Svezia (facoltativa)") },
-          singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
-          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-      )
-      Caption("Italia, Austria, Svizzera, Norvegia e gli altri Paesi non hanno dati aperti di questo tipo: lì restano TomTom, " +
-          "HERE e le segnalazioni.", size = 13, lines = 3)
     }
   }
 }
@@ -451,22 +399,9 @@ private fun OfflinePage(s: Settings, set: ((Settings) -> Settings) -> Unit, onRe
 @Composable
 private fun PhotosPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Fonti") {
-    Caption("Panoramax e KartaView funzionano senza registrazione. Con un token gratuito di Mapillary " +
-        "(mapillary.com/dashboard/developers) si aggiungono anche le sue foto.", size = 13)
-    OutlinedTextField(
-        s.mapillaryToken, { v -> set { it.copy(mapillaryToken = v.trim()) } }, label = { Text("Token Mapillary (facoltativo)") },
-        singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
-        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
-    )
-    if (s.mapillaryToken.isBlank()) {
-      val context = androidx.compose.ui.platform.LocalContext.current
-      Caption("Con il token si vedono anche le foto dei cartelli di limiti e divieti (riconosciuti da Mapillary) " +
-          "e l'affidabilità di ogni limite diventa più precisa. Registrazione gratuita, poi «Register application» e copia il «Client token».",
-          size = 13, lines = 5)
-      BigButton("Crea il token gratuito", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp), style = BtnStyle.SECONDARY) {
-        app.navmaster.truck.photos.StreetPhotos.openPhoto(context, "https://www.mapillary.com/dashboard/developers")
-      }
-    }
+    Caption("Foto delle strade da Panoramax e KartaView" +
+        (if (app.navmaster.truck.live.ApiKeys.mapillary(s).isNotBlank()) " e Mapillary" else "") +
+        ": pronte, senza registrazione.", size = 13)
   }
 }
 
@@ -477,7 +412,7 @@ private fun AboutPage() {
         "Punti di interesse aggiuntivi © Overture Maps Foundation (CDLA Permissive 2.0). " +
         "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale). " +
         "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA). " +
-        "Traffico: Autobahn GmbH (dati aperti), TomTom e HERE con la chiave dell'utente. " +
+        "Traffico: Autobahn GmbH (dati aperti), Waze (mappa pubblica), TomTom e HERE. " +
         "Dati ufficiali: DGT (CC BY), Servei Català de Trànsit, Open Data Euskadi, NDW, Vlaams Verkeerscentrum, CITA (CC0), " +
         "Bison Futé (Licence Ouverte 2.0), Fintraffic / digitraffic.fi (CC BY 4.0), GDDKiA, Via Lietuva, Trafikverket. " +
         "Segnalazioni: autisti NavMaster via ntfy. " +
