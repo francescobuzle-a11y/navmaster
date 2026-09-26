@@ -318,6 +318,10 @@ class RouteAnalysis(
           if (p.edges.isNotEmpty()) {
             val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
             a.junctionShapes = p.shapes
+            Log.i(TAG, "junction shapes: ${p.shapes.size}; " + p.shapes.take(6).joinToString { j ->
+              "${j.atM.toInt()}: in ${j.inHeading?.toInt()} out ${j.outHeading?.toInt()} x${j.outLanes} | " +
+                  j.branches.joinToString(" ") { b -> "${b.heading.toInt()}/${b.roadClass}/${b.lanes}" }
+            })
             Log.i(TAG, "$match: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
                 "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
                 "junctions ${p.junctions.size}, signs " +

@@ -501,6 +501,8 @@ private val MINOR_CLASSES = setOf("residential", "service", "living_street", "un
  * Ordinary turns and roundabouts do not open it: the map stays free. Null the rest of the time.
  */
 
+private var jvLogged = -1L
+
 fun junctionSceneOf(
     instruction: uniffi.ferrostar.VisualInstruction?,
     distanceM: Double?,
@@ -563,6 +565,11 @@ fun junctionSceneOf(
       val m = ld.map { d -> (d.towns + d.refs).any { norm(it) in want } }
       m.takeIf { it.any { v -> v } && !it.all { v -> v } }
     }
+  }
+  if (jvLogged != at.toLong() / 50) {
+    jvLogged = at.toLong() / 50
+    android.util.Log.i("NavMasterJV", "scene at ${at.toInt()} m: ${type} ${mod} lanes ${lanes.size}, graph lanes ${here?.lanes}, " +
+        "shape ${a?.junctionShapeNear(at)}")
   }
   return JunctionScene(
       side = side,
