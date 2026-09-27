@@ -1212,8 +1212,18 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     simMoveJob = viewModelScope.launch {
       // the guidance goes on the new route once the simulated vehicle is there: from the old
       // position the new route would look like a wrong turn
-      withTimeoutOrNull(1500) { lastLocation.first { it != null && Geo.dist(it.coordinates, p) < 60 } }
-      delay(40)
+      val before = lastLocation.value
+      val far = before?.let { Geo.dist(it.coordinates, p) } ?: Double.MAX_VALUE
+      val got = withTimeoutOrNull(900) {
+        lastLocation.first { l ->
+          if (l == null || l === before) return@first false
+          val d = Geo.dist(l.coordinates, p)
+          Log.i(TAG, "simulation: vehicle ${d.toInt()} m from the new point (was ${far.toInt()} m)")
+          d < 400 || d < far - 100
+        }
+      }
+      if (got == null) Log.i(TAG, "simulation: no position from the simulation yet, the guidance moves anyway")
+      delay(30)
       core.replaceRoute(r)
     }
   }
