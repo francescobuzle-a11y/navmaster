@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -217,11 +221,16 @@ fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
   val states by AppGraph.regions.states.collectAsState()
   val settings by AppGraph.settings.settings.collectAsState()
   LaunchedEffect(Unit) { AppGraph.catalog.refresh() }
-  Box(Modifier.fillMaxSize().background(Color(0xF00E1216)).statusBarsPadding(), contentAlignment = Alignment.Center) {
-    Panel(Modifier.widthIn(max = 560.dp).padding(20.dp), padding = 24.dp) {
-      Text("NavMaster", color = Nm.Text, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+  // on a phone turned sideways the screen is low: the panel scrolls instead of squeezing its rows
+  val low = LocalConfiguration.current.screenHeightDp < 520
+  Box(Modifier.fillMaxSize().background(Color(0xF00E1216)).statusBarsPadding().navigationBarsPadding(),
+      contentAlignment = Alignment.Center) {
+    Panel(Modifier.widthIn(max = 560.dp).padding(horizontal = 20.dp, vertical = if (low) 8.dp else 20.dp),
+        padding = if (low) 16.dp else 24.dp) {
+     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+      Text("NavMaster", color = Nm.Text, fontSize = if (low) 26.sp else 34.sp, fontWeight = FontWeight.Bold)
       Caption("Navigatore per camion, autobus e camper", size = 16)
-      Spacer(Modifier.height(18.dp))
+      Spacer(Modifier.height(if (low) 8.dp else 18.dp))
       if (here != null) {
         Title("${here.flag}  Ti trovi in ${here.name}")
         Caption("Scarica la mappa per guidare anche senza rete: percorsi per mezzi pesanti, limiti, indirizzi e punti di interesse.")
@@ -240,6 +249,7 @@ fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
       Spacer(Modifier.height(10.dp))
       ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v -> AppGraph.settings.update { it.copy(downloadWifiOnly = v) } }
       BigButton("Tutti i Paesi d'Europa", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.Public, BtnStyle.SECONDARY, onClick = onChooseOther)
+     }
     }
   }
 }

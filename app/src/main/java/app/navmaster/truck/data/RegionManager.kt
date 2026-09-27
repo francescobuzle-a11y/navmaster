@@ -128,7 +128,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
           setState(job.id, DownloadState.Done)
         } catch (e: Exception) {
           Log.e(TAG, "download ${job.id} failed", e)
-          setState(job.id, DownloadState.Failed(e.message ?: e.toString()))
+          setState(job.id, DownloadState.Failed(friendly(e)))
         }
       }
     }
@@ -185,6 +185,18 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
         Log.i(TAG, "resuming the download of ${dir.name}")
         download(dir.name, job[0], job[1].toBoolean())
       }
+    }
+  }
+
+  /** What the driver reads when a download stops: no file paths or technical words. */
+  private fun friendly(e: Exception): String {
+    val m = e.message ?: ""
+    return when {
+      "ENOSPC" in m || "No space" in m -> "Spazio esaurito sul telefono: libera spazio e tocca Scarica, riprende da dove era arrivato"
+      e is IllegalStateException && !m.startsWith("/") && m.isNotBlank() -> m
+      e is java.io.IOException && !m.startsWith("/") && m.isNotBlank() && "danneggiato" in m -> m
+      "Connessione" in m -> m
+      else -> "Scaricamento interrotto: tocca Scarica, riprende da dove era arrivato"
     }
   }
 
@@ -252,19 +264,26 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     val tmp = File(dir, ".parts").apply { mkdirs() }
     // files already brought down by the old versions: kept, they are checked before use (a damaged
     // one is fetched again by itself), so the data already spent is not spent again
+    // (in the old download folder, or already put in place by an old version that stopped later on)
     val old = File(dir, ".download")
-    if (old.isDirectory) {
-      for ((_, p) in parts) {
-        val f = File(old, p.name)
-        val to = File(tmp, p.name)
-        if (f.length() == p.size && !to.exists() && f.renameTo(to)) {
-          val n = ((p.size + FastDownloader.SEG - 1) / FastDownloader.SEG).toInt().coerceAtLeast(1)
-          File(tmp, p.name + ".seg").writeText((0 until n).joinToString("\n", postfix = "\n"))
-          Log.i(TAG, "download $id: ${p.name} kept from the previous download")
+    val sources = listOfNotNull(old.takeIf { it.isDirectory }, dir.takeIf { !File(it, "manifest.json").exists() })
+    for ((_, p) in parts) {
+      val to = File(tmp, p.name)
+      if (to.exists()) continue
+      for (src in sources) {
+        val f = File(src, p.name)
+        if (f.length() != p.size) continue
+        if (!f.renameTo(to)) {
+          runCatching { f.copyTo(to, overwrite = true) }.onFailure { to.delete() }
+          if (to.length() != p.size) continue
         }
+        val n = ((p.size + FastDownloader.SEG - 1) / FastDownloader.SEG).toInt().coerceAtLeast(1)
+        File(tmp, p.name + ".seg").writeText((0 until n).joinToString("\n", postfix = "\n"))
+        Log.i(TAG, "download $id: ${p.name} kept from the previous download (${src.name})")
+        break
       }
-      old.deleteRecursively()
     }
+    if (old.isDirectory) runCatching { old.deleteRecursively() }
     File(tmp, "job.txt").writeText("${job.label}\n${job.useEurope}\n")
     // what is already there from an interrupted download (the files are made full size at once,
     // what counts is the pieces done)

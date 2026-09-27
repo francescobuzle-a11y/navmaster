@@ -177,6 +177,13 @@ adb logcat -d -s NavMasterData:* | grep -E "download|resum|removed|Tar|failed|da
 # traffic colours on the map with a (fake) TomTom key: the app must not stop; then back to normal
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
+# first start on a phone held sideways (low screen): the welcome panel must scroll, not squeeze
+adb shell pm clear $PKG || true
+adb shell wm size 2400x1080; adb shell wm density 420; sleep 3
+adb shell pm grant $PKG android.permission.ACCESS_FINE_LOCATION || true
+start; sleep 18; shot 17_benvenuto_telefono_orizzontale
+adb shell input swipe 1200 800 1200 300 500; sleep 2; shot 17b_benvenuto_telefono_orizzontale_2
+adb shell wm size reset; adb shell wm density reset; sleep 3
 log
 grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
