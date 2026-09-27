@@ -74,14 +74,36 @@ class FastDownloader(
 
   private fun segLen(size: Long, i: Int) = min(size, (i + 1L) * SEG) - i * SEG
 
-  /** Downloads (or completes) [items]; [progress] gets the bytes done so far, twice a second. */
-  suspend fun fetch(items: List<Item>, progress: (Long) -> Unit) = coroutineScope {
+  /**
+   * Downloads (or completes) [items]; [progress] gets the bytes done so far, twice a second. A file
+   * that does not pass the check is fetched again once, by itself, before giving up.
+   */
+  suspend fun fetch(items: List<Item>, progress: (Long) -> Unit) {
     val done = AtomicLong(0)
+    var todo = items
+    for (pass in 1..3) {
+      val bad = fetchPass(todo, if (pass == 1) items else emptyList(), done, progress)
+      if (bad.isEmpty()) return
+      Log.w(TAG, "download: ${bad.joinToString { it.target.name }} did not pass the check, fetched again (pass $pass)")
+      todo = bad
+    }
+    throw IllegalStateException("File ${todo.first().target.name} danneggiato più volte: controlla la connessione e tocca Scarica")
+  }
+
+  /** One pass over [todo]; returns the files that did not pass the check (they start over). */
+  private suspend fun fetchPass(todo: List<Item>, all: List<Item>, done: AtomicLong, progress: (Long) -> Unit): List<Item> = coroutineScope {
     val work = Channel<Pair<Item, Int>>(Channel.UNLIMITED)
     val left = HashMap<Item, AtomicInteger>()
+    val bad = Collections.synchronizedList(mutableListOf<Item>())
     val checks = Collections.synchronizedList(mutableListOf<Deferred<Unit>>())
+    fun checkLater(item: Item) = async(Dispatchers.Default) {
+      if (!verify(item)) {
+        done.addAndGet(-item.size)
+        bad += item
+      }
+    }
     // small files first: they are ready (and checked) while the big ones are still coming
-    for (item in items.sortedBy { it.size }) {
+    for (item in todo.sortedBy { it.size }) {
       val ok = File(item.target.path + ".ok")
       if (ok.exists() && item.target.length() == item.size) {
         done.addAndGet(item.size)
@@ -96,17 +118,18 @@ class FastDownloader(
           else emptySet()
       if (got.isEmpty()) {
         seg.delete()
+        item.target.delete()
         item.target.parentFile?.mkdirs()
         RandomAccessFile(item.target, "rw").use { it.setLength(item.size) }
       }
       for (i in got) done.addAndGet(segLen(item.size, i))
-      val todo = (0 until n).filter { it !in got }
-      left[item] = AtomicInteger(todo.size)
-      if (todo.isEmpty()) checks += async(Dispatchers.Default) { verify(item) }
-      for (i in todo) work.trySend(item to i)
+      val pieces = (0 until n).filter { it !in got }
+      left[item] = AtomicInteger(pieces.size)
+      if (pieces.isEmpty()) checks += checkLater(item)
+      for (i in pieces) work.trySend(item to i)
     }
     work.close()
-    Log.i(TAG, "download: ${items.size} files, ${done.get() / 1_000_000} MB already there")
+    if (all.isNotEmpty()) Log.i(TAG, "download: ${all.size} files, ${done.get() / 1_000_000} MB already there")
     progress(done.get())
     val ticker = launch {
       while (isActive) {
@@ -119,7 +142,7 @@ class FastDownloader(
         for ((item, i) in work) {
           piece(item, i, done)
           synchronized(item) { File(item.target.path + ".seg").appendText("$i\n") }
-          if (left.getValue(item).decrementAndGet() == 0) checks += async(Dispatchers.Default) { verify(item) }
+          if (left.getValue(item).decrementAndGet() == 0) checks += checkLater(item)
         }
       }
     }
@@ -127,6 +150,7 @@ class FastDownloader(
     synchronized(checks) { checks.toList() }.awaitAll()
     ticker.cancel()
     progress(done.get())
+    synchronized(bad) { bad.toList() }
   }
 
   private suspend fun piece(item: Item, i: Int, done: AtomicLong) {
@@ -147,6 +171,10 @@ class FastDownloader(
           }
           val whole = resp.code == 200 && pos == 0L && end == item.size - 1
           if (resp.code != 206 && !whole) throw IOException("HTTP ${resp.code}")
+          // the piece asked for, not another one
+          if (resp.code == 206 && resp.header("Content-Range")?.startsWith("bytes $pos-") == false) {
+            throw IOException("risposta per un altro pezzo: ${resp.header("Content-Range")}")
+          }
           RandomAccessFile(item.target, "rw").use { f ->
             f.seek(pos)
             val input = resp.body.byteStream()
@@ -174,7 +202,7 @@ class FastDownloader(
     }
   }
 
-  private fun verify(item: Item) {
+  private fun verify(item: Item): Boolean {
     val t = System.currentTimeMillis()
     val md = MessageDigest.getInstance("SHA-256")
     item.target.inputStream().buffered(1 shl 20).use { input ->
@@ -187,12 +215,14 @@ class FastDownloader(
     }
     val hex = md.digest().joinToString("") { "%02x".format(it) }
     if (!hex.equals(item.sha256, ignoreCase = true)) {
+      Log.w(TAG, "download: ${item.target.name} damaged ($hex)")
       item.target.delete()
       File(item.target.path + ".seg").delete()
-      throw IllegalStateException("File ${item.target.name} danneggiato: tocca Scarica, verrà riscaricato solo lui")
+      return false
     }
     File(item.target.path + ".ok").writeText(hex)
     Log.i(TAG, "download: ${item.target.name} complete and checked (${System.currentTimeMillis() - t} ms)")
+    return true
   }
 
   companion object {

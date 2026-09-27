@@ -167,9 +167,13 @@ adb shell input swipe 1800 1500 1800 300 600; sleep 3; shot 10f_impostazioni_tra
 start --es nm_sheet regions; sleep 12; shot 11_paesi
 # a real download from the releases (a small country: 78 MB with its Europe tiles), in pieces on
 # several connections, checked and installed; speed and times in the log
+# a damaged file left by an old version (right size, wrong content): it must be found at the check
+# and fetched again by itself, without an error for the driver
+D=/sdcard/Android/data/$PKG/files/regions/liechtenstein/.download
+adb shell "mkdir -p $D && truncate -s 72837120 $D/tiles-liechtenstein.tar" || true
 start --es nm_sheet regions --es nm_download liechtenstein; sleep 9; shot 11b_scaricamento
-sleep 60; shot 11c_scaricato
-adb logcat -d -s NavMasterData:* | grep -E "download|resum|removed|Tar|failed|Exception" | tail -30 >> "$INFO" || true
+sleep 75; shot 11c_scaricato
+adb logcat -d -s NavMasterData:* | grep -E "download|resum|removed|Tar|failed|damaged|kept|Exception" | tail -30 >> "$INFO" || true
 # traffic colours on the map with a (fake) TomTom key: the app must not stop; then back to normal
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6

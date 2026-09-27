@@ -249,9 +249,22 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
         (tiles?.parts?.map { "$RELEASES/grafo-europa/${it.name}" to it } ?: emptyList())
     val total = parts.sumOf { it.second.size }
     val dir = File(root, id).apply { mkdirs() }
-    // the parts of the old download manager are not reusable
-    File(dir, ".download").deleteRecursively()
     val tmp = File(dir, ".parts").apply { mkdirs() }
+    // files already brought down by the old versions: kept, they are checked before use (a damaged
+    // one is fetched again by itself), so the data already spent is not spent again
+    val old = File(dir, ".download")
+    if (old.isDirectory) {
+      for ((_, p) in parts) {
+        val f = File(old, p.name)
+        val to = File(tmp, p.name)
+        if (f.length() == p.size && !to.exists() && f.renameTo(to)) {
+          val n = ((p.size + FastDownloader.SEG - 1) / FastDownloader.SEG).toInt().coerceAtLeast(1)
+          File(tmp, p.name + ".seg").writeText((0 until n).joinToString("\n", postfix = "\n"))
+          Log.i(TAG, "download $id: ${p.name} kept from the previous download")
+        }
+      }
+      old.deleteRecursively()
+    }
     File(tmp, "job.txt").writeText("${job.label}\n${job.useEurope}\n")
     // what is already there from an interrupted download (the files are made full size at once,
     // what counts is the pieces done)
