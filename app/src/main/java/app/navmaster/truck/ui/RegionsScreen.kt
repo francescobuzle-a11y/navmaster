@@ -82,16 +82,19 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
   AdaptiveSheet("Mappe d'Europa", onClose, wide = true) {
     Caption("Ogni Paese contiene mappa, calcolo del percorso per mezzi pesanti, limiti, indirizzi, punti di interesse e criticità: " +
         "tutto funziona senza rete. Libero sul tablet: ${gb(AppGraph.regions.freeBytes())}.")
+    ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v ->
+      AppGraph.settings.update { it.copy(downloadWifiOnly = v) }
+    }
     if (here != null) {
       SectionHeader("Ti trovi qui")
-      CountryRow(here, installed.any { it.id == here.id }, states[here.id], settings.useEuropeGraph, settings.wifiOnly, highlight = true)
+      CountryRow(here, installed.any { it.id == here.id }, states[here.id], settings.useEuropeGraph, settings.downloadWifiOnly, highlight = true)
     }
     val inst = installed.filter { r -> r.id != here?.id }
     if (inst.isNotEmpty()) {
       SectionHeader("Scaricati")
       for (r in inst) {
         val c = catalog?.countries?.firstOrNull { it.id == r.id }
-        if (c != null) CountryRow(c, true, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+        if (c != null) CountryRow(c, true, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
         else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.engine.reset() }
       }
     }
@@ -104,7 +107,7 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
     if (query.isNotBlank()) {
       for (c in list) {
         if (c.id == here?.id) continue
-        CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+        CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
       }
     } else {
       // by area, folded: only the area you are in starts open
@@ -126,13 +129,13 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
         }
         if (open) {
           Column(Modifier.padding(start = 8.dp)) {
-            for (c in inArea) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+            for (c in inArea) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
           }
         }
       }
       // anything the catalog has that no area lists
       val known = AREAS.values.flatten().toSet()
-      for (c in list) if (c.iso !in known && c.id != here?.id) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.wifiOnly)
+      for (c in list) if (c.iso !in known && c.id != here?.id) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
     }
     catalog?.europeGraph?.let {
       Spacer(Modifier.height(10.dp))
@@ -183,7 +186,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         }
         state is DownloadState.Running || state is DownloadState.Queued -> {}
         c.available -> RoundAction(Icons.Rounded.CloudDownload, "Scarica", size = 52.dp, container = Nm.Accent) {
-          AppGraph.regions.download(c.id, c.name, wifiOnly, useEurope)
+          AppGraph.regions.download(c.id, c.name, useEurope)
         }
         else -> {}
       }
@@ -196,6 +199,11 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         LinearProgressIndicator(progress = { f }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
             color = Nm.Accent, trackColor = Nm.Line)
         Caption("${state.step} · ${gb(state.doneBytes)} di ${gb(state.totalBytes)}", size = 13)
+        if (state.step.startsWith("In attesa del Wi-Fi")) {
+          BigButton("Scarica ora con i dati mobili", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.CloudDownload) {
+            AppGraph.settings.update { it.copy(downloadWifiOnly = false) }
+          }
+        }
       }
       is DownloadState.Failed -> Caption(state.message, color = Nm.Red)
       else -> {}
@@ -219,10 +227,10 @@ fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
         Caption("Scarica la mappa per guidare anche senza rete: percorsi per mezzi pesanti, limiti, indirizzi e punti di interesse.")
         Spacer(Modifier.height(12.dp))
         val st = states[here.id]
-        if (st != null) CountryRow(here, false, st, settings.useEuropeGraph, settings.wifiOnly, highlight = true)
+        if (st != null) CountryRow(here, false, st, settings.useEuropeGraph, settings.downloadWifiOnly, highlight = true)
         else if (here.available) BigButton("Scarica ${here.name} (${gb(here.downloadSize(settings.useEuropeGraph && here.europeTiles != null))})",
             Modifier.fillMaxWidth(), Icons.Rounded.CloudDownload) {
-          AppGraph.regions.download(here.id, here.name, settings.wifiOnly, settings.useEuropeGraph)
+          AppGraph.regions.download(here.id, here.name, settings.useEuropeGraph)
         }
         else Caption("La mappa di ${here.name} è in preparazione: riprova tra poco o scegline un'altra.", color = Nm.Amber)
       } else {
@@ -230,7 +238,7 @@ fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
         Caption("Collegati a internet: l'app individua il Paese in cui ti trovi e ti propone la sua mappa.")
       }
       Spacer(Modifier.height(10.dp))
-      ToggleRow("Solo con Wi-Fi", null, settings.wifiOnly) { v -> AppGraph.settings.update { it.copy(wifiOnly = v) } }
+      ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v -> AppGraph.settings.update { it.copy(downloadWifiOnly = v) } }
       BigButton("Tutti i Paesi d'Europa", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.Public, BtnStyle.SECONDARY, onClick = onChooseOther)
     }
   }

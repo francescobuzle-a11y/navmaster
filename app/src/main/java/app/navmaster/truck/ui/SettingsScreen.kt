@@ -118,7 +118,7 @@ private fun summary(p: SettingsPage, s: Settings): String =
       SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
-      SettingsPage.OFFLINE -> (if (s.wifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con dati mobili") +
+      SettingsPage.OFFLINE -> (if (s.downloadWifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con i dati mobili") +
           if (s.useEuropeGraph) " · grafo Europa" else ""
       SettingsPage.PHOTOS -> if (app.navmaster.truck.live.ApiKeys.mapillary(s).isBlank()) "Panoramax e KartaView" else "Panoramax, KartaView e Mapillary"
       SettingsPage.ABOUT -> "OpenStreetMap, Esri, divieti di circolazione"
@@ -380,7 +380,7 @@ private fun PoiCategoryRow(c: PoiCategory, s: Settings, set: ((Settings) -> Sett
 @Composable
 private fun OfflinePage(s: Settings, set: ((Settings) -> Settings) -> Unit, onRegions: () -> Unit) {
   Card("Scaricamento") {
-    ToggleRow("Scarica solo con Wi-Fi", null, s.wifiOnly) { v -> set { it.copy(wifiOnly = v) } }
+    ToggleRow("Scarica solo con Wi-Fi", "Spento: le mappe si scaricano anche con i dati mobili", s.downloadWifiOnly) { v -> set { it.copy(downloadWifiOnly = v) } }
     BigButton("Gestisci i Paesi scaricati", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), style = BtnStyle.SECONDARY, onClick = onRegions)
   }
   Card("Percorsi") {

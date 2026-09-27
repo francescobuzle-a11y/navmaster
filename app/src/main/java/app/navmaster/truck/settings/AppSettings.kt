@@ -138,7 +138,8 @@ data class Settings(
     val poiRailSide: PoiSide = PoiSide.AUTO,
     val driveTimeReminder: Boolean = true,
     val useEuropeGraph: Boolean = true,
-    val wifiOnly: Boolean = true,
+    /** Maps only on Wi-Fi (off: also with mobile data, the driver often has no Wi-Fi). */
+    val downloadWifiOnly: Boolean = false,
     /** Optional free Mapillary token: with it the street photos also come from Mapillary. */
     val mapillaryToken: String = "",
     val speedWarningKmh: Int = 5,

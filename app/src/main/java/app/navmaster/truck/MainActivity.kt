@@ -37,6 +37,8 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     app.navmaster.truck.ui.UiHints.tab = intent?.getIntExtra("nm_tab", 0) ?: 0
     setContent { NmTheme { MainScreen(vm, intent?.getStringExtra("nm_sheet"), crit) } }
     handleTestIntent()
+    // a map download cut off (app closed, tablet restarted) goes on by itself
+    AppGraph.regions.resumePending()
   }
 
   override fun onStart() {
@@ -86,6 +88,8 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
       AppGraph.settings.update { it.copy(nightMode = mode) }
     }
     if (intent?.getBooleanExtra("nm_simtest", false) == true) vm.simSelfTest()
+    // emulator test of the map download (a small country, from the real releases)
+    intent?.getStringExtra("nm_download")?.let { id -> AppGraph.regions.download(id, id, AppGraph.settings.settings.value.useEuropeGraph) }
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
     intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = if (k == "none") "" else k) } }
     // emulator test of the direct mode on a sample file (never the real service from the tests)

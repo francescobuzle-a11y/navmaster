@@ -2,11 +2,13 @@ package app.navmaster.truck.data
 
 import android.app.DownloadManager
 import android.content.Context
-import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.StatFs
 import android.util.Log
 import java.io.File
-import java.security.MessageDigest
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -77,14 +79,15 @@ sealed class DownloadState {
   data object Done : DownloadState()
 }
 
-private data class Job(val id: String, val label: String, val wifiOnly: Boolean, val useEurope: Boolean)
+private data class Job(val id: String, val label: String, val useEurope: Boolean)
 
 /**
  * Offline packages, one folder per country under the app's external files. They are published on
  * GitHub releases (dati-<country>) with a manifest; big files come in parts that are joined here.
  * With the Europe graph, the routing tiles of every country go in one shared folder so routes
- * cross borders. Downloads go through Android's DownloadManager: they survive the app going to the
- * background, resume after a dropped connection and can be limited to Wi-Fi.
+ * cross borders. Downloads (FastDownloader) use several connections at once, on Wi-Fi or mobile
+ * data, go on in the background (DownloadService) and resume where they were after a dropped
+ * connection or the app closed.
  */
 class RegionManager(private val context: Context, private val catalog: CatalogStore) {
   val root: File = File(context.getExternalFilesDir(null), "regions").apply { mkdirs() }
@@ -103,6 +106,22 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
 
   init {
     scope.launch {
+      // downloads of the old versions (Android's download manager, often stuck waiting for Wi-Fi)
+      runCatching {
+        val dm = context.getSystemService(DownloadManager::class.java)
+        val old = mutableListOf<Long>()
+        dm.query(DownloadManager.Query()).use { c ->
+          while (c.moveToNext()) {
+            if (c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) != DownloadManager.STATUS_SUCCESSFUL) {
+              old += c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_ID))
+            }
+          }
+        }
+        if (old.isNotEmpty()) {
+          dm.remove(*old.toLongArray())
+          Log.i(TAG, "removed ${old.size} old system downloads")
+        }
+      }.onFailure { Log.w(TAG, "old downloads: $it") }
       for (job in queue) {
         try {
           doDownload(job)
@@ -150,11 +169,64 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   private fun setState(id: String, s: DownloadState?) =
       _states.update { m -> if (s == null) m - id else m + (id to s) }
 
-  fun download(id: String, label: String, wifiOnly: Boolean, useEurope: Boolean) {
+  fun download(id: String, label: String, useEurope: Boolean) {
     val s = _states.value[id]
     if (s is DownloadState.Running || s is DownloadState.Queued) return
     setState(id, DownloadState.Queued)
-    queue.trySend(Job(id, label, wifiOnly, useEurope))
+    queue.trySend(Job(id, label, useEurope))
+    DownloadService.start(context)
+  }
+
+  /** A download cut off (app closed, phone restarted) goes on from where it was, at the next start. */
+  fun resumePending() {
+    for (dir in root.listFiles() ?: emptyArray()) {
+      val job = File(dir, ".parts/job.txt").takeIf { it.exists() }?.readLines() ?: continue
+      if (_states.value[dir.name] == null && job.size >= 2) {
+        Log.i(TAG, "resuming the download of ${dir.name}")
+        download(dir.name, job[0], job[1].toBoolean())
+      }
+    }
+  }
+
+  /** Why downloading has to wait now (null: it can go on). */
+  private fun blocked(): String? {
+    val cm = context.getSystemService(ConnectivityManager::class.java)
+    val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+    if (caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return "In attesa della connessione a internet"
+    if (app.navmaster.truck.AppGraph.settings.settings.value.downloadWifiOnly && cm.isActiveNetworkMetered) {
+      return "In attesa del Wi-Fi: disattiva «Solo con Wi-Fi» per scaricare con i dati"
+    }
+    return null
+  }
+
+  /** Speed and time left, smoothed. */
+  private class Speed {
+    private var t0 = 0L
+    private var b0 = 0L
+    private var rate = 0.0
+
+    fun text(done: Long, total: Long): String {
+      val now = System.currentTimeMillis()
+      if (t0 == 0L) {
+        t0 = now
+        b0 = done
+      }
+      val dt = (now - t0) / 1000.0
+      if (dt >= 2.0) {
+        val r = (done - b0) / dt
+        rate = if (rate == 0.0) r else rate * 0.6 + r * 0.4
+        t0 = now
+        b0 = done
+      }
+      if (rate < 1000) return "Scaricamento"
+      val left = ((total - done) / rate).toLong()
+      val eta = when {
+        left < 60 -> "meno di un minuto"
+        left < 3600 -> "circa ${left / 60 + 1} min"
+        else -> "circa ${left / 3600} h ${(left % 3600) / 60} min"
+      }
+      return String.format(Locale.ITALIAN, "Scaricamento · %.1f MB/s · %s", rate / 1e6, eta)
+    }
   }
 
   fun freeBytes(): Long = StatFs(root.absolutePath).availableBytes
@@ -176,69 +248,41 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } } +
         (tiles?.parts?.map { "$RELEASES/grafo-europa/${it.name}" to it } ?: emptyList())
     val total = parts.sumOf { it.second.size }
-    val need = (total * 1.25).toLong() + (tiles?.size ?: 0)
-    if (freeBytes() < need) {
-      throw IllegalStateException("Spazio insufficiente: servono ${need / 1_000_000_000.0} GB liberi")
-    }
     val dir = File(root, id).apply { mkdirs() }
-    val tmp = File(dir, ".download").apply { mkdirs() }
-    val dm = context.getSystemService(DownloadManager::class.java)
-
-    // parts already downloaded and intact are kept (a restarted download does not start over)
-    val ids = mutableMapOf<Long, PackagePart>()
-    for ((i, pu) in parts.withIndex()) {
-      val (url, part) = pu
-      val target = File(tmp, part.name)
-      if (target.exists() && target.length() == part.size) continue
-      target.delete()
-      val req =
-          DownloadManager.Request(Uri.parse(url))
-              .setTitle("NavMaster · ${job.label} (${i + 1}/${parts.size})")
-              .setDescription("Mappe offline per mezzi pesanti")
-              .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-              .setAllowedOverMetered(!job.wifiOnly)
-              .setAllowedOverRoaming(!job.wifiOnly)
-              .setDestinationUri(Uri.fromFile(target))
-      ids[dm.enqueue(req)] = part
-    }
-    while (ids.isNotEmpty()) {
-      var done = parts.map { it.second }.filter { p -> ids.values.none { it == p } }.sumOf { it.size }
-      val finished = mutableListOf<Long>()
-      dm.query(DownloadManager.Query().setFilterById(*ids.keys.toLongArray())).use { c ->
-        while (c.moveToNext()) {
-          val did = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_ID))
-          val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-          val got = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-          when (status) {
-            DownloadManager.STATUS_SUCCESSFUL -> {
-              finished += did
-              done += ids[did]?.size ?: 0
-            }
-            DownloadManager.STATUS_FAILED -> {
-              val reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-              throw IllegalStateException("Scaricamento interrotto (codice $reason)")
-            }
-            DownloadManager.STATUS_PAUSED -> done += got
-            else -> done += got
-          }
-        }
+    // the parts of the old download manager are not reusable
+    File(dir, ".download").deleteRecursively()
+    val tmp = File(dir, ".parts").apply { mkdirs() }
+    File(tmp, "job.txt").writeText("${job.label}\n${job.useEurope}\n")
+    // what is already there from an interrupted download (the files are made full size at once,
+    // what counts is the pieces done)
+    val have = parts.sumOf { (_, p) ->
+      when {
+        File(tmp, p.name + ".ok").exists() -> p.size
+        else -> minOf(p.size, (File(tmp, p.name + ".seg").takeIf { it.exists() }?.readLines()?.size ?: 0) * FastDownloader.SEG)
       }
-      finished.forEach { ids.remove(it) }
-      setState(id, DownloadState.Running(done, total, if (job.wifiOnly) "Scaricamento (solo Wi-Fi)" else "Scaricamento"))
-      if (ids.isNotEmpty()) delay(1000)
     }
-
-    // check every part
-    var checked = 0L
-    for ((_, p) in parts) {
-      setState(id, DownloadState.Running(checked, total, "Controllo integrità"))
-      val file = File(tmp, p.name)
-      if (file.length() != p.size || sha256(file) != p.sha256) {
-        file.delete()
-        throw IllegalStateException("File ${p.name} danneggiato: riprova, verrà riscaricato solo lui")
+    // the files are written in place; only the files in several parts and the Europe tiles need room twice
+    val need = total - have + (tiles?.size ?: 0) + files.filter { it.parts.size > 1 }.sumOf { it.size } + 200_000_000
+    if (freeBytes() < need) {
+      throw IllegalStateException(String.format(Locale.ITALIAN, "Spazio insufficiente: servono %.1f GB liberi", need / 1e9))
+    }
+    Log.i(TAG, "download $id: ${parts.size} files, ${total / 1_000_000} MB")
+    val started = System.currentTimeMillis()
+    val waiting = AtomicReference<String?>(null)
+    val speed = Speed()
+    val downloader = FastDownloader(connections = 6) {
+      while (true) {
+        val why = blocked()
+        waiting.set(why)
+        if (why == null) break
+        delay(2000)
       }
-      checked += p.size
     }
+    val items = parts.map { (url, p) -> FastDownloader.Item(url, p.size, p.sha256, File(tmp, p.name)) }
+    downloader.fetch(items) { got -> setState(id, DownloadState.Running(got, total, waiting.get() ?: speed.text(got, total))) }
+    val secs = (System.currentTimeMillis() - started) / 1000.0
+    Log.i(TAG, String.format(Locale.US, "download %s: %d MB in %.0f s (%.1f MB/s)", id, total / 1_000_000, secs, total / 1e6 / secs.coerceAtLeast(0.1)))
+
     // join the parts into the final files
     for (f in files) {
       setState(id, DownloadState.Running(total, total, "Preparazione ${f.file}"))
@@ -248,7 +292,8 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       setState(id, DownloadState.Running(total, total, "Installazione grafo Europa"))
       val tar = File(tmp, "tiles-$id.tar")
       join(tiles.parts.map { File(tmp, it.name) }, tar)
-      val list = Tar.extract(tar, europeTiles)
+      val tarSize = tar.length()
+      val list = Tar.extract(tar, europeTiles) { d -> setState(id, DownloadState.Running(d, tarSize, "Installazione percorsi europei")) }
       File(dir, "europa-tiles.txt").writeText(list.joinToString("\n"))
       tar.delete()
       File(dir, "percorsi.tar").delete()
@@ -259,6 +304,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   }
 
   private fun join(parts: List<File>, out: File) {
+    if (parts.size == 1 && parts[0].absolutePath == out.absolutePath) return
     if (parts.size == 1) {
       out.delete()
       if (!parts[0].renameTo(out)) parts[0].copyTo(out, overwrite = true)
@@ -269,19 +315,6 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       for (p in parts) p.inputStream().buffered(1 shl 20).use { it.copyTo(o, 1 shl 20) }
     }
     parts.forEach { it.delete() }
-  }
-
-  private fun sha256(file: File): String {
-    val md = MessageDigest.getInstance("SHA-256")
-    file.inputStream().buffered(1 shl 20).use { input ->
-      val buf = ByteArray(1 shl 20)
-      while (true) {
-        val n = input.read(buf)
-        if (n < 0) break
-        md.update(buf, 0, n)
-      }
-    }
-    return md.digest().joinToString("") { "%02x".format(it) }
   }
 
   fun delete(id: String) {
