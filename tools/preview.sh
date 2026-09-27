@@ -95,9 +95,11 @@ sleep 16; shot 05n_svincolo_notte
 sleep 14; shot 05o_svincolo_notte_2
 sleep 5; shot 05p_svincolo_notte_3
 start --es nm_night auto; sleep 6
-# simulation controls: +2 km, back 500 m twice in a row, previous manoeuvre (positions in the log)
+# simulation controls: +2 km, back 500 m twice in a row, previous manoeuvre, next twice (positions in the log)
 start $TOLLIN --ei nm_variant 0 --ez nm_sim true --ez nm_simtest true
-sleep 62; shot 05q_simulazione_salti
+sleep 84; shot 05q_simulazione_salti
+# the positions and timings of the jumps, saved at once (the log buffer does not last the whole run)
+adb logcat -d -s NavMasterVM:* NavMasterVoice:* | grep -E "simtest|simulation|say:|new route" | tail -40 >> "$INFO" || true
 
 # live: a report of "another driver" 3 km ahead, sent and read back through ntfy (test topics, not
 # the drivers' ones), the "still there?" question once passed; the report tiles; a detour to

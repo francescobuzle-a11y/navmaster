@@ -93,7 +93,6 @@ private class Palette(night: Boolean) {
   val grassNear = if (night) Color(0xFF152014) else Color(0xFF4F9136)
   val asphalt = if (night) Color(0xFF26282C) else Color(0xFF3B3E43)
   val shoulder = if (night) Color(0xFF1E2023) else Color(0xFF2E3034)
-  val gore = if (night) Color(0xFF2E3136) else Color(0xFF474B51)
   val mark = if (night) Color(0xFFD2D5D9) else Color.White
   val rail = if (night) Color(0xFF69707A) else Color(0xFFC7CCD2)
   val post = if (night) Color(0xFF4A5058) else Color(0xFF7D848C)
@@ -208,10 +207,13 @@ internal fun DrawScope.drawJunctionScheme(md: JvModel, distM: Double, near: Bool
   strip(after, { edgeX(mainEdges.first, it, false) }, { edgeX(mainEdges.last, it, false) })?.let { drawPath(it, c.asphalt) }
   strip(after, { edgeX(branchEdges.first, it, true) }, { edgeX(branchEdges.last, it, true) })?.let { drawPath(it, c.asphalt) }
 
-  // ---- the gore between the two roads: white edges and chevrons, then grass
+  // ---- the gore between the two roads: grass, as the land around it, between the white edge
+  // lines that meet at its nose (hatching there, at this scale, only made a tangle of lines)
   val zGore = after.firstOrNull { abs(edgeX(kb, it, true) - edgeX(kb, it, false)) > 7.5 } ?: (zf + 60)
   val goreZs = after.filter { it <= zGore }
-  strip(goreZs, { edgeX(kb, it, false) }, { edgeX(kb, it, true) })?.let { drawPath(it, c.gore) }
+  strip(goreZs, { edgeX(kb, it, false) }, { edgeX(kb, it, true) })?.let {
+    drawPath(it, Brush.verticalGradient(listOf(c.grassFar, c.grassNear), hz, size.height))
+  }
 
   // ---- markings, drawn as flat strips on the road so they narrow with the distance
   fun line(k: Int, onBranch: Boolean?, z0: Double, z1: Double, width: Double) {
@@ -259,24 +261,6 @@ internal fun DrawScope.drawJunctionScheme(md: JvModel, distM: Double, near: Bool
   }
   // the line between the lanes that leave and the others: thick short dashes before the gore
   dashes(kb, null, zMark, zf, lw * 2.4, 3.0, 6.0)
-  // chevrons in the gore
-  val goreLen = zGore - zf
-  if (goreLen > 8) {
-    for (j in 1..4) {
-      val zc = zf + goreLen * j / 5.0
-      val xm = edgeX(kb, zc, false)
-      val xb = edgeX(kb, zc, true)
-      val mid = (xm + xb) / 2
-      val tip = zc - goreLen / 7.0
-      val path = Path().apply {
-        moveTo(sx(xm, zc).toFloat(), sy(zc).toFloat())
-        lineTo(sx(mid, tip).toFloat(), sy(tip).toFloat())
-        lineTo(sx(xb, zc).toFloat(), sy(zc).toFloat())
-      }
-      val sw = (kx * 0.3 * q(zc)).toFloat().coerceAtLeast(1f)
-      drawPath(path, c.mark, style = Stroke(sw, join = StrokeJoin.Miter))
-    }
-  }
 
   // ---- crash barriers along the outer edges and between the roads after the gore (near view)
   fun barrier(x: (Double) -> Double, z0: Double, z1: Double) {
