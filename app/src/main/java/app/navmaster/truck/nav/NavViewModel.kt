@@ -1161,9 +1161,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val t = target.coerceIn(0.0, (base.length - 60).coerceAtLeast(0.0))
     simTarget = t
     _nav.update { it.copy(recalculating = true) }
+    // the first tap moves at once; taps that follow while the new route is worked out add up and
+    // only the last position is computed
+    val busy = simJob?.isActive == true
     simJob?.cancel()
     simJob = viewModelScope.launch {
-      delay(350)
+      if (busy) delay(300)
       simJumpTo(t)
     }
   }

@@ -71,6 +71,8 @@ data class JunctionScene(
     val roundabout: Boolean = false,
     /** Sign of the road not taken at this junction (OSM destination tags): where the other way goes. */
     val otherSign: EdgeSign? = null,
+    /** A split of two roads (both bend away), not an exit. */
+    val fork: Boolean = false,
     /** The signs over the lanes, left to right (OSM destination:lanes), when mapped. */
     val laneSigns: List<app.navmaster.truck.routing.LaneDest>? = null,
     /** Which of those lanes the route takes (same size as [laneSigns]), when known. */
@@ -151,10 +153,10 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
   // far from the junction the lane guidance, close to it the junction view with the signs
   val near = scene.analysis == null || scene.turn || scene.roundabout ||
       scene.distanceM < (if (scene.motorway) 400.0 else 160.0)
-  val target = (1.0 - (scene.distanceM / scene.rangeM)).coerceIn(0.0, 1.0).toFloat()
-  val progress by animateFloatAsState(target, tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "junction")
-  // the position glides between two GPS fixes (one a second), so the view moves continuously
-  val smooth by animateFloatAsState(scene.traveledM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "pos")
+  // the distance glides between two GPS fixes (one a second), so the drawing moves continuously
+  val dist by animateFloatAsState(scene.distanceM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "dist")
+  // the shape of the junction is worked out once per manoeuvre, the drawing only moves
+  val model = androidx.compose.runtime.remember((scene.maneuverAtM / 25).toLong(), scene.lanes, scene.analysis) { jvModelOf(scene) }
   val laneGantry = near && !scene.turn && scene.laneSigns != null
   val hasSigns = near && (laneGantry || scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty()))
   Column(
@@ -163,8 +165,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
     BoxWithConstraints(if (fill) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(if (hasSigns) 280.dp else 240.dp)) {
       val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { (if (hasSigns) 96.dp else 0.dp).toPx() }
       Canvas(Modifier.fillMaxSize()) {
-        val a = scene.analysis
-        if (a != null) drawGarmin(scene, a, smooth.toDouble(), night, near, signsPx) else drawRoad(scene, progress, night)
+        drawJunctionScheme(model, dist.toDouble(), near, night, signsPx)
         // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
         if (hasSigns) drawGantry(signsPx, night)
       }
@@ -592,6 +593,7 @@ fun junctionSceneOf(
       turn = turnLike,
       roundabout = false,
       otherSign = other,
+      fork = type.contains("FORK"),
       laneSigns = laneDest,
       laneSignsActive = laneActive,
   )
