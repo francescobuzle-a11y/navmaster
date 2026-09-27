@@ -23,7 +23,9 @@ import app.navmaster.truck.routing.Severity
 import app.navmaster.truck.settings.TollPolicy
 import app.navmaster.truck.ui.Fmt
 import app.navmaster.truck.vehicle.TripOptions
+import com.stadiamaps.ferrostar.core.CorrectiveAction
 import com.stadiamaps.ferrostar.core.DefaultNavigationViewModel
+import com.stadiamaps.ferrostar.core.RouteDeviationHandler
 import com.stadiamaps.ferrostar.core.NavigationUiState
 import com.stadiamaps.ferrostar.core.annotation.valhalla.valhallaExtendedOSRMAnnotationPublisher
 import com.stadiamaps.ferrostar.core.location.toUserLocation
@@ -34,19 +36,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.ferrostar.GeographicCoordinate
 import uniffi.ferrostar.Route
 import uniffi.ferrostar.UserLocation
@@ -181,6 +184,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
     // everything that has to follow the vehicle while driving
     viewModelScope.launch { super.navigationUiState.collect { onNavUpdate(it) } }
+    // a jump of the simulation is not a wrong turn: no new route while the vehicle is being moved
+    core.deviationHandler = RouteDeviationHandler { _, _, waypoints ->
+      if (_simulating.value && simJumping()) CorrectiveAction.DoNothing else CorrectiveAction.GetNewRoutes(waypoints)
+    }
   }
 
   fun setLocationPermission(granted: Boolean) {
@@ -461,6 +468,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     _simulating.value = simulate
     simBase = null
     simOffset = 0.0
+    simPendingKey = null
+    simTarget = null
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     AppGraph.trip.value = v.options.copy(alternates = 0)
     asked.clear()
@@ -760,11 +769,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val key = geometryKey(geometry)
     if (key != lastGeometryKey && geometry.size > 1) {
       lastGeometryKey = key
-      if (simJumpPending) simJumpPending = false else if (simBase != null) {
-        simBase = null
-        simOffset = 0.0
+      if (key == simPendingKey) {
+        // a jump of the simulation: the same route from another point, already checked
+        simPendingKey = null
+        simTarget = null
+        Log.i(TAG, "simulation: guidance moved in ${System.currentTimeMillis() - simJumpAt} ms")
+      } else {
+        if (simBase != null) {
+          simBase = null
+          simOffset = 0.0
+          simTarget = null
+        }
+        reanalyse(geometry)
       }
-      reanalyse(geometry)
     }
     val remaining = ui.progress?.distanceRemaining ?: return
     val traveled = (extras.routeLength - remaining).coerceAtLeast(0.0)
@@ -1094,8 +1111,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var simBase: RouteAnalysis? = null
   private var simOffset = 0.0
   private var simTarget: Double? = null
-  private var simJob: Job? = null
-  @Volatile private var simJumpPending = false
+  private var simJumpAt = 0L
+  /** The route of a jump of the simulation, until the guidance is on it. */
+  @Volatile private var simPendingKey: String? = null
+  private var simMoveJob: Job? = null
   private var curLenKey = ""
   private var curLen = 0.0
 
@@ -1112,24 +1131,28 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     return simOffset + (curLen - remaining).coerceAtLeast(0.0)
   }
 
+  /** Where the vehicle is, or is being put by the last tap (the guidance takes a moment to move). */
+  private fun simWhere(): Double = simTarget?.takeIf { System.currentTimeMillis() - simJumpAt < 3000 } ?: simPosition()
+
   /** A bit ahead or back on the route (metres, negative = back). */
   fun simJump(deltaM: Double) {
     if (!_simulating.value) return
-    queueSimJump((simTarget ?: simPosition()) + deltaM)
+    queueSimJump(simWhere() + deltaM)
   }
 
   /** To the next (or previous) manoeuvre, a little before it so it is seen coming. */
   fun simManeuver(next: Boolean) {
     if (!_simulating.value) return
     val a = simBase ?: _nav.value.analysis ?: return
-    val pos = simTarget?.plus(250) ?: simPosition()
+    val pos = simWhere()
     var acc = 0.0
     val starts = mutableListOf<Double>()
     for (st in a.route.steps) {
       if (acc > 0) starts += acc
       acc += st.distance
     }
-    val target = if (next) starts.firstOrNull { it > pos + 200 } else starts.lastOrNull { it < pos - 350 }
+    // next: the first manoeuvre not already just ahead; previous: the last one passed (seen again)
+    val target = if (next) starts.firstOrNull { it - 250 > pos + 100 } else starts.lastOrNull { it < pos - 30 }
     queueSimJump((target ?: if (next) a.length - 100 else 250.0) - 250)
   }
 
@@ -1149,6 +1172,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       simManeuver(false)
       delay(12_000)
       Log.i(TAG, "simtest after previous manoeuvre: ${simPosition().toInt()}")
+      simManeuver(true)
+      delay(150)
+      simManeuver(true)
+      delay(12_000)
+      Log.i(TAG, "simtest after next next: ${simPosition().toInt()}")
     }
   }
 
@@ -1159,65 +1187,82 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       simOffset = 0.0
     }
     val t = target.coerceIn(0.0, (base.length - 60).coerceAtLeast(0.0))
+    // taps that follow before the guidance has moved add up to this position
     simTarget = t
-    _nav.update { it.copy(recalculating = true) }
-    // the first tap moves at once; taps that follow while the new route is worked out add up and
-    // only the last position is computed
-    val busy = simJob?.isActive == true
-    simJob?.cancel()
-    simJob = viewModelScope.launch {
-      if (busy) delay(300)
-      simJumpTo(t)
+    simJumpAt = System.currentTimeMillis()
+    simJumpTo(t)
+  }
+
+  /**
+   * Put the simulated vehicle at [t] metres of the whole route, at once: the guidance goes on on
+   * the same route cut at that point (no new route to compute, nothing to check again), so the
+   * distance left, and so where the vehicle is on the whole route, stays that of the whole route
+   * and the views, the lanes and the warnings are right from the first moment.
+   */
+  private fun simJumpTo(t: Double) {
+    val a = simBase ?: return
+    val r = sliceRoute(a, t) ?: return
+    Log.i(TAG, "simulation: jump to ${t.toInt()} m of ${a.length.toInt()} m (${r.steps.size} steps left)")
+    AppGraph.keep(r)
+    simOffset = t
+    simPendingKey = geometryKey(r.geometry)
+    val p = r.geometry.first()
+    locationProvider.enableSimulationOn(r)
+    simMoveJob?.cancel()
+    simMoveJob = viewModelScope.launch {
+      // the guidance goes on the new route once the simulated vehicle is there: from the old
+      // position the new route would look like a wrong turn
+      withTimeoutOrNull(1500) { lastLocation.first { it != null && Geo.dist(it.coordinates, p) < 60 } }
+      delay(40)
+      core.replaceRoute(r)
     }
   }
 
-  private suspend fun simJumpTo(t: Double) {
-    val a = simBase ?: return
-    val p = a.pointAt(t)
-    val h = Geo.bearing(a.pointAt((t - 15).coerceAtLeast(0.0)), a.pointAt(t + 15))
-    val loc = android.location.Location("sim").apply {
-      latitude = p.lat
-      longitude = p.lng
-      accuracy = 5f
-      bearing = h.toFloat()
-      speed = 15f
-      time = System.currentTimeMillis()
-    }.toUserLocation()
-    // the stops still ahead of the new position, then the destination
-    val stops = _plan.value.stops
-    val g = a.route.geometry
-    fun alongOf(c: GeographicCoordinate): Double {
-      var best = Double.MAX_VALUE
-      var at = 0.0
-      for (i in g.indices) {
-        val d = Geo.dist(g[i], c)
-        if (d < best) { best = d; at = a.cum[i] }
+  /** While a jump of the simulation is under way (nothing is said, no new route is sought). */
+  private fun simJumping(): Boolean = simPendingKey != null && System.currentTimeMillis() - simJumpAt < 3000
+
+  /** The route of [a] from [t] metres on: the same steps, instructions and geometry. */
+  private fun sliceRoute(a: RouteAnalysis, t: Double): Route? {
+    val r = a.route
+    var acc = 0.0
+    for ((k, st) in r.steps.withIndex()) {
+      val c = Geo.cumulative(st.geometry)
+      val len = c.lastOrNull() ?: 0.0
+      if (c.size < 2 || (t >= acc + len && k < r.steps.lastIndex)) {
+        acc += len
+        continue
       }
-      return at
-    }
-    val ahead = stops.dropLast(1).filter { alongOf(it.coordinate) > t + 50 } + listOfNotNull(stops.lastOrNull())
-    Log.i(TAG, "simulation: jump to ${t.toInt()} m of ${a.length.toInt()} m")
-    try {
-      val r = withContext(Dispatchers.IO) {
-        val waypoints = ahead.mapIndexed { i, st ->
-          Waypoint(coordinate = st.coordinate, kind = if (st.via && i < ahead.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+      val u = (t - acc).coerceIn(0.0, (len - 1.0).coerceAtLeast(0.0))
+      var i = 0
+      while (i < c.size - 2 && c[i + 1] <= u) i++
+      val p0 = st.geometry[i]
+      val p1 = st.geometry[i + 1]
+      val f = if (c[i + 1] > c[i]) (u - c[i]) / (c[i + 1] - c[i]) else 0.0
+      val p = GeographicCoordinate(lat = p0.lat + (p1.lat - p0.lat) * f, lng = p0.lng + (p1.lng - p0.lng) * f)
+      val share = if (len > 0) ((len - u) / len).coerceIn(0.0, 1.0) else 0.0
+      val first = st.copy(geometry = listOf(p) + st.geometry.drop(i + 1), distance = st.distance * share,
+          duration = st.duration * share, annotations = st.annotations?.drop(i))
+      val steps = listOf(first) + r.steps.drop(k + 1)
+      val geometry = ArrayList<GeographicCoordinate>()
+      for ((j, s) in steps.withIndex()) geometry += if (j == 0) s.geometry else s.geometry.drop(1)
+      if (geometry.size < 2) return null
+      // the stops still ahead, then the destination
+      val g = r.geometry
+      fun alongOf(co: GeographicCoordinate): Double {
+        var best = Double.MAX_VALUE
+        var at = 0.0
+        for (n in g.indices) {
+          val d = Geo.dist(g[n], co)
+          if (d < best) { best = d; at = a.cum[n] }
         }
-        AppGraph.routes.routes(loc, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
-      } ?: throw IllegalStateException("nessun percorso")
-      kotlinx.coroutines.currentCoroutineContext().ensureActive()
-      simOffset = t
-      simTarget = null
-      simJumpPending = true
-      locationProvider.enableSimulationOn(r)
-      core.replaceRoute(r)
-    } catch (e: kotlinx.coroutines.CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      Log.w(TAG, "simulation jump: $e")
-      simTarget = null
-    } finally {
-      if (simTarget == null) _nav.update { it.copy(recalculating = false) }
+        return at
+      }
+      val wps = r.waypoints
+      val ahead = wps.drop(1).dropLast(1).filter { alongOf(it.coordinate) > t + 50 } + listOfNotNull(wps.lastOrNull())
+      val start = wps.firstOrNull()?.copy(coordinate = p) ?: Waypoint(coordinate = p, kind = WaypointKind.BREAK)
+      return r.copy(geometry = geometry, distance = steps.sumOf { it.distance }, waypoints = listOf(start) + ahead, steps = steps)
     }
+    return null
   }
 
   /** Start a guidance to a single place right away (from the POI list or a search while driving). */
@@ -1295,6 +1340,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var announceRoute: Pair<String, uniffi.ferrostar.Route>? = null
 
   private fun announce(ui: NavigationUiState, geometry: List<GeographicCoordinate>, key: String) {
+    if (simJumping()) return
     val route = announceRoute?.takeIf { it.first == key }?.second
         ?: (_nav.value.analysis?.route?.takeIf { geometryKey(it.geometry) == key } ?: AppGraph.findRoute(geometry))
             ?.also { announceRoute = key to it }
@@ -1307,8 +1353,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
     val along = (curLen - remaining).coerceAtLeast(0.0)
     val speed = ui.location?.speed?.value ?: 0.0
-    val a = _nav.value.analysis?.takeIf { geometryKey(it.route.geometry) == key }
-    val fast = speed > 19.0 || a?.edgeAt(along)?.roadClass in setOf("motorway", "trunk")
+    val an = _nav.value.analysis
+    val a = an?.takeIf { geometryKey(it.route.geometry) == key || (simBase != null && it === simBase) }
+    val fast = speed > 19.0 || a?.edgeAt(if (a === simBase) traveledNow() else along)?.roadClass in setOf("motorway", "trunk")
     announcer.update(route, key, along, toManeuver, speed, fast, AppGraph.settings.settings.value.voiceLevel)
   }
 

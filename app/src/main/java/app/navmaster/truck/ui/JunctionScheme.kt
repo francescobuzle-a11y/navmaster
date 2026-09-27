@@ -78,7 +78,7 @@ internal fun jvModelOf(scene: JunctionScene): JvModel {
   val mainSet = (0 until n).filter { it !in branchSet }
   val fromLanes = if (lanes.size == n) lanes.indices.filter { lanes[it].active } else emptyList()
   val active = when {
-    fromLanes.isNotEmpty() && !fromLanes.containsAll(0 until n) -> fromLanes
+    fromLanes.isNotEmpty() && fromLanes.size < n -> fromLanes
     takeBranch -> branchSet
     else -> mainSet.sortedBy { abs(it - (if (side > 0) n - b - 0.5 else b - 0.5)) }.take(3).sorted()
   }.take(4)

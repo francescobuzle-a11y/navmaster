@@ -77,6 +77,9 @@ object AppGraph {
     }
   }
 
+  /** A route made here (the simulation cut at another point), found again by its geometry. */
+  fun keep(route: Route) = remember(listOf(route))
+
   /** A route computed recently with this geometry (Ferrostar reports only the geometry). */
   @Synchronized
   fun findRoute(geometry: List<GeographicCoordinate>): Route? =
