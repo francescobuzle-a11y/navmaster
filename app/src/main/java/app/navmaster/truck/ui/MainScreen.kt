@@ -283,7 +283,17 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       CritMarkers(if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList())
       LimitMarkers((if (navigating) nav.limits else plan.current?.limits ?: emptyList()).filter { it.kind != "speed_camera" })
       StopMarkers(plan.stops.map { it.coordinate })
-      if (navigating) LiveMarkers(nav.live)
+      if (navigating) {
+        // pins on the road: speed cameras (where warning about them is allowed) and the events
+        val cams = if (!settings.speedCameras) emptyList() else nav.limits.filter { l ->
+          l.kind == "speed_camera" && l.alongM > traveled - 50 &&
+              (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase().let { it !in CAMERA_WARNINGS_BANNED && it !in CAMERA_ZONE_ONLY }) &&
+              cameraFacesUs(l, nav.analysis)
+        }
+        RoadPins(cams, nav.live.filter { it.endM > traveled - 50 }) { ev ->
+          nav.analysis?.pointAt(ev.startM.coerceAtLeast(0.0))?.let { it.lat to it.lng } ?: (ev.e.lat to ev.e.lon)
+        }
+      }
     }
     }
 
@@ -549,7 +559,9 @@ private fun NavigatingOverlay(
   val jv = if (settings.junctionView) scene else null
   val fastRoad = analysis?.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
   val nextLive = live.firstOrNull { it.endM - traveled > -20 && it.startM - traveled < (if (fastRoad) 5000.0 else 2000.0) }
-  val speedKmh = ui.location?.speed?.value?.let { (it * 3.6).roundToInt() }
+  // the speed the GPS gives, or measured from the last positions when it gives none
+  val measured by vm.speedMs.collectAsState()
+  val speedKmh = (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured)?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
     TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = scene != null)
@@ -570,7 +582,9 @@ private fun NavigatingOverlay(
         // bottom bar, the map on the left
         JunctionView(jv, night, Modifier.align(Alignment.TopEnd).fillMaxWidth(0.42f).fillMaxHeight().padding(top = 4.dp, bottom = 8.dp), fill = true)
       }
-      SpeedPanel(speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
+      // the speed is in the bottom bar when the driver keeps it there, else under the limit sign
+      val speedInBar = settings.tripFields.contains("SPEED")
+      SpeedPanel(if (speedInBar) null else speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
       // places along the route: a narrow panel at the edge (the right one unless the driver chose
       // the left), under the manoeuvre bar, never in the middle of the road ahead
       val atRight = settings.poiRailSide != app.navmaster.truck.settings.PoiSide.LEFT
@@ -628,7 +642,34 @@ private fun NavigatingOverlay(
             modifier = Modifier.align(Alignment.TopStart).padding(top = 6.dp).background(Nm.Amber, CircleShape).padding(horizontal = 10.dp, vertical = 3.dp))
       }
     }
-    BottomTripBar(ui.currentStepRoadName, ui.progress?.distanceRemaining, ui.progress?.durationRemaining, Modifier.fillMaxWidth())
+    val drivenS = vm.nav.collectAsState().value.drivenS
+    val nextStop = vm.nextStopAhead(traveled)
+    val remainingM = ui.progress?.distanceRemaining
+    val remainingS = ui.progress?.durationRemaining
+    TripBar(
+        fields = settings.tripFields.mapNotNull { TripField.of(it) }.ifEmpty { listOf(TripField.SPEED, TripField.ARRIVAL, TripField.DIST_LEFT, TripField.TIME_LEFT) },
+        data = TripData(
+            speedKmh = speedKmh,
+            limitKmh = limitKmh?.let { minOf(it, vehicle.topSpeedKmh) },
+            toleranceKmh = settings.speedWarningKmh,
+            remainingM = remainingM,
+            remainingS = remainingS,
+            nextStopM = nextStop?.let { it - traveled },
+            nextStopS = nextStop?.let { at -> if (remainingM != null && remainingS != null && remainingM > 1) remainingS * (at - traveled) / remainingM else null },
+            drivenS = drivenS,
+            headingDeg = ui.location?.courseOverGround?.degrees?.toDouble(),
+            road = ui.currentStepRoadName,
+        ),
+        onChange = { i, f ->
+          AppGraph.settings.update { st ->
+            val list = st.tripFields.toMutableList()
+            while (list.size < 4) list += listOf("SPEED", "ARRIVAL", "DIST_LEFT", "TIME_LEFT")[list.size]
+            list[i] = f.name
+            st.copy(tripFields = list)
+          }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
   }
 }
 
@@ -664,19 +705,6 @@ private fun CritMarkers(list: List<Criticality>) {
   val crit = rememberGeoJsonSource(GeoJsonData.JsonString(points(list.filter { it.severity == Severity.CRITICAL }.map { it.lat to it.lon })))
   CircleLayer(id = "nm-crit-warn", source = warn, color = const(Nm.Amber), radius = const(9.dp), strokeColor = const(Color(0xFF111111)), strokeWidth = const(3.dp))
   CircleLayer(id = "nm-crit-bad", source = crit, color = const(Nm.Red), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
-}
-
-/** Traffic events and reports on the route: red closures and queues, amber hazards, blue checks. */
-@Composable
-@MaplibreComposable
-private fun LiveMarkers(list: List<app.navmaster.truck.live.RouteLiveEvent>) {
-  fun json(color: Long) = GeoJsonData.JsonString(points(list.filter { it.e.kind.color == color }.map { it.e.lat to it.e.lon }))
-  val red = rememberGeoJsonSource(json(0xFFE03131))
-  val amber = rememberGeoJsonSource(json(0xFFFFB300))
-  val blue = rememberGeoJsonSource(json(0xFF1E6FD9))
-  CircleLayer(id = "nm-live-red", source = red, color = const(Color(0xFFE03131)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
-  CircleLayer(id = "nm-live-amber", source = amber, color = const(Color(0xFFFFB300)), radius = const(9.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
-  CircleLayer(id = "nm-live-blue", source = blue, color = const(Color(0xFF1E6FD9)), radius = const(9.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
 
 @Composable

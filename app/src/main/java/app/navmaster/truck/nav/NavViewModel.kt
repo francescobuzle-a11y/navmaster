@@ -761,8 +761,65 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private var lastTick = 0L
   private var stoppedSince = 0L
 
+  // ---- the speed measured from the positions, for when the GPS (or the simulation) gives none
+  private val _speedMs = MutableStateFlow<Double?>(null)
+  val speedMs: StateFlow<Double?> = _speedMs.asStateFlow()
+  private var speedAt: GeographicCoordinate? = null
+  private var speedTime = 0L
+
+  private fun measureSpeed(loc: UserLocation?) {
+    val c = loc?.coordinates ?: return
+    val now = System.currentTimeMillis()
+    val last = speedAt
+    if (last == null || now - speedTime > 15_000) {
+      speedAt = c
+      speedTime = now
+      return
+    }
+    if (last == c) {
+      // standing still: after a few seconds without moving the speed is 0
+      if (now - speedTime > 4_000) _speedMs.value = 0.0
+      return
+    }
+    val dt = (now - speedTime) / 1000.0
+    if (dt < 0.25) return
+    val v = Geo.dist(last, c) / dt
+    if (v < 70) _speedMs.value = _speedMs.value?.let { it * 0.5 + v * 0.5 } ?: v
+    speedAt = c
+    speedTime = now
+  }
+
+  // ---- where the next stop on the way is (metres on the route), for the bottom bar
+  private var stopKey = ""
+  private var stopAlong = emptyList<Double>()
+
+  fun nextStopAhead(traveled: Double): Double? {
+    val a = _nav.value.analysis ?: return null
+    val stops = _plan.value.stops.dropLast(1)
+    if (stops.isEmpty()) return null
+    val key = "${a.length}:${stops.joinToString { "${it.coordinate.lat},${it.coordinate.lng}" }}"
+    if (key != stopKey) {
+      stopKey = key
+      val g = a.route.geometry
+      stopAlong = stops.map { st ->
+        var best = Double.MAX_VALUE
+        var at = 0.0
+        for (i in g.indices) {
+          val d = Geo.dist(g[i], st.coordinate)
+          if (d < best) {
+            best = d
+            at = a.cum[i]
+          }
+        }
+        if (best < 300) at else -1.0
+      }
+    }
+    return stopAlong.filter { it > traveled + 30 }.minOrNull()
+  }
+
   private fun onNavUpdate(ui: NavigationUiState) {
     if (!ui.isNavigating()) return
+    measureSpeed(ui.location)
     val geometry = ui.routeGeometry ?: return
     val extras = _nav.value
     // Ferrostar recalculated after a wrong turn: check the new route

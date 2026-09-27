@@ -140,6 +140,8 @@ data class Settings(
     val useEuropeGraph: Boolean = true,
     /** Maps only on Wi-Fi (off: also with mobile data, the driver often has no Wi-Fi). */
     val downloadWifiOnly: Boolean = false,
+    /** The data in the bottom bar while driving, left to right (see ui.TripField); each one can be changed by touching it. */
+    val tripFields: List<String> = listOf("SPEED", "ARRIVAL", "DIST_LEFT", "TIME_LEFT"),
     /** Optional free Mapillary token: with it the street photos also come from Mapillary. */
     val mapillaryToken: String = "",
     val speedWarningKmh: Int = 5,

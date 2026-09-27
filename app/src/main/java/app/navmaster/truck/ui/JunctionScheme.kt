@@ -73,12 +73,22 @@ internal fun jvModelOf(scene: JunctionScene): JvModel {
     }
   }
   if (b == 0) b = if (scene.fork) n / 2 else if (takeBranch) (lanes.count { it.active }.takeIf { lanes.size == n && it > 0 } ?: 1) else 1
+  val fromLanes = if (lanes.size == n) lanes.indices.filter { lanes[it].active } else emptyList()
+  // every lane to take belongs to the road to take: at a fork the lanes marked for our side all go
+  // that way (never one arrow into each road)
+  if (fromLanes.isNotEmpty() && fromLanes.size < n) {
+    b = if (takeBranch) {
+      if (side > 0) maxOf(b, n - fromLanes.min()) else maxOf(b, fromLanes.max() + 1)
+    } else {
+      if (side > 0) minOf(b, n - 1 - fromLanes.max()) else minOf(b, fromLanes.min())
+    }
+  }
   b = b.coerceIn(1, n - 1)
   val branchSet = if (side > 0) (n - b until n).toList() else (0 until b).toList()
   val mainSet = (0 until n).filter { it !in branchSet }
-  val fromLanes = if (lanes.size == n) lanes.indices.filter { lanes[it].active } else emptyList()
+  val ours = if (takeBranch) branchSet else mainSet
   val active = when {
-    fromLanes.isNotEmpty() && fromLanes.size < n -> fromLanes
+    fromLanes.isNotEmpty() && fromLanes.size < n -> fromLanes.filter { it in ours }.ifEmpty { ours }
     takeBranch -> branchSet
     else -> mainSet.sortedBy { abs(it - (if (side > 0) n - b - 0.5 else b - 0.5)) }.take(3).sorted()
   }.take(4)
@@ -122,7 +132,8 @@ internal fun DrawScope.drawJunctionScheme(md: JvModel, distM: Double, near: Bool
   // junction sits in the middle of the picture and both roads are seen leaving it, as in the
   // drawings of the dedicated navigators; parallel lines still meet on the horizon
   val gam = if (near) 0.62 else 0.75
-  val kx = if (near) w * 0.95 / roadW else w * 0.55 / roadW
+  // on a wide, low panel (a tablet held upright) the road is scaled to the height, not the width
+  val kx = if (near) min(w * 0.95, (h - horizon) * 1.7) / roadW else min(w * 0.55, (h - horizon) * 0.75) / roadW
   val camX = s * laneW * (if (near) 0.9 else 0.6)
   val zf = if (near) (14.0 + distM * 0.08).coerceIn(14.0, 46.0) else (60.0 + (distM - 400.0) * 0.1).coerceIn(60.0, 120.0)
   val zFar = zf + 20_000.0
