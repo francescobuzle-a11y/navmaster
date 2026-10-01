@@ -1514,6 +1514,44 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   }
 
   /** Plan only (emulator screenshot of the route choice). */
+  // ---- places shared from other apps (Google Maps, Waze, a geo: link, an address)
+  private val _notice = MutableStateFlow<String?>(null)
+  val notice: StateFlow<String?> = _notice.asStateFlow()
+
+  private fun showNotice(text: String) {
+    _notice.value = text
+    viewModelScope.launch {
+      delay(5000)
+      if (_notice.value == text) _notice.value = null
+    }
+  }
+
+  /**
+   * A place shared with NavMaster: the precise point is read from the link (opened when it is a
+   * short one) and becomes the destination, or a stop on the way while driving.
+   */
+  fun openShared(text: String) {
+    viewModelScope.launch {
+      showNotice("Leggo la posizione condivisa…")
+      val near = lastLocation.value?.coordinates
+      val t = runCatching { app.navmaster.truck.search.MapLinkResolver.resolve(text, near) }.getOrNull()
+      if (t == null) {
+        showNotice("Non riesco a leggere la posizione: serve la rete per i link brevi di Google Maps")
+        return@launch
+      }
+      Log.i(TAG, "shared place: ${t.label} ${t.coordinate.lat},${t.coordinate.lng} (${t.how})")
+      if (navigationUiState.value.isNavigating()) {
+        addStopDuringNav(t.coordinate, t.label)
+        showNotice("Tappa aggiunta: ${t.label}")
+      } else {
+        while (lastLocation.value == null) delay(500)
+        selectDestination(t.coordinate, t.label)
+        showNotice(if (t.how == "vista" || t.how == "ricerca") "Destinazione: ${t.label} (posizione cercata, controllala sulla mappa)"
+            else "Destinazione: ${t.label}")
+      }
+    }
+  }
+
   fun autoPlan(dest: GeographicCoordinate, label: String?) {
     viewModelScope.launch {
       while (lastLocation.value == null) delay(500)

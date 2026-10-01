@@ -162,16 +162,20 @@ class AddressIndex(private val regions: RegionManager) {
           var lat = c.getDouble(2)
           var lon = c.getDouble(3)
           var title = c.getString(1)
+          var note: String? = null
           if (number != null) {
-            val h = houses(region.id, c.getLong(0)).firstOrNull { it.num.equals(number, true) }
-                ?: houses(region.id, c.getLong(0)).firstOrNull { it.num.takeWhile { ch -> ch.isDigit() } == number.takeWhile { ch -> ch.isDigit() } }
-            if (h != null) {
-              lat = h.lat
-              lon = h.lon
-              title = "$title ${h.num}"
+            // the number in the map, or placed between the known numbers of the street
+            val e = HouseNumbers.find(number, houses(region.id, c.getLong(0)).map { HouseNumbers.Known(it.num, it.lat, it.lon) })
+            if (e != null) {
+              lat = e.lat
+              lon = e.lon
+              title = "$title $number"
+              if (!e.exact) note = "civico stimato ${e.note}"
+            } else {
+              note = "civico $number non in mappa: la via"
             }
           }
-          val detail = listOfNotNull(c.getString(4), c.getString(5), region.label).distinct().joinToString(" · ")
+          val detail = listOfNotNull(note, c.getString(4), c.getString(5), region.label).distinct().joinToString(" · ")
           out += Found(title, detail, GeographicCoordinate(lat, lon), "📍", near?.let { Geo.dist(it.lat, it.lng, lat, lon) })
         }
       }

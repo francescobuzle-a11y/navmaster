@@ -251,7 +251,40 @@ private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
   }
   Spacer(Modifier.height(10.dp))
   val shown = houses.filter { q.isBlank() || it.num.startsWith(q.trim(), ignoreCase = true) }.take(200)
-  if (houses.isEmpty()) Caption("Nessun numero civico mappato su questa via.")
+  // a number typed that is not in the map: Google's position (tablet geocoder, with the network),
+  // else placed between the known numbers of the street
+  val typed = q.trim().takeIf { Regex("^\\d{1,5}\\s*[a-zA-Z]?(/\\w+)?$").matches(it) }
+  val missing = typed != null && houses.none { it.num.equals(typed, true) }
+  var online by remember(s.id, typed) { mutableStateOf<Found?>(null) }
+  LaunchedEffect(s.id, typed) {
+    online = null
+    if (!missing || typed == null) return@LaunchedEffect
+    delay(500)
+    online = withContext(Dispatchers.IO) {
+      runCatching { app.navmaster.truck.search.Geocoder.platform("${s.name} $typed, ${s.placeName ?: ""}", GeographicCoordinate(s.lat, s.lon), 3) }
+          .getOrDefault(emptyList())
+          .firstOrNull { f -> app.navmaster.truck.core.Geo.dist(f.coordinate.lat, f.coordinate.lng, s.lat, s.lon) < 3000 &&
+              f.title.contains(typed.takeWhile { it.isDigit() }) }
+    }
+  }
+  if (missing && typed != null) {
+    val o = online
+    if (o != null) {
+      BigButton("Vai in ${s.name} $typed", Modifier.fillMaxWidth()) {
+        onPick(Found("${s.name} $typed", listOfNotNull("posizione da Google", s.placeName, r.label).joinToString(" · "), o.coordinate, "📍"))
+      }
+      Spacer(Modifier.height(8.dp))
+    } else {
+      val e = app.navmaster.truck.search.HouseNumbers.find(typed, houses.map { app.navmaster.truck.search.HouseNumbers.Known(it.num, it.lat, it.lon) })
+      if (e != null) {
+        BigButton("Vai in ${s.name} $typed (stimato ${e.note ?: ""})", Modifier.fillMaxWidth()) {
+          onPick(Found("${s.name} $typed", listOfNotNull("civico stimato", s.placeName, r.label).joinToString(" · "), GeographicCoordinate(e.lat, e.lon), "📍"))
+        }
+        Spacer(Modifier.height(8.dp))
+      }
+    }
+  }
+  if (houses.isEmpty()) Caption("Nessun numero civico mappato su questa via: scrivi il numero, lo cerco online.")
   FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     for (h in shown) {
       Text(h.num, color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold,

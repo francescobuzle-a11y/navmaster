@@ -186,6 +186,10 @@ start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profil
 sleep 32; shot 18_percorsi_telefono
 adb shell input swipe 500 500 650 800 400; sleep 3; shot 18b_percorsi_telefono_ridotti
 adb shell wm size reset; adb shell wm density reset; sleep 3
+# a place shared from Google Maps (text + link with the pin): becomes the destination
+start; sleep 14
+adb shell am start -a android.intent.action.SEND -t text/plain -n $PKG/.MainActivity --es android.intent.extra.TEXT "'Arco d Augusto https://www.google.com/maps/place/Arco+d%27Augusto/@44.0597,12.5683,17z/data=!3m1!4b1!4m6!3m5!8m2!3d44.0595836!4d12.5704111'"
+sleep 25; shot 19_condiviso_da_google
 # first start on a phone held sideways (low screen): the welcome panel must scroll, not squeeze
 adb shell pm clear $PKG || true
 adb shell wm size 2400x1080; adb shell wm density 420; sleep 3
@@ -194,6 +198,6 @@ start; sleep 18; shot 17_benvenuto_telefono_orizzontale
 adb shell input swipe 1200 800 1200 300 500; sleep 2; shot 17b_benvenuto_telefono_orizzontale_2
 adb shell wm size reset; adb shell wm density reset; sleep 3
 log
-grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|real junction" "$OUT/logcat.txt" | head -120 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|real junction|shared" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

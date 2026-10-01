@@ -37,8 +37,32 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     app.navmaster.truck.ui.UiHints.tab = intent?.getIntExtra("nm_tab", 0) ?: 0
     setContent { NmTheme { MainScreen(vm, intent?.getStringExtra("nm_sheet"), crit) } }
     handleTestIntent()
+    if (savedInstanceState == null) handleShared(intent)
     // a map download cut off (app closed, tablet restarted) goes on by itself
     AppGraph.regions.resumePending()
+  }
+
+  override fun onNewIntent(intent: android.content.Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleShared(intent)
+  }
+
+  /**
+   * A place sent from another app: "Condividi" in Google Maps (text with a link), "Apri con" on a
+   * map link, a geo: link, or an address sent as text.
+   */
+  private fun handleShared(i: android.content.Intent?) {
+    i ?: return
+    val text = when (i.action) {
+      android.content.Intent.ACTION_SEND ->
+        listOfNotNull(i.getStringExtra(android.content.Intent.EXTRA_SUBJECT), i.getStringExtra(android.content.Intent.EXTRA_TEXT))
+            .joinToString("\n").takeIf { it.isNotBlank() }
+      android.content.Intent.ACTION_VIEW -> i.dataString
+      else -> null
+    } ?: return
+    Log.i(TAG, "shared with NavMaster: ${text.take(300)}")
+    vm.openShared(text)
   }
 
   override fun onStart() {

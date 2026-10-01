@@ -388,6 +388,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       }
     }
 
+    // messages about a place shared from another app (Google Maps …)
+    val notice by vm.notice.collectAsState()
+    Toast(notice, Modifier.navigationBarsPadding())
+
     pendingPoint?.let { pt ->
       PointChooser(
           navigating = navigating,
