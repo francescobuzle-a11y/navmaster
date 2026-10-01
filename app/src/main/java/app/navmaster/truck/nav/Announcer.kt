@@ -45,9 +45,12 @@ class Announcer(
   @Volatile var speedNow = 0.0
     private set
 
+  // the moment (clock of update) when the next sentence about a manoeuvre is due: a moment, not a
+  // count of seconds, so that it stays right even if the positions stop coming for a while
+  @Volatile private var dueAtMs: Long = Long.MAX_VALUE
+
   /** Seconds until the next sentence about a manoeuvre is due (for the warnings, which wait). */
-  @Volatile var dueInS: Double = Double.MAX_VALUE
-    private set
+  fun dueInS(nowMs: Long): Double = if (dueAtMs == Long.MAX_VALUE) Double.MAX_VALUE else ((dueAtMs - nowMs) / 1000.0).coerceAtLeast(0.0)
 
   private fun clean(text: String): String? {
     val sentences = text.trim().split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
@@ -103,7 +106,7 @@ class Announcer(
       tickS = tickS * 0.7 + dt * 0.3
     }
     lastCallMs = nowMs
-    dueInS = Double.MAX_VALUE
+    dueAtMs = Long.MAX_VALUE
     val steps = route.steps
     if (steps.isEmpty()) return
     // the current step: the one whose end is where the next manoeuvre is
@@ -201,7 +204,7 @@ class Announcer(
       "$id:prep" !in done && settled -> dPrep
       else -> dNow
     }
-    dueInS = if (dueAt == null) Double.MAX_VALUE else ((toManeuver - dueAt) / v).coerceAtLeast(0.0)
+    dueAtMs = if (dueAt == null) Long.MAX_VALUE else nowMs + (((toManeuver - dueAt) / v).coerceAtLeast(0.0) * 1000).toLong()
   }
 
   companion object {

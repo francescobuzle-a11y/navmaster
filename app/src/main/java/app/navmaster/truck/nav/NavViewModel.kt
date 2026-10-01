@@ -1433,7 +1433,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private val announcerRef: Announcer? get() = runCatching { announcer }.getOrNull()
 
   init {
-    voice.maneuverDueInS = { announcer.dueInS }
+    voice.maneuverDueInS = { announcer.dueInS(android.os.SystemClock.elapsedRealtime()) }
   }
 
   /** What to say about the lanes of a step of the route (only where a lane can be missed). */

@@ -126,7 +126,7 @@ class VoiceQueue(
     // a warning only if it is over before the next manoeuvre is due
     if (next.pri <= Pri.WARN) {
       val due = runCatching { maneuverDueInS() }.getOrDefault(Double.MAX_VALUE)
-      if (due < durationS(next.text) + 1.0) return
+      if (due < durationS(next.text) + 2.0) return
     }
     pending.remove(next)
     speaking = next
