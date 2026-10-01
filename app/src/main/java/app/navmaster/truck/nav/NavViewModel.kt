@@ -870,13 +870,16 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val settings = AppGraph.settings.settings.value
 
     // difficulties ahead: say them once, in time
-    if (settings.voiceWarnings) {
-      val c = extras.criticalities.firstOrNull { c ->
-        c.kind != CritKind.RAMP && c.kind != CritKind.BAN && c.severity != Severity.INFO && c.startM - traveled in 0.0..1500.0 &&
-            "say:${c.id}" !in asked
-      }
+    // one at a time and not in a burst: the critical ones from 1.5 km, the others from 600 m, at
+    // least 10 s apart (at the start of a trip several used to be said in two seconds)
+    if (settings.voiceWarnings && now - critSaidAt > 10_000L) {
+      val c = extras.criticalities.filter { c ->
+        c.kind != CritKind.RAMP && c.kind != CritKind.BAN && c.severity != Severity.INFO &&
+            c.startM - traveled in 0.0..(if (c.severity == Severity.CRITICAL) 1500.0 else 600.0) && "say:${c.id}" !in asked
+      }.minByOrNull { it.startM }
       if (c != null) {
         asked += "say:${c.id}"
+        critSaidAt = now
         say("Attenzione, tra ${app.navmaster.truck.nav.SpeechIt.distance(c.startM - traveled)}: ${c.title}.")
       }
     }
@@ -1429,6 +1432,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   }
 
   private val saidAt = HashMap<String, Long>()
+  private var critSaidAt = 0L
 
   fun say(text: String) {
     if (!AppGraph.settings.settings.value.voiceWarnings) return

@@ -19,11 +19,15 @@ class RoutingEngine(private val context: Context, private val regions: RegionMan
   fun get(lat: Double? = null, lon: Double? = null): Valhalla? {
     val key: String
     val builder = ValhallaConfigBuilder()
-    if (regions.europeTilesInstalled()) {
+    // the country where the route starts: a country installed with its own graph (no European
+    // tiles, e.g. an older package) keeps using it, even when other countries are on the Europe graph
+    val here = if (lat != null && lon != null) regions.regionAt(lat, lon) else null
+    val ownGraph = here?.takeIf { !it.hasEuropeTiles && it.routingTar.exists() }
+    if (regions.europeTilesInstalled() && ownGraph == null) {
       key = "dir:" + regions.europeTiles.absolutePath + ":" + regions.version.value
       builder.withTileDir(regions.europeTiles.absolutePath)
     } else {
-      val region = (if (lat != null && lon != null) regions.regionAt(lat, lon) else null)
+      val region = ownGraph ?: here?.takeIf { it.routingTar.exists() }
           ?: regions.installed.value.firstOrNull { it.routingTar.exists() }
           ?: return null
       val tar = region.routingTar
