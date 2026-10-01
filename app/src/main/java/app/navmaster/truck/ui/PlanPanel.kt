@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddLocationAlt
+import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Navigation
@@ -68,8 +69,27 @@ fun PlanPanel(
     onStart: () -> Unit,
     onSimulate: () -> Unit,
     onCancel: () -> Unit,
+    collapsed: Boolean = false,
+    onExpand: () -> Unit = {},
 ) {
   var showAll by remember { mutableStateOf(false) }
+  if (collapsed && plan.variants.isNotEmpty()) {
+    // the map is being looked at: only the routes (time, type, difficulties) and the buttons, the
+    // rest of the screen stays free to move and zoom the map
+    Panel(modifier, padding = 10.dp) {
+      Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        plan.variants.forEachIndexed { i, v -> VariantChip(v, i == plan.selected) { onSelect(i) } }
+      }
+      Spacer(Modifier.height(8.dp))
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        BigButton("Dettagli", Modifier.weight(1f), Icons.Rounded.ExpandLess, BtnStyle.SECONDARY, onClick = onExpand)
+        BigButton(if (plan.addingStop) "Tieni premuto…" else "Tappa", Modifier.weight(1f), Icons.Rounded.AddLocationAlt, BtnStyle.SECONDARY,
+            onClick = onAddStop)
+        BigButton("Avvia", Modifier.weight(1.2f), Icons.Rounded.Navigation, enabled = plan.current != null && !plan.computing, onClick = onStart)
+      }
+    }
+    return
+  }
   Panel(modifier, padding = 14.dp) {
     Column(Modifier.verticalScroll(rememberScrollState())) {
       // stops
@@ -166,6 +186,24 @@ fun PlanPanel(
             onClick = onSimulate)
         BigButton("Annulla", Modifier.weight(1f), style = BtnStyle.GHOST, onClick = onCancel)
       }
+    }
+  }
+}
+
+/** A route in one line: its name, how long, and a dot for how difficult (red, amber, green). */
+@Composable
+private fun VariantChip(v: RouteVariant, selected: Boolean, onClick: () -> Unit) {
+  Row(
+      Modifier.clip(RoundedCornerShape(14.dp)).background(if (selected) Nm.Raised else Color(0x14FFFFFF))
+          .border(2.dp, if (selected) Nm.Accent else Color.Transparent, RoundedCornerShape(14.dp)).clickable(onClick = onClick)
+          .padding(horizontal = 10.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(Modifier.size(10.dp).clip(CircleShape).background(if (v.critical > 0) Nm.Red else if (v.warnings > 0) Nm.Amber else Nm.Accent))
+    Spacer(Modifier.width(8.dp))
+    Column {
+      Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+      Caption("${v.title} · ${Fmt.distanceText(v.distanceM)}" + if (v.analysis.tollKm > 0.5) " · 💶" else "", size = 12, lines = 1)
     }
   }
 }

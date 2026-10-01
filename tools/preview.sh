@@ -63,6 +63,9 @@ start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profil
 sleep 30; shot 05_scelta_percorso
 # long press on the map with a route on screen: go / pass here / avoid this zone
 adb shell input swipe 1900 700 1900 700 1600; sleep 3; shot 05i_punto_sulla_mappa
+# moving the map with a finger: the routes go down to a small bar, the map stays free
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
+sleep 30; adb shell input swipe 1500 500 1100 650 400; sleep 3; shot 05r_percorsi_ridotti
 # detail of the first difficulty: swept path, satellite, street photos, choices
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ei nm_crit 0
 sleep 40; shot 05b_criticita
@@ -177,6 +180,12 @@ adb logcat -d -s NavMasterData:* | grep -E "download|resum|removed|Tar|failed|da
 # traffic colours on the map with a (fake) TomTom key: the app must not stop; then back to normal
 start --es nm_tomtom_key ci-no-key --ez nm_traffic_map true; sleep 16; shot 15_traffico_mappa
 start --es nm_tomtom_key none --ez nm_traffic_map false; sleep 6
+# route choice on a phone (portrait, then the map moved)
+adb shell wm size 1080x2400; adb shell wm density 420; sleep 3
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
+sleep 32; shot 18_percorsi_telefono
+adb shell input swipe 500 500 650 800 400; sleep 3; shot 18b_percorsi_telefono_ridotti
+adb shell wm size reset; adb shell wm density reset; sleep 3
 # first start on a phone held sideways (low screen): the welcome panel must scroll, not squeeze
 adb shell pm clear $PKG || true
 adb shell wm size 2400x1080; adb shell wm density 420; sleep 3
@@ -185,6 +194,6 @@ start; sleep 18; shot 17_benvenuto_telefono_orizzontale
 adb shell input swipe 1200 800 1200 300 500; sleep 2; shot 17b_benvenuto_telefono_orizzontale_2
 adb shell wm size reset; adb shell wm density reset; sleep 3
 log
-grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:" "$OUT/logcat.txt" | head -120 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|real junction" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

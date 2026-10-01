@@ -877,7 +877,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       }
       if (c != null) {
         asked += "say:${c.id}"
-        say("Attenzione, tra ${Fmt.distanceText(c.startM - traveled).replace("km", "chilometri").replace(" m", " metri")}: ${c.title}.")
+        say("Attenzione, tra ${app.navmaster.truck.nav.SpeechIt.distance(c.startM - traveled)}: ${c.title}.")
       }
     }
 
@@ -887,7 +887,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       val booth = a?.nodes?.firstOrNull { it.alongM - traveled in 150.0..1100.0 && "node:${it.alongM.toLong()}" !in asked }
       if (a != null && booth != null) {
         asked += "node:${booth.alongM.toLong()}"
-        val d = Fmt.distanceText(booth.alongM - traveled).replace("km", "chilometri").replace(" m", " metri")
+        val d = app.navmaster.truck.nav.SpeechIt.distance(booth.alongM - traveled)
         val what = if (booth.isToll) when (a.boothRole(booth)) {
           "entrata" -> "casello d'ingresso in autostrada"
           "uscita" -> "casello di uscita: prepara il pagamento"
@@ -906,7 +906,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         asked += ramp.id
         val d = ramp.startM - traveled
         _nav.update { it.copy(prompt = DriverPrompt.TightRamp(ramp.id, ramp, d)) }
-        say("Attenzione: tra ${Fmt.distanceText(d).replace("km", "chilometri").replace(" m", " metri")} lo svincolo ha una curva stretta" +
+        say("Attenzione: tra ${app.navmaster.truck.nav.SpeechIt.distance(d)} lo svincolo ha una curva stretta" +
             (ramp.scene?.radiusM?.takeIf { it < 500 }?.let { ", raggio circa ${it.toInt()} metri" } ?: "") +
             ". Pensi di poterlo affrontare, o preferisci l'uscita successiva?")
         return
@@ -932,7 +932,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       val parking = extras.pois.filter { it.poi.cat in setOf("truck_parking", "services", "rest_area") && it.alongM in traveled..reach }.lastOrNull()
       _nav.update { it.copy(prompt = DriverPrompt.Break("break", (extras.drivenS / 60).toInt(), parking)) }
       say("Guidi da ${extras.drivenS / 3600} ore e ${(extras.drivenS % 3600) / 60} minuti. " +
-          (parking?.let { "Parcheggio adatto tra ${Fmt.distanceText(it.alongM - traveled).replace("km", "chilometri")}." } ?: "Pianifica la pausa."))
+          (parking?.let { "Parcheggio adatto tra ${app.navmaster.truck.nav.SpeechIt.distance(it.alongM - traveled)}." } ?: "Pianifica la pausa."))
     }
   }
 
@@ -946,7 +946,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
     if (next != null && settings.voiceWarnings) {
       asked += "live:${next.e.id}"
-      val d = Fmt.distanceText(next.startM - traveled).replace("km", "chilometri").replace(" m", " metri")
+      val d = app.navmaster.truck.nav.SpeechIt.distance(next.startM - traveled)
       val what = LiveRules.label(next.e.kind, a?.edgeAt(next.startM)?.country)
       val delay = if (next.e.delayS >= 120) ", ritardo circa ${next.e.delayS / 60} minuti" else ""
       say(if (next.e.official) "$what tra $d$delay." else "$what segnalato tra $d.")
@@ -974,7 +974,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         asked += "closed:${closed.e.id}"
         val d = closed.startM - traveled
         _nav.update { it.copy(prompt = DriverPrompt.Closure("closed:${closed.e.id}", closed, d)) }
-        say("Attenzione: tra ${Fmt.distanceText(d).replace("km", "chilometri").replace(" m", " metri")} la strada è chiusa. Cerco un'alternativa?")
+        say("Attenzione: tra ${app.navmaster.truck.nav.SpeechIt.distance(d)} la strada è chiusa. Cerco un'alternativa?")
       }
     }
   }
@@ -994,7 +994,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
           val extraKm = (alt.distance - (a.length - traveled)) / 1000.0
           val p = DriverPrompt.TollChoice("toll", (extra / 60).roundToInt().coerceAtLeast(0), extraKm, tollKm, alt, distToToll)
           _nav.update { it.copy(prompt = p) }
-          say("Tra ${Fmt.distanceText(distToToll).replace("km", "chilometri")} inizia un tratto a pedaggio. " +
+          say("Tra ${app.navmaster.truck.nav.SpeechIt.distance(distToToll)} inizia un tratto a pedaggio. " +
               "Senza pedaggio arrivi solo ${p.extraMin} minuti più tardi. Vuoi evitarlo?")
         }
       } catch (e: Exception) {
@@ -1399,9 +1399,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   }
 
   // ---- the voice of the manoeuvres (see Announcer): one at a time, at the right moment
-  private val announcer = Announcer { text ->
+  private val announcer = Announcer { text, urgent ->
     if (AppGraph.ferrostar.spokenInstructionObserver?.isMuted != true) {
-      runCatching { AppGraph.tts.tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "nm-man-${text.hashCode()}") }
+      // the manoeuvre itself goes first: what was still waiting (a warning, an earlier notice)
+      // is dropped instead of being said late, at the wrong place
+      runCatching { AppGraph.tts.tts?.speak(text, if (urgent) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, "nm-man-${text.hashCode()}") }
     }
   }
   private var announceRoute: Pair<String, uniffi.ferrostar.Route>? = null
@@ -1435,7 +1437,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val now = System.currentTimeMillis()
     if ((saidAt[text] ?: 0L) > now - 120_000) return
     saidAt[text] = now
-    runCatching { AppGraph.tts.tts?.speak(text, TextToSpeech.QUEUE_ADD, null, "nm-${text.hashCode()}") }
+    // written for the eye, said for the ear ("3,8 m" → "3 metri e 80", "SS 16" → "Statale 16")
+    val spoken = SpeechIt.normalize(text)
+    Log.i("NavMasterVoice", "say: $spoken")
+    runCatching { AppGraph.tts.tts?.speak(spoken, TextToSpeech.QUEUE_ADD, null, "nm-${text.hashCode()}") }
   }
 
   /** Used by the emulator tests: route to a point and start right away, optionally simulated. */

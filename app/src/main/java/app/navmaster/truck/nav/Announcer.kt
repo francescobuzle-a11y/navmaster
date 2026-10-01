@@ -19,7 +19,7 @@ import uniffi.ferrostar.RouteStep
  * The words are the route's own (Valhalla, in Italian), without the chained "Poi ..." parts and
  * without the distance, which is said here, at the right moment.
  */
-class Announcer(private val speak: (String) -> Unit) {
+class Announcer(private val speak: (String, Boolean) -> Unit) {
   private val done = HashSet<String>()
   private var routeKey = ""
 
@@ -32,25 +32,25 @@ class Announcer(private val speak: (String) -> Unit) {
   }
 
   /** What to say for the manoeuvre at the end of [step]: its closest spoken instruction. */
-  fun textOf(step: RouteStep): String? =
+  fun textOf(step: RouteStep): String? {
+    val raw = step.spokenInstructions.minByOrNull { it.triggerDistanceBeforeManeuver }?.text?.let { clean(it) } ?: return null
+    val p = step.visualInstructions.firstOrNull()?.primaryContent
+    // in good Italian, as a person says it (see SpeechIt); null = not said at all
+    return SpeechIt.maneuver(raw, p?.maneuverType?.name, p?.maneuverModifier?.name)
+  }
+
+  private fun rawTextOf(step: RouteStep): String? =
       step.spokenInstructions.minByOrNull { it.triggerDistanceBeforeManeuver }?.text?.let { clean(it) }
 
   /** Leaving a roundabout: already said with its entry ("prendi la 2a uscita"), never alone. */
   private fun isRoundaboutExit(step: RouteStep): Boolean {
     val type = step.visualInstructions.firstOrNull()?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
     if ("EXIT_ROUNDABOUT" in type || "EXIT_ROTARY" in type) return true
-    val t = textOf(step)?.lowercase() ?: return false
+    val t = rawTextOf(step)?.lowercase() ?: return false
     return (t.startsWith("esci") || t.startsWith("exit")) && ("rotatoria" in t || "rotonda" in t || "roundabout" in t)
   }
 
-  private fun distanceWords(m: Double): String = when {
-    m >= 950 -> {
-      val km = Math.round(m / 500.0) * 0.5
-      if (km == 1.0) "1 chilometro" else (if (km % 1.0 == 0.0) "${km.toInt()}" else "%.1f".format(java.util.Locale.ITALIAN, km)) + " chilometri"
-    }
-    m >= 100 -> "${(Math.round(m / 50.0) * 50).toInt()} metri"
-    else -> "${(Math.round(m / 10.0) * 10).toInt().coerceAtLeast(10)} metri"
-  }
+  private fun distanceWords(m: Double): String = SpeechIt.distance(m)
 
   /**
    * Called at every position. [along] metres driven on [route] (from its start), [toManeuver] to
@@ -103,7 +103,7 @@ class Announcer(private val speak: (String) -> Unit) {
           done += "$key:${index + 1}:far"
           done += "$key:${index + 1}:now"
         }
-        say(main + (then?.let { ", poi " + it.replaceFirstChar { c -> c.lowercase() } } ?: "") + ".")
+        say(main + (then?.let { ", poi " + it.replaceFirstChar { c -> c.lowercase() } } ?: "") + ".", urgent = true)
       }
       toManeuver <= dPrep && toManeuver >= 100 && toManeuver > dNow + v * 3 && settled -> if (done.add("$id:prep")) {
         done += "$id:far"
@@ -114,9 +114,9 @@ class Announcer(private val speak: (String) -> Unit) {
     }
   }
 
-  private fun say(text: String) {
+  private fun say(text: String, urgent: Boolean = false) {
     Log.i("NavMasterVoice", "say: $text")
-    speak(text)
+    speak(text, urgent)
   }
 
   companion object {

@@ -290,21 +290,37 @@ class CriticalityFinder(regions: RegionManager) {
         Criticality("db:${r.id}", kind, sev, title + where, detail, lo, max(hi, lo + 10), p.lat, p.lng, headingAt(lo), scene, est, osm = r.osm)
     return when (r.kind) {
       "narrow" -> {
+        // where the width comes from decides how sure the warning is: a width measured and mapped
+        // (width, width:carriageway) is a fact; an estimated one (est_width), "narrow=yes" or
+        // "one lane" on a two-way road are only hints, never more than a warning
         val w = r.value
         val vw = v.widthM
+        val key = info?.get("wk")?.jsonPrimitive?.contentOrNull
+        val measured = w > 0 && key != "est_width"
+        val src = when {
+          w > 0 && measured -> "Larghezza misurata in OpenStreetMap: ${Fmt.metres(w)}."
+          w > 0 -> "Larghezza stimata in OpenStreetMap: ${Fmt.metres(w)} (non misurata)."
+          else -> ""
+        }
+        fun cap(sev: Severity) = if (measured) sev else Severity.WARN
         if (w > 0) {
           when {
-            w < vw + 0.3 -> c(CritKind.NARROW, Severity.CRITICAL, "Strada troppo stretta",
-                "Larga circa ${Fmt.metres(w)} per ${Fmt.distanceText(len)}: il mezzo è largo ${Fmt.metres(vw)}.")
+            w < vw + 0.3 -> c(CritKind.NARROW, cap(Severity.CRITICAL), "Strada troppo stretta",
+                "Larga circa ${Fmt.metres(w)} per ${Fmt.distanceText(len)}: il mezzo è largo ${Fmt.metres(vw)}. $src", est = !measured)
             oneway && w < vw + 0.9 -> c(CritKind.NARROW, Severity.WARN, "Carreggiata stretta",
-                "Senso unico largo circa ${Fmt.metres(w)} per ${Fmt.distanceText(len)}.")
-            !oneway && w < 2 * vw + 0.8 && heavy -> c(CritKind.NARROW, if (w < vw + 1.2) Severity.CRITICAL else Severity.WARN,
+                "Senso unico largo circa ${Fmt.metres(w)} per ${Fmt.distanceText(len)}. $src", est = !measured)
+            !oneway && w < 2 * vw + 0.8 && heavy -> c(CritKind.NARROW, if (w < vw + 1.2) cap(Severity.CRITICAL) else Severity.WARN,
                 "Strada stretta: difficile incrociare",
-                "Larga circa ${Fmt.metres(w)} per ${Fmt.distanceText(len)}: con un altro mezzo pesante non si passa in due.")
+                "Larga circa ${Fmt.metres(w)} per ${Fmt.distanceText(len)}: con un altro mezzo pesante non si passa in due. $src", est = !measured)
             else -> null
           }
         } else if (heavy && len > 40) {
-          c(CritKind.NARROW, Severity.WARN, "Strada stretta", "Segnalata come stretta o a una sola corsia per ${Fmt.distanceText(len)}.")
+          val tagged = info?.get("narrow")?.jsonPrimitive?.contentOrNull == "yes"
+          if (tagged) c(CritKind.NARROW, Severity.WARN, "Strada stretta",
+              "Segnata come stretta in OpenStreetMap per ${Fmt.distanceText(len)} (larghezza non misurata).", est = true)
+          // "one lane" alone: often a road without a centre line but wide enough; only in the list
+          else c(CritKind.NARROW, Severity.INFO, "Forse stretta",
+              "Segnata come strada a una sola corsia per ${Fmt.distanceText(len)} (larghezza non misurata).", est = true)
         } else null
       }
       "rough" -> {

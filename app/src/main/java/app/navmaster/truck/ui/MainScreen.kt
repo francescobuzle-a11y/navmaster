@@ -1,5 +1,9 @@
 package app.navmaster.truck.ui
 
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -198,6 +202,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val mapState = rememberNavigationMapState()
   // the buttons show up when the map is touched and go away by themselves
   var lastMapTap by remember { mutableStateOf(System.currentTimeMillis()) }
+  var mapMoved by remember { mutableLongStateOf(0L) }
   // a point long-pressed on the map, waiting for "go / pass here / avoid"
   var pendingPoint by remember { mutableStateOf<GeographicCoordinate?>(null) }
 
@@ -230,7 +235,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       val key = "${l.lat},${l.lon},$at"
       if (d <= at && d > at - 400 && key !in spoken) {
         spoken += key
-        vm.say("Attenzione: tra ${Fmt.distanceText(d).replace("km", "chilometri").replace(" m", " metri")}, ${l.label} ${l.signValue ?: ""}. " +
+        vm.say("Attenzione: tra ${app.navmaster.truck.nav.SpeechIt.distance(d)}, ${l.label} ${l.signValue ?: ""}. " +
             "Il mezzo non passa, verificare la segnaletica.")
       }
     }
@@ -240,6 +245,18 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     // a new map view when the tablet turns: the old one kept drawing at the old size (a blank strip
     // on one side in portrait); the camera state survives, it is kept outside
     key(landscape) {
+    // a finger moving the map (also two fingers zooming) while routes are offered: the list of
+    // routes goes down to a small bar so the map can be looked at
+    Box(Modifier.fillMaxSize().pointerInput(Unit) {
+      awaitPointerEventScope {
+        while (true) {
+          val e = awaitPointerEvent(PointerEventPass.Initial)
+          if (e.type == PointerEventType.Move && e.changes.any { it.pressed && (it.position - it.previousPosition).getDistance() > 3f }) {
+            mapMoved = System.currentTimeMillis()
+          }
+        }
+      }
+    }) {
     NavigationMapView(
         baseStyle = BaseStyle.Uri(styleUri),
         navigationMapState = mapState,
@@ -296,6 +313,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       }
     }
     }
+    }
 
     if (navigating) {
       val booth = nav.analysis?.nodes?.firstOrNull { it.alongM > traveled - 20 }
@@ -340,6 +358,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onCrit = { openCrit = it },
           tracking = mapState.isTrackingUser,
           onPois = { poiOpen = true },
+          mapMoved = mapMoved,
       )
       // in a country whose map is not on the tablet: offer it
       // the hint goes away by itself after a while and never covers a route being chosen
@@ -458,7 +477,13 @@ private fun BrowsingOverlay(
     onCrit: (Criticality) -> Unit,
     tracking: Boolean = false,
     onPois: () -> Unit = {},
+    mapMoved: Long = 0L,
 ) {
+  // the routes panel goes down while the map is moved, and comes back with "Dettagli"
+  var collapsed by remember { mutableStateOf(false) }
+  LaunchedEffect(mapMoved) { if (mapMoved > 0 && plan.variants.isNotEmpty()) collapsed = true }
+  LaunchedEffect(plan.stops.isEmpty()) { if (plan.stops.isEmpty()) collapsed = false }
+  val screenH = LocalConfiguration.current.screenHeightDp
   Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(12.dp)) {
     // search bar
     Row(
@@ -495,7 +520,16 @@ private fun BrowsingOverlay(
       PlanPanel(
           plan, vehicleName,
           modifier = Modifier.align(if (landscape) Alignment.BottomStart else Alignment.BottomCenter)
-              .then(if (landscape) Modifier.fillMaxWidth(0.46f).fillMaxHeight(0.84f) else Modifier.fillMaxWidth().heightIn(max = 560.dp)),
+              .then(
+                  when {
+                    collapsed && landscape -> Modifier.fillMaxWidth(0.5f).padding(end = 64.dp)
+                    collapsed -> Modifier.fillMaxWidth().padding(end = 64.dp)
+                    landscape -> Modifier.fillMaxWidth(0.46f).fillMaxHeight(0.84f)
+                    // below the search bar, whatever the height of the screen
+                    else -> Modifier.fillMaxWidth().heightIn(max = (screenH * 0.66f).dp.coerceAtMost(600.dp))
+                  }),
+          collapsed = collapsed,
+          onExpand = { collapsed = false },
           onSelect = vm::selectVariant,
           onCrit = onCrit,
           onUnavoid = vm::unavoid,

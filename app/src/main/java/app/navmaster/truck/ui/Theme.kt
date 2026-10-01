@@ -83,6 +83,16 @@ object Nm {
 
 @Composable
 fun NmTheme(content: @Composable () -> Unit) {
+  // the whole interface is drawn for a tablet; on a smaller screen (a phone, upright or sideways)
+  // everything is scaled down together, so nothing is cut off or overlapped and the proportions
+  // stay the same; the map itself keeps its own scale
+  val cfg = androidx.compose.ui.platform.LocalConfiguration.current
+  val d = androidx.compose.ui.platform.LocalDensity.current
+  val shortSide = minOf(cfg.screenWidthDp, cfg.screenHeightDp).toFloat()
+  val f = (shortSide / 560f).coerceIn(0.74f, 1f)
+  androidx.compose.runtime.CompositionLocalProvider(
+      androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(d.density * f, d.fontScale.coerceAtMost(1.15f)),
+  ) {
   MaterialTheme(
       colorScheme = darkColorScheme(
           primary = Nm.Accent, onPrimary = Color.White, secondary = Nm.Accent, onSecondary = Color.White,
@@ -91,6 +101,7 @@ fun NmTheme(content: @Composable () -> Unit) {
       ),
       content = content,
   )
+  }
 }
 
 @Composable

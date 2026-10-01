@@ -125,7 +125,17 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
   override fun onTtsInitialized(tts: TextToSpeech?, status: Int) {
     if (tts != null) {
       val r = tts.setLanguage(Locale.ITALY)
-      Log.i(TAG, "TTS italiano: $r")
+      // the best Italian voice on the tablet that works without internet (the default one can
+      // be a low-quality or a network voice, which stops in a tunnel)
+      runCatching {
+        val best = tts.voices.orEmpty()
+            .filter { it.locale.language == "it" && !it.isNetworkConnectionRequired &&
+                !it.features.orEmpty().contains(android.speech.tts.TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED) }
+            .maxWithOrNull(compareBy({ it.locale.country == "IT" }, { it.quality }, { -it.latency }))
+        if (best != null) tts.voice = best
+        Log.i(TAG, "TTS italiano: $r, voce ${best?.name} qualità ${best?.quality}")
+      }.onFailure { Log.w(TAG, "scelta voce: $it") }
+      tts.setSpeechRate(0.97f)
     } else {
       Log.e(TAG, "TTS non disponibile: $status")
     }

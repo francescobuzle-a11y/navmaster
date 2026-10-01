@@ -157,6 +157,13 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
   val dist by animateFloatAsState(scene.distanceM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "dist")
   // the shape of the junction is worked out once per manoeuvre, the drawing only moves
   val model = androidx.compose.runtime.remember((scene.maneuverAtM / 25).toLong(), scene.lanes, scene.analysis) { jvModelOf(scene) }
+  // the real junction, from the roads of the offline map (worked out once, away from the screen);
+  // the drawing of a standard junction only while it is not ready or where the map has no roads
+  val real by androidx.compose.runtime.produceState<RealJv?>(null, (scene.maneuverAtM / 25).toLong(), scene.analysis, model) {
+    value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+      runCatching { realJunctionOf(scene, model) }.onFailure { android.util.Log.w("NavMasterJV", "real junction: $it") }.getOrNull()
+    }
+  }
   val laneGantry = near && !scene.turn && scene.laneSigns != null
   val hasSigns = near && (laneGantry || scene.sign != null || scene.otherSign != null || (!scene.turn && scene.mainRefs.isNotEmpty()))
   Column(
@@ -165,7 +172,9 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
     BoxWithConstraints(if (fill) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(if (hasSigns) 280.dp else 240.dp)) {
       val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { (if (hasSigns) 96.dp else 0.dp).toPx() }
       Canvas(Modifier.fillMaxSize()) {
-        drawJunctionScheme(model, dist.toDouble(), near, night, signsPx)
+        val rj = real
+        if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), near, night, signsPx)
+        else drawJunctionScheme(model, dist.toDouble(), near, night, signsPx)
         // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
         if (hasSigns) drawGantry(signsPx, night)
       }
