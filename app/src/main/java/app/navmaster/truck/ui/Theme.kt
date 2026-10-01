@@ -154,11 +154,14 @@ fun BigButton(
       horizontalArrangement = Arrangement.Center,
   ) {
     if (icon != null) {
+      // an empty text: the icon alone (narrow screens)
       Icon(icon, null, tint = if (enabled) Color.White else Nm.Muted, modifier = Modifier.size(26.dp))
-      Spacer(Modifier.width(10.dp))
+      if (text.isNotEmpty()) Spacer(Modifier.width(10.dp))
     }
-    Text(text, color = if (enabled) Color.White else Nm.Muted, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-        overflow = TextOverflow.Ellipsis)
+    if (text.isNotEmpty()) {
+      Text(text, color = if (enabled) Color.White else Nm.Muted, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+          overflow = TextOverflow.Ellipsis)
+    }
   }
 }
 

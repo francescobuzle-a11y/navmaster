@@ -195,7 +195,7 @@ object SpeechIt {
 
   /** The places or road after "verso": "Ancona" → "in direzione Ancona"; a road stays a road. */
   private fun toward(t: String): String {
-    val n = normalize(t)
+    val n = normalize(fewPlaces(t))
     return if (Regex("^(Via|Viale|Corso|Piazza|Largo|Vicolo|Piazzale)\\b").containsMatchIn(n)) "in $n"
     else if (Regex("^(A\\d)").containsMatchIn(n)) "verso l'$n"
     else if (Regex("^(Statale|Provinciale|Regionale|Tangenziale|Superstrada|Autostrada)\\b").containsMatchIn(n)) "verso la $n"
@@ -228,7 +228,7 @@ object SpeechIt {
       return normalize("$at prendi la $nth uscita$where")
     }
     TAKE_EXIT.find(raw)?.let { m ->
-      val what = normalize(m.groupValues[1])
+      val what = normalize(fewPlaces(m.groupValues[1]))
       val lead = if (side != null) "Esci a $side" else "Esci"
       // "uscita Riccione", "uscita 7, Riccione"
       return "$lead, uscita $what"
@@ -253,6 +253,35 @@ object SpeechIt {
     }
     return normalize(raw)
   }
+
+  /**
+   * The essential: at most two places of a sign ("Bologna/Firenze/Roma/Ancona" → "Bologna e
+   * Firenze"); a slash would be read out as "barra".
+   */
+  fun fewPlaces(t: String): String {
+    val parts = t.split(Regex("\\s*[/;|]\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+    return parts.take(2).joinToString(" e ")
+  }
+
+  private val WHERE = Regex(",\\s*(?:uscita|in direzione|verso)\\b|\\s(?:in direzione|verso)\\s")
+
+  /**
+   * The manoeuvre without where it goes, for the moment it is due (the place was said with the
+   * preparation): "Esci a destra, uscita Riccione" → "Esci a destra"; "Tieni la sinistra verso
+   * l'A14" → "Tieni la sinistra". A turn into a street keeps the street.
+   */
+  fun short(text: String, dropRoad: Boolean = false): String {
+    var t = text.trim().trimEnd('.', ' ')
+    WHERE.find(t)?.let { cut -> if (cut.range.first >= 8) t = t.substring(0, cut.range.first).trim().trimEnd(',') }
+    // the road too, when it was said with the preparation: "Svolta a destra in Via Roma" → "Svolta a destra"
+    if (dropRoad && TURN_LEAD.containsMatchIn(t)) {
+      ROAD.find(t)?.let { cut -> if (cut.range.first >= 8) t = t.substring(0, cut.range.first).trim().trimEnd(',') }
+    }
+    return t
+  }
+
+  private val TURN_LEAD = Regex("^(Svolta|Gira|Curva|Tieni|Esci|Mantieni)\\b")
+  private val ROAD = Regex("\\s(?:in |sulla |sul |sull')(?=[A-Z0-9À-Ý])")
 
   /** After a turn: "in Via Roma", "sulla Statale 16", "sull'A14", "in direzione Rimini" for a bare place. */
   private fun fixRoadPrep(s: String): String =

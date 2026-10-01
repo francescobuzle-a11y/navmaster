@@ -209,11 +209,15 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val traveled = if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0) else 0.0
   val nextLimit = nav.limits.firstOrNull { it.kind != "speed_camera" && it.alongM - traveled > -15 }
   // fixed speed cameras: only where warning about them is allowed, facing our way when the map says
-  val nextCamera = if (!navigating || !settings.speedCameras) null else nav.limits.firstOrNull { l ->
-    l.kind == "speed_camera" && l.alongM - traveled in -10.0..800.0 &&
-        (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED) &&
-        cameraFacesUs(l, nav.analysis)
+  // the cameras that may be announced, worked out once per route (not at every position)
+  val camerasOk = remember(nav.limits, nav.analysis, settings.enforcementEverywhere) {
+    nav.limits.filter { l ->
+      l.kind == "speed_camera" &&
+          (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED) &&
+          cameraFacesUs(l, nav.analysis)
+    }
   }
+  val nextCamera = if (!navigating || !settings.speedCameras) null else camerasOk.firstOrNull { l -> l.alongM - traveled in -10.0..800.0 }
   val cameraZoneOnly = nextCamera != null && !settings.enforcementEverywhere &&
       nav.analysis?.edgeAt(nextCamera.alongM)?.country?.uppercase() in CAMERA_ZONE_ONLY
   LaunchedEffect(nextCamera?.alongM, (nextCamera?.alongM?.minus(traveled) ?: 9999.0) < 600) {
@@ -297,17 +301,25 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         }
         plan.current?.let { BorderedPolyline(points = it.route.geometry, idPrefix = "nm-preview", color = Nm.Route, lineWidth = 11f, borderWidth = 3f) }
       }
-      CritMarkers(if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList())
-      LimitMarkers((if (navigating) nav.limits else plan.current?.limits ?: emptyList()).filter { it.kind != "speed_camera" })
-      StopMarkers(plan.stops.map { it.coordinate })
+      // the markers change with the route, not at every position: worked out once (redoing them
+      // each second rebuilt the map sources and made the map stutter)
+      val crits = if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList()
+      CritMarkers(crits)
+      val limitsAll = if (navigating) nav.limits else plan.current?.limits ?: emptyList()
+      LimitMarkers(remember(limitsAll) { limitsAll.filter { it.kind != "speed_camera" } })
+      val stopPts = remember(plan.stops) { plan.stops.map { it.coordinate } }
+      StopMarkers(stopPts)
       if (navigating) {
-        // pins on the road: speed cameras (where warning about them is allowed) and the events
-        val cams = if (!settings.speedCameras) emptyList() else nav.limits.filter { l ->
-          l.kind == "speed_camera" && l.alongM > traveled - 50 &&
-              (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase().let { it !in CAMERA_WARNINGS_BANNED && it !in CAMERA_ZONE_ONLY }) &&
-              cameraFacesUs(l, nav.analysis)
+        // pins on the road: speed cameras (where warning about them is allowed) and the events;
+        // the ones left behind go away every 250 m
+        val step = (traveled / 250).toInt()
+        val cams = remember(camerasOk, settings.speedCameras, step) {
+          if (!settings.speedCameras) emptyList() else camerasOk.filter { l ->
+            l.alongM > traveled - 50 && (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_ZONE_ONLY)
+          }
         }
-        RoadPins(cams, nav.live.filter { it.endM > traveled - 50 }) { ev ->
+        val livePins = remember(nav.live, step) { nav.live.filter { it.endM > traveled - 50 } }
+        RoadPins(cams, livePins) { ev ->
           nav.analysis?.pointAt(ev.startM.coerceAtLeast(0.0))?.let { it.lat to it.lng } ?: (ev.e.lat to ev.e.lon)
         }
       }
@@ -595,14 +607,24 @@ private fun NavigatingOverlay(
   // junction view and lane guidance only at motorway junctions and complicated multi-lane ones
   val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso)
   val jv = if (settings.junctionView) scene else null
+  // the lanes to keep, from 2 km before a motorway exit, fork or merge (400 m in town)
+  val laneGuide = laneGuideOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled)
   val fastRoad = analysis?.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
   val nextLive = live.firstOrNull { it.endM - traveled > -20 && it.startM - traveled < (if (fastRoad) 5000.0 else 2000.0) }
   // the speed the GPS gives, or measured from the last positions when it gives none
   val measured by vm.speedMs.collectAsState()
   val speedKmh = (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured)?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
-  Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
-    TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = scene != null)
+  androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
+  // the junction view fits the screen: about a third of the height upright, never taller than wide
+  val jvHeight = (maxHeight.value * 0.30f).coerceIn(150f, 300f).coerceAtMost(maxWidth.value * 0.75f).dp
+  Column(Modifier.fillMaxSize()) {
+  Row(Modifier.weight(1f).fillMaxWidth()) {
+  Column(Modifier.weight(1f).fillMaxHeight()) {
+    TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+    if (laneGuide != null) {
+      LaneStrip(laneGuide, (if (landscape && jv == null) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp))
+    }
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
         RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
@@ -613,13 +635,8 @@ private fun NavigatingOverlay(
       if (camera != null) CameraBanner(camera, (camera.alongM - traveled).coerceAtLeast(0.0), cameraZoneOnly)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
-    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp))
+    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp), height = jvHeight)
     Box(Modifier.weight(1f).fillMaxWidth()) {
-      if (jv != null && landscape) {
-        // as on the reference device: a tall panel on the right, from the manoeuvre bar down to the
-        // bottom bar, the map on the left
-        JunctionView(jv, night, Modifier.align(Alignment.TopEnd).fillMaxWidth(0.42f).fillMaxHeight().padding(top = 4.dp, bottom = 8.dp), fill = true)
-      }
       // the speed is in the bottom bar when the driver keeps it there, else under the limit sign
       val speedInBar = settings.tripFields.contains("SPEED")
       SpeedPanel(if (speedInBar) null else speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
@@ -680,6 +697,13 @@ private fun NavigatingOverlay(
             modifier = Modifier.align(Alignment.TopStart).padding(top = 6.dp).background(Nm.Amber, CircleShape).padding(horizontal = 10.dp, vertical = 3.dp))
       }
     }
+  }
+  if (jv != null && landscape) {
+    // as on the reference device: a tall panel on the right, from the top down to the bottom bar,
+    // the manoeuvre, the lanes and the map on the left
+    JunctionView(jv, night, Modifier.weight(0.72f).fillMaxHeight().padding(start = 10.dp, bottom = 8.dp), fill = true)
+  }
+  }
     val drivenS = vm.nav.collectAsState().value.drivenS
     val nextStop = vm.nextStopAhead(traveled)
     val remainingM = ui.progress?.distanceRemaining
@@ -709,6 +733,7 @@ private fun NavigatingOverlay(
         modifier = Modifier.fillMaxWidth(),
     )
   }
+  }
 }
 
 private fun vehicleValue(l: RouteLimit, v: VehicleProfile): String? =
@@ -730,8 +755,10 @@ private fun points(list: List<Pair<Double, Double>>): String =
 @Composable
 @MaplibreComposable
 private fun LimitMarkers(limits: List<RouteLimit>) {
-  val ok = rememberGeoJsonSource(GeoJsonData.JsonString(points(limits.filter { !it.blocking }.map { it.lat to it.lon })))
-  val bad = rememberGeoJsonSource(GeoJsonData.JsonString(points(limits.filter { it.blocking }.map { it.lat to it.lon })))
+  val okJson = remember(limits) { points(limits.filter { !it.blocking }.map { it.lat to it.lon }) }
+  val badJson = remember(limits) { points(limits.filter { it.blocking }.map { it.lat to it.lon }) }
+  val ok = rememberGeoJsonSource(GeoJsonData.JsonString(okJson))
+  val bad = rememberGeoJsonSource(GeoJsonData.JsonString(badJson))
   CircleLayer(id = "nm-limits-ok", source = ok, color = const(NmAmber), radius = const(7.dp), strokeColor = const(Color.White), strokeWidth = const(2.dp))
   CircleLayer(id = "nm-limits-bad", source = bad, color = const(NmRed), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
@@ -739,8 +766,10 @@ private fun LimitMarkers(limits: List<RouteLimit>) {
 @Composable
 @MaplibreComposable
 private fun CritMarkers(list: List<Criticality>) {
-  val warn = rememberGeoJsonSource(GeoJsonData.JsonString(points(list.filter { it.severity == Severity.WARN }.map { it.lat to it.lon })))
-  val crit = rememberGeoJsonSource(GeoJsonData.JsonString(points(list.filter { it.severity == Severity.CRITICAL }.map { it.lat to it.lon })))
+  val warnJson = remember(list) { points(list.filter { it.severity == Severity.WARN }.map { it.lat to it.lon }) }
+  val critJson = remember(list) { points(list.filter { it.severity == Severity.CRITICAL }.map { it.lat to it.lon }) }
+  val warn = rememberGeoJsonSource(GeoJsonData.JsonString(warnJson))
+  val crit = rememberGeoJsonSource(GeoJsonData.JsonString(critJson))
   CircleLayer(id = "nm-crit-warn", source = warn, color = const(Nm.Amber), radius = const(9.dp), strokeColor = const(Color(0xFF111111)), strokeWidth = const(3.dp))
   CircleLayer(id = "nm-crit-bad", source = crit, color = const(Nm.Red), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
@@ -748,7 +777,8 @@ private fun CritMarkers(list: List<Criticality>) {
 @Composable
 @MaplibreComposable
 private fun StopMarkers(stops: List<GeographicCoordinate>) {
-  val src = rememberGeoJsonSource(GeoJsonData.JsonString(points(stops.map { it.lat to it.lng })))
+  val json = remember(stops) { points(stops.map { it.lat to it.lng }) }
+  val src = rememberGeoJsonSource(GeoJsonData.JsonString(json))
   CircleLayer(id = "nm-stops", source = src, color = const(Color(0xFFD50000)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
 

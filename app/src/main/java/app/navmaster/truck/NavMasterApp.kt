@@ -90,9 +90,12 @@ object AppGraph {
   /** The simulated drive (its speed can be changed while it runs). */
   val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }
 
+  /** GPS + network, and through tunnels the position along the route (see SmartLocationProvider). */
+  val smartLocation by lazy { SmartLocationProvider(app) }
+
   val locationProvider by lazy {
     NavigationLocationProvider(
-        liveProviding = SmartLocationProvider(app),
+        liveProviding = smartLocation,
         simulatedProvider = simulator,
     )
   }

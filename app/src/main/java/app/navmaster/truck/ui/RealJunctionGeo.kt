@@ -18,7 +18,7 @@ import kotlin.math.min
 internal class Pt(val x: Double, val y: Double)
 
 /** A shape on the ground (or a barrier band) in metres around the junction, drawn in order. */
-internal class Shape(val kind: Int, val pts: List<Pt>, val z0: Double = 0.0, val z1: Double = 0.0)
+internal class Shape(val kind: Int, val pts: List<Pt>, val z0: Double = 0.0, val z1: Double = 0.0, val layer: Int = 0)
 
 internal class RealJv(
     val route: List<Pt>,
@@ -39,6 +39,10 @@ internal class RealJv(
 ) {
   var cacheKey = ""
   var cache: Any? = null
+  var hills: androidx.compose.ui.graphics.Path? = null
+  /** The shapes layer by layer, kind by kind (the order they are drawn in). */
+  val drawOrder: List<Shape> by lazy { shapes.sortedWith(compareBy({ it.layer }, { it.kind })) }
+  var hillsKey = ""
 
   fun along(s: Double): Pt = if (s <= nodeS) at(route, rc, s) else at(branch, bc, s - nodeS)
 
@@ -167,8 +171,11 @@ internal class RealJv(
 
       // ---- the shapes, in drawing order
       val shapes = ArrayList<Shape>()
+      // layers drawn one over the other (roads at ground level, bridges, the route, the arrows);
+      // inside a layer all the shapes of a kind go in one drawing (see drawRealJunction)
+      var layer = 0
       fun ribbon(kind: Int, c: List<Pt>, half: Double) {
-        if (c.size >= 2) shapes += Shape(kind, offset(c) { half } + offset(c) { -half }.reversed())
+        if (c.size >= 2) shapes += Shape(kind, offset(c) { half } + offset(c) { -half }.reversed(), layer = layer)
       }
       fun stripe(c: List<Pt>, off: Double, wid: Double, on: Double = 0.0, per: Double = 0.0) {
         val l = if (off != 0.0) offset(c) { off } else c
@@ -185,10 +192,11 @@ internal class RealJv(
         }
       }
       fun rail(c: List<Pt>, off: Double) {
-        if (c.size >= 2) shapes += Shape(RAIL, offset(c) { off }, 0.5, 0.8)
+        if (c.size >= 2) shapes += Shape(RAIL, offset(c) { off }, 0.5, 0.8, layer)
       }
       val ordered = roads.sortedWith(compareBy({ it.bridge }, { -(it.pts.minOf { p -> dist(p, node) }) }))
       for (t in ordered) {
+        layer = if (t.bridge) 1 else 0
         ribbon(SHOULDER, t.pts, t.half + if (t.motor) 1.2 else 0.3)
         ribbon(ASPHALT, t.pts, t.half)
         if (t.pts.minOf { dist(it, node) } > 350) continue
@@ -214,6 +222,7 @@ internal class RealJv(
       }
       // the route: the carriageway of arrival, then the road taken
       val before = route.filterIndexed { i, _ -> rc[i] <= nodeS } + node
+      layer = 2
       ribbon(SHOULDER, before, roadHalfIn + if (motorway) 1.2 else 0.3)
       ribbon(ASPHALT, before, roadHalfIn)
       ribbon(SHOULDER, branch, halfOut + if (motorway) 1.0 else 0.3)
@@ -266,8 +275,8 @@ internal class RealJv(
         val hl = offset(mid) { hh }[n - 1]
         val hr = offset(mid) { -hh }[n - 1]
         val outline = left.subList(0, n) + listOf(hl, mid.last(), hr) + right.subList(0, n).reversed()
-        shapes += Shape(ARROW_SHADOW, outline)
-        shapes += Shape(ARROW, outline)
+        shapes += Shape(ARROW_SHADOW, outline, layer = 3)
+        shapes += Shape(ARROW, outline, layer = 3)
       }
       Log.i(TAG, "real junction: ${lines.size} roads, ${roads.size} drawn, lanes $lanesIn>$lanesOut, split ${split.toInt()} m, " +
           "${if (twoWay) "two-way" else "one-way"}, ${shapes.size} shapes in ${System.currentTimeMillis() - t0} ms")

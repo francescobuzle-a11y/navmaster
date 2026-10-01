@@ -92,6 +92,8 @@ start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 16; shot 05f_guida_casello
 sleep 16; shot 05g_guida_casello_2
 sleep 3; shot 05j_guida_casello_3
+# the voice of that exit: when each sentence was queued (distance, speed) and when it was said
+adb logcat -d -s NavMasterVoice:* NavMasterLocation:* | grep -E "queued|say \(|cut|dead reckoning" | tail -30 >> "$INFO" || true
 # the same exit at night: night palette of the junction view, the gantry drawn behind the signs
 start $TOLLOUT --ei nm_variant 0 --ez nm_sim true --es nm_night night
 sleep 16; shot 05n_svincolo_notte
@@ -185,6 +187,14 @@ adb shell wm size 1080x2400; adb shell wm density 420; sleep 3
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
 sleep 32; shot 18_percorsi_telefono
 adb shell input swipe 500 500 650 800 400; sleep 3; shot 18b_percorsi_telefono_ridotti
+# lane guidance and junction view on a phone, upright and sideways (the A14 exit at Riccione)
+start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
+sleep 12; shot 20_corsie_telefono
+sleep 10; shot 20b_svincolo_telefono
+adb shell wm size 2400x1080; sleep 3
+start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
+sleep 12; shot 21_corsie_telefono_orizzontale
+sleep 10; shot 21b_svincolo_telefono_orizzontale
 adb shell wm size reset; adb shell wm density reset; sleep 3
 # a place shared from Google Maps (text + link with the pin): becomes the destination
 start; sleep 14
@@ -198,6 +208,6 @@ start; sleep 18; shot 17_benvenuto_telefono_orizzontale
 adb shell input swipe 1200 800 1200 300 500; sleep 2; shot 17b_benvenuto_telefono_orizzontale_2
 adb shell wm size reset; adb shell wm density reset; sleep 3
 log
-grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|real junction|shared" "$OUT/logcat.txt" | head -120 >> "$INFO"
+grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|say \(|queued|real junction|shared" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
 echo done >> "$INFO"

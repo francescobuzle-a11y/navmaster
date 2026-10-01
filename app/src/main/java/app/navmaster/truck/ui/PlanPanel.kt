@@ -81,11 +81,16 @@ fun PlanPanel(
         plan.variants.forEachIndexed { i, v -> VariantChip(v, i == plan.selected) { onSelect(i) } }
       }
       Spacer(Modifier.height(8.dp))
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        BigButton("Dettagli", Modifier.weight(1f), Icons.Rounded.ExpandLess, BtnStyle.SECONDARY, onClick = onExpand)
-        BigButton(if (plan.addingStop) "Tieni premuto…" else "Tappa", Modifier.weight(1f), Icons.Rounded.AddLocationAlt, BtnStyle.SECONDARY,
-            onClick = onAddStop)
-        BigButton("Avvia", Modifier.weight(1.2f), Icons.Rounded.Navigation, enabled = plan.current != null && !plan.computing, onClick = onStart)
+      androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // on a phone the three words do not fit: "Dettagli" becomes its arrow alone (never cut)
+        val narrow = maxWidth < 430.dp
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+          if (narrow) BigButton("", Modifier.width(64.dp), Icons.Rounded.ExpandLess, BtnStyle.SECONDARY, onClick = onExpand)
+          else BigButton("Dettagli", Modifier.weight(1f), Icons.Rounded.ExpandLess, BtnStyle.SECONDARY, onClick = onExpand)
+          BigButton(if (plan.addingStop) (if (narrow) "Premi…" else "Tieni premuto…") else "Tappa", Modifier.weight(1f),
+              Icons.Rounded.AddLocationAlt, BtnStyle.SECONDARY, onClick = onAddStop)
+          BigButton("Avvia", Modifier.weight(1.2f), Icons.Rounded.Navigation, enabled = plan.current != null && !plan.computing, onClick = onStart)
+        }
       }
     }
     return

@@ -19,7 +19,11 @@ class VoiceFilter(private val inner: SpokenInstructionObserver, private val leve
     Log.d("NavMasterVoice", "route cue left to the Announcer: ${spokenInstruction.text}")
   }
 
-  override fun stopAndClearQueue() = inner.stopAndClearQueue()
+  // the voice is NavMaster's own (VoiceQueue): the navigation core must not cut a sentence in the
+  // middle (it asks for this on its own events); the guidance stops its voice itself when it ends
+  override fun stopAndClearQueue() {
+    Log.d("NavMasterVoice", "core asked to stop the voice: left to the voice queue")
+  }
 
   override fun setMuted(isMuted: Boolean) = inner.setMuted(isMuted)
 

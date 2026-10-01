@@ -146,20 +146,28 @@ fun RefPlate(ref: String, country: String?, big: Boolean = false, night: Boolean
  * with the real road numbers and towns. The fork comes closer as the vehicle does, smoothly.
  */
 @Composable
-fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier, fill: Boolean = false) {
+fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier, fill: Boolean = false,
+                 height: androidx.compose.ui.unit.Dp = 260.dp) {
+  // the same manoeuvre keeps the same key while its point wobbles with the GPS by a few metres (a
+  // key that changed at every 25 m boundary rebuilt the whole junction from the map again)
+  val anchor = androidx.compose.runtime.remember { DoubleArray(1) { scene.maneuverAtM } }
+  if (kotlin.math.abs(scene.maneuverAtM - anchor[0]) > 60) anchor[0] = scene.maneuverAtM
+  val mKey = anchor[0].toLong()
   // the driver can close the panel for this manoeuvre (×, top left, as on the reference device)
-  var closed by androidx.compose.runtime.remember((scene.maneuverAtM / 10).toLong()) { androidx.compose.runtime.mutableStateOf(false) }
+  var closed by androidx.compose.runtime.remember(mKey) { androidx.compose.runtime.mutableStateOf(false) }
   if (closed) return
-  // far from the junction the lane guidance, close to it the junction view with the signs
-  val near = scene.analysis == null || scene.turn || scene.roundabout ||
-      scene.distanceM < (if (scene.motorway) 400.0 else 160.0)
-  // the distance glides between two GPS fixes (one a second), so the drawing moves continuously
-  val dist by animateFloatAsState(scene.distanceM.toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "dist")
+  // the junction view: the junction seen from just before it, with the signs (the lanes to keep
+  // from farther away are in the lane guidance bar, LaneStrip)
+  val near = true
+  // the distance glides between two GPS fixes (one a second), so the drawing moves continuously;
+  // farther than 400 m the picture does not change (the camera waits before the junction), so it
+  // is not redrawn at every frame
+  val dist by animateFloatAsState(min(scene.distanceM, 400.0).toFloat(), tween(1000, easing = androidx.compose.animation.core.LinearEasing), label = "dist")
   // the shape of the junction is worked out once per manoeuvre, the drawing only moves
-  val model = androidx.compose.runtime.remember((scene.maneuverAtM / 25).toLong(), scene.lanes, scene.analysis) { jvModelOf(scene) }
+  val model = androidx.compose.runtime.remember(mKey, scene.lanes, scene.analysis) { jvModelOf(scene) }
   // the real junction, from the roads of the offline map (worked out once, away from the screen);
   // the drawing of a standard junction only while it is not ready or where the map has no roads
-  val real by androidx.compose.runtime.produceState<RealJv?>(null, (scene.maneuverAtM / 25).toLong(), scene.analysis, model) {
+  val real by androidx.compose.runtime.produceState<RealJv?>(null, mKey, scene.analysis, model) {
     value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
       runCatching { realJunctionOf(scene, model) }.onFailure { android.util.Log.w("NavMasterJV", "real junction: $it") }.getOrNull()
     }
@@ -169,8 +177,10 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
   Column(
       modifier.shadow(10.dp, RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(Color(0xFF0C1117)),
   ) {
-    BoxWithConstraints(if (fill) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(if (hasSigns) 280.dp else 240.dp)) {
-      val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { (if (hasSigns) 96.dp else 0.dp).toPx() }
+    BoxWithConstraints(if (fill) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(height)) {
+      // the signs take a part of the picture that suits its height (small phones, big tablets)
+      val signsDp = if (hasSigns) (maxHeight.value * 0.36f).coerceIn(72f, 110f).dp else 0.dp
+      val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { signsDp.toPx() }
       Canvas(Modifier.fillMaxSize()) {
         val rj = real
         if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), near, night, signsPx)
@@ -546,7 +556,8 @@ fun junctionSceneOf(
   val complex = lanesMatter(lanes) && multiLane && here?.roadClass !in MINOR_CLASSES && !roundabout
   if (!motorwayJunction && !complex) return null
   val turnLike = false
-  val range = if (motorway || motorwayJunction) 1000.0 else 350.0
+  // the junction view only close to the junction (the lane guidance bar shows the lanes from 2 km)
+  val range = if (motorway || motorwayJunction) 600.0 else 220.0
   if (distanceM > range) return null
   val sign = a?.signNear(at)
   // the signs mapped in OSM at this junction: the road taken and the one left aside

@@ -66,7 +66,8 @@ private fun points(list: List<Pair<Double, Double>>): String =
 @MaplibreComposable
 private fun PinLayer(id: String, at: List<Pair<Double, Double>>, glyph: String, ring: Long) {
   val painter = remember(glyph, ring) { pin(glyph, ring.toInt()) }
-  val src = rememberGeoJsonSource(GeoJsonData.JsonString(points(at)))
+  val json = androidx.compose.runtime.remember(at) { points(at) }
+  val src = rememberGeoJsonSource(GeoJsonData.JsonString(json))
   SymbolLayer(
       id = id,
       source = src,
@@ -84,8 +85,10 @@ private fun PinLayer(id: String, at: List<Pair<Double, Double>>, glyph: String, 
 @Composable
 @MaplibreComposable
 fun RoadPins(cameras: List<RouteLimit>, live: List<RouteLiveEvent>, where: (RouteLiveEvent) -> Pair<Double, Double>) {
-  PinLayer("nm-pin-camera", cameras.map { it.lat to it.lon }, "📷", 0xFFD32F2F)
+  PinLayer("nm-pin-camera", androidx.compose.runtime.remember(cameras) { cameras.map { it.lat to it.lon } }, "📷", 0xFFD32F2F)
+  // grouped once per change of the events, not at every position
+  val byKind = androidx.compose.runtime.remember(live) { LiveKind.entries.associateWith { k -> live.filter { it.e.kind == k }.map(where) } }
   for (k in LiveKind.entries) {
-    PinLayer("nm-pin-${k.name.lowercase()}", live.filter { it.e.kind == k }.map(where), k.icon, k.color)
+    PinLayer("nm-pin-${k.name.lowercase()}", byKind[k].orEmpty(), k.icon, k.color)
   }
 }

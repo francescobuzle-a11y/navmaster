@@ -1,6 +1,5 @@
 package app.navmaster.truck.nav
 
-import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.lifecycle.viewModelScope
 import app.navmaster.truck.AppGraph
@@ -471,6 +470,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     simPendingKey = null
     simTarget = null
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
+    // the route for the tunnels (the position goes on along it when the satellites are silent)
+    AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry)
     AppGraph.trip.value = v.options.copy(alternates = 0)
     asked.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
@@ -734,6 +735,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   }
 
   override fun stopNavigation() {
+    AppGraph.smartLocation.setRoute(null)
+    voice.clear()
+    drivenPending = 0L
     stopLive()
     locationProvider.disableSimulation()
     _simulating.value = false
@@ -759,6 +763,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private fun geometryKey(g: List<GeographicCoordinate>) = "${g.size}:${g.firstOrNull()}:${g.lastOrNull()}"
 
   private var lastTick = 0L
+  private var drivenPending = 0L
   private var stoppedSince = 0L
 
   // ---- the speed measured from the positions, for when the GPS (or the simulation) gives none
@@ -826,6 +831,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val key = geometryKey(geometry)
     if (key != lastGeometryKey && geometry.size > 1) {
       lastGeometryKey = key
+      AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry)
       if (key == simPendingKey) {
         // a jump of the simulation: the same route from another point, already checked
         simPendingKey = null
@@ -846,14 +852,24 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     // driving time (EU rules: a 45 minute break after 4 h 30 of driving)
     val now = System.currentTimeMillis()
     val speed = ui.location?.speed?.value ?: 0.0
+    // (added up here and handed to the screen every 20 s: a change of the state at every position
+    // redrew the whole screen once more each second)
     if (lastTick > 0) {
-      val dt = (now - lastTick) / 1000
-      if (speed > 1.5) {
+      val dtMs = (now - lastTick).coerceIn(0L, 10_000L)
+      if (speed > 1.5 || (_speedMs.value ?: 0.0) > 1.5) {
         stoppedSince = 0
-        _nav.update { it.copy(drivenS = it.drivenS + dt) }
+        drivenPending += dtMs
+        if (drivenPending >= 20_000L) {
+          val add = drivenPending / 1000
+          drivenPending -= add * 1000
+          _nav.update { it.copy(drivenS = it.drivenS + add) }
+        }
       } else {
         if (stoppedSince == 0L) stoppedSince = now
-        if (now - stoppedSince > 45 * 60_000L) _nav.update { it.copy(drivenS = 0) }
+        if (now - stoppedSince > 45 * 60_000L && extras.drivenS > 0) {
+          drivenPending = 0L
+          _nav.update { it.copy(drivenS = 0) }
+        }
       }
     }
     lastTick = now
@@ -1401,15 +1417,37 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
+  // ---- the voice: one sentence at a time, never cut, never late (see VoiceQueue)
+  private val voice = VoiceQueue(viewModelScope, { AppGraph.tts.tts }, { AppGraph.ferrostar.spokenInstructionObserver?.isMuted == true })
+
   // ---- the voice of the manoeuvres (see Announcer): one at a time, at the right moment
-  private val announcer = Announcer { text, urgent ->
-    if (AppGraph.ferrostar.spokenInstructionObserver?.isMuted != true) {
-      // the manoeuvre itself goes first: what was still waiting (a warning, an earlier notice)
-      // is dropped instead of being said late, at the wrong place
-      runCatching { AppGraph.tts.tts?.speak(text, if (urgent) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, "nm-man-${text.hashCode()}") }
-    }
-  }
+  private val announcer = Announcer(
+      speak = { text, urgent, tag, valid ->
+        Log.i("NavMasterVoice", "queued ${if (urgent) "now" else "prep"} at ${announcerRef?.toManeuverNow?.toInt()} m, " +
+            "${"%.1f".format((announcerRef?.speedNow ?: 0.0) * 3.6)} km/h: $text")
+        voice.say(text, if (urgent) VoiceQueue.Pri.NOW else VoiceQueue.Pri.PREP, if (urgent) 4_000L else 6_000L, "man:$tag", valid)
+      },
+      durationS = { voice.durationS(it) },
+  )
   private var announceRoute: Pair<String, uniffi.ferrostar.Route>? = null
+  private val announcerRef: Announcer? get() = runCatching { announcer }.getOrNull()
+
+  init {
+    voice.maneuverDueInS = { announcer.dueInS }
+  }
+
+  /** What to say about the lanes of a step of the route (only where a lane can be missed). */
+  private fun lanePhrase(route: uniffi.ferrostar.Route, index: Int, maneuverAt: Double, a: RouteAnalysis?): String? {
+    val st = route.steps.getOrNull(index) ?: return null
+    val vi = st.visualInstructions.lastOrNull() ?: return null
+    val p = vi.primaryContent
+    val lanes = (vi.subContent?.laneInfo ?: p.laneInfo).orEmpty().map { LanePlan.In(it.directions, it.active, it.activeDirection) }
+    val before = a?.edgeAt((maneuverAt - 60).coerceAtLeast(0.0))
+    val after = a?.edgeAt(maneuverAt + 120)
+    val motorway = before?.roadClass in setOf("motorway", "trunk") || after?.roadClass in setOf("motorway", "trunk")
+    val out = a?.junctionShapeNear(maneuverAt, 90.0)?.outLanes?.takeIf { it >= 1 } ?: after?.lanes?.takeIf { it >= 1 }
+    return LanePlan.of(lanes, p.maneuverType?.name ?: "", p.maneuverModifier?.name ?: "", before?.lanes, out, motorway)?.say
+  }
 
   private fun announce(ui: NavigationUiState, geometry: List<GeographicCoordinate>, key: String) {
     if (simJumping()) return
@@ -1424,11 +1462,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       curLen = Geo.cumulative(geometry).lastOrNull() ?: 0.0
     }
     val along = (curLen - remaining).coerceAtLeast(0.0)
-    val speed = ui.location?.speed?.value ?: 0.0
+    // the real speed: the GPS one, or the one measured from the positions when larger (a
+    // simulation moves faster than the speed it reports)
+    val speed = maxOf(ui.location?.speed?.value ?: 0.0, _speedMs.value ?: 0.0)
     val an = _nav.value.analysis
     val a = an?.takeIf { geometryKey(it.route.geometry) == key || (simBase != null && it === simBase) }
     val fast = speed > 19.0 || a?.edgeAt(if (a === simBase) traveledNow() else along)?.roadClass in setOf("motorway", "trunk")
-    announcer.update(route, key, along, toManeuver, speed, fast, AppGraph.settings.settings.value.voiceLevel)
+    val base = if (a === simBase) traveledNow() - along else 0.0
+    announcer.update(route, key, along, toManeuver, speed, fast, AppGraph.settings.settings.value.voiceLevel,
+        android.os.SystemClock.elapsedRealtime()) { i -> lanePhrase(route, i, base + along + toManeuver, a) }
   }
 
   private val saidAt = HashMap<String, Long>()
@@ -1443,9 +1485,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     saidAt[text] = now
     // written for the eye, said for the ear ("3,8 m" → "3 metri e 80", "SS 16" → "Statale 16")
     val spoken = SpeechIt.normalize(text)
-    Log.i("NavMasterVoice", "say: $spoken")
-    runCatching { AppGraph.tts.tts?.speak(spoken, TextToSpeech.QUEUE_ADD, null, "nm-${text.hashCode()}") }
+    // a warning with a distance is worth saying only within a few seconds; a question or a
+    // message a little longer
+    val warn = WARN_WORDS.containsMatchIn(text)
+    voice.say(spoken, if (warn) VoiceQueue.Pri.WARN else VoiceQueue.Pri.INFO, if (warn) 7_000L else 12_000L)
   }
+
+  private val WARN_WORDS = Regex("\\b(tra|attenzione)\\b", RegexOption.IGNORE_CASE)
 
   /** Used by the emulator tests: route to a point and start right away, optionally simulated. */
   fun autoRun(dest: GeographicCoordinate, label: String?, simulate: Boolean, variant: Int? = null) {

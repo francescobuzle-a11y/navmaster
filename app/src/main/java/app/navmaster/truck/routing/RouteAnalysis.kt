@@ -217,7 +217,29 @@ class RouteAnalysis(
   fun laneSignsNear(alongM: Double): LaneSigns? =
       laneSigns.filter { it.atM >= alongM - 400 && it.atM <= alongM + 40 }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
 
-  fun edgeAt(alongM: Double): EdgeInfo? = edges.firstOrNull { alongM >= it.startM && alongM < it.endM }
+  // the edges in route order (they are, from trace_attributes): found by halving, several times a
+  // second on long routes (a scan of thousands of edges at every call was a cause of lag)
+  private val edgesSorted: Boolean = edges.zipWithNext().all { (x, y) -> y.startM >= x.startM }
+
+  fun edgeAt(alongM: Double): EdgeInfo? {
+    if (edges.isEmpty()) return null
+    if (!edgesSorted) return edges.firstOrNull { alongM >= it.startM && alongM < it.endM }
+    var lo = 0
+    var hi = edges.size - 1
+    if (alongM < edges[0].startM) return null
+    while (lo < hi) {
+      val mid = (lo + hi + 1) / 2
+      if (edges[mid].startM <= alongM) lo = mid else hi = mid - 1
+    }
+    // edges of zero length or overlapping: the first one that really contains the point
+    var i = lo
+    while (i > 0 && edges[i - 1].startM == edges[i].startM) i--
+    for (j in (i - 3).coerceAtLeast(0) until minOf(edges.size, lo + 3)) {
+      val e = edges[j]
+      if (alongM >= e.startM && alongM < e.endM) return e
+    }
+    return null
+  }
 
   fun pointAt(alongM: Double): GeographicCoordinate = Geo.pointAt(route.geometry, cum, alongM)
 
