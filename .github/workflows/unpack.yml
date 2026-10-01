@@ -1,7 +1,8 @@
 # Changes arrive as one packed file (inbox/*.b64 = base64 of a .tar.gz, inbox/*.b85 = base85 of a .tar.xz):
 # this workflow unpacks it into the repository, applies the diffs in .patches/, commits, and starts
 # the builds concerned. Optional control files in the bundle: .dati-regions (regions for dati.yml,
-# e.g. "europa"), .run-app (build the app even without app changes).
+# e.g. "europa"), .run-app (build the app even without app changes), .run-preview (also the
+# emulator run with screenshots, about 30 minutes: only when needed).
 name: Scompatta pacchetto
 
 on:
@@ -41,7 +42,8 @@ jobs:
           fi
           regions=$(cat .dati-regions 2>/dev/null | tr -d ' \n' || true)
           runapp=$([ -f .run-app ] && echo 1 || echo 0)
-          rm -f .dati-regions .run-app
+          preview=$([ -f .run-preview ] && echo true || echo false)
+          rm -f .dati-regions .run-app .run-preview
           if [ -f .delete-list ]; then
             while read -r p; do [ -n "$p" ] && git rm -rq --ignore-unmatch "$p"; done < .delete-list
             rm -f .delete-list
@@ -62,13 +64,14 @@ jobs:
           [ "$runapp" = 1 ] && app=1
           [ -n "$regions" ] && dati=1
           echo "app=$app" >> $GITHUB_OUTPUT
+          echo "preview=$preview" >> $GITHUB_OUTPUT
           echo "dati=$dati" >> $GITHUB_OUTPUT
           echo "regions=${regions:-romania,italy,test}" >> $GITHUB_OUTPUT
           echo "first=$( [ -f .first-run ] && echo 1 || echo 0)" >> $GITHUB_OUTPUT
       - name: Avvia la build dell'app
         if: steps.u.outputs.app == '1'
         env: {GH_TOKEN: "${{ github.token }}"}
-        run: gh workflow run app.yml --ref main
+        run: gh workflow run app.yml --ref main -f preview=${{ steps.u.outputs.preview }}
       - name: Avvia la preparazione dei dati offline
         if: steps.u.outputs.dati == '1'
         env: {GH_TOKEN: "${{ github.token }}"}
