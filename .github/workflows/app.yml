@@ -7,6 +7,11 @@ on:
     branches: [main]
     paths-ignore: ["docs/**", "*.md", "data/**", ".github/workflows/dati.yml", "inbox/**"]
   workflow_dispatch:
+    inputs:
+      preview:
+        description: "Prova sull'emulatore con gli screenshot (circa 30 minuti)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -62,8 +67,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: {name: apk, path: out/*.apk, retention-days: 5}
 
+  # the emulator run (about 30 minutes) only when asked: [preview] in the commit message or the
+  # "preview" choice of a manual / bundle run
   preview:
     needs: build
+    if: ${{ inputs.preview == true || contains(github.event.head_commit.message, '[preview]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
