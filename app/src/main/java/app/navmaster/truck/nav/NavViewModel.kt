@@ -102,6 +102,8 @@ data class PlanState(
     val addingStop: Boolean = false,
     /** Zones the driver marked on the map to stay away from. */
     val avoidAreas: List<GeographicCoordinate> = emptyList(),
+    /** A departure chosen by the driver (to try a trip in simulation); null = where the vehicle is. */
+    val start: Stop? = null,
 ) {
   val current: RouteVariant?
     get() = variants.getOrNull(selected)
@@ -285,6 +287,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
 
   fun startAddingStop() = _plan.update { it.copy(addingStop = true) }
 
+  /** The trip starts from [coordinate] instead of the position of the vehicle (simulation only). */
+  fun setStart(coordinate: GeographicCoordinate, label: String?) {
+    _plan.update { it.copy(start = Stop(coordinate, label ?: "Partenza scelta"), variants = emptyList(), error = null, advice = null) }
+    if (_plan.value.stops.isNotEmpty()) planRoutes()
+  }
+
+  /** Back to the position of the vehicle as the departure. */
+  fun clearStart() {
+    if (_plan.value.start == null) return
+    _plan.update { it.copy(start = null, variants = emptyList(), error = null, advice = null) }
+    if (_plan.value.stops.isNotEmpty()) planRoutes()
+  }
+
   /**
    * "Pass here": the point goes where it lengthens the trip the least (between the start and the
    * first stop, between two stops, ...), so the driver only has to show where, not when.
@@ -361,7 +376,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   fun planRoutes(then: ((PlanState) -> Unit)? = null) {
     val p = _plan.value
     if (p.stops.isEmpty()) return
-    val from = lastLocation.value
+    // the departure chosen by the driver, or where the vehicle is
+    val from = p.start?.let { st ->
+      android.location.Location("start").apply {
+        latitude = st.coordinate.lat
+        longitude = st.coordinate.lng
+        accuracy = 5f
+        time = System.currentTimeMillis()
+      }.toUserLocation()
+    } ?: lastLocation.value
     if (from == null) {
       _plan.value = p.copy(error = "Posizione non ancora disponibile: attendi il segnale GPS o di rete")
       return
@@ -462,8 +485,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
 
   // ------------------------------------------------------------------------------ guidance
 
-  fun start(simulate: Boolean) {
+  fun start(simulate0: Boolean) {
     val v = _plan.value.current ?: return
+    // a trip from a departure chosen on the map can only be simulated (the vehicle is elsewhere)
+    val simulate = simulate0 || _plan.value.start != null
     _simulating.value = simulate
     simBase = null
     simOffset = 0.0

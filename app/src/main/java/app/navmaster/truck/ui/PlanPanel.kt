@@ -71,7 +71,12 @@ fun PlanPanel(
     onCancel: () -> Unit,
     collapsed: Boolean = false,
     onExpand: () -> Unit = {},
+    onPickStart: () -> Unit = {},
+    onClearStart: () -> Unit = {},
 ) {
+  // a departure chosen by the driver: the trip can only be simulated
+  val startLabel = if (plan.start != null) "Simula" else "Avvia"
+  val startIcon = if (plan.start != null) Icons.Rounded.PlayCircleOutline else Icons.Rounded.Navigation
   var showAll by remember { mutableStateOf(false) }
   if (collapsed && plan.variants.isNotEmpty()) {
     // the map is being looked at: only the routes (time, type, difficulties) and the buttons, the
@@ -89,7 +94,7 @@ fun PlanPanel(
           else BigButton("Dettagli", Modifier.weight(1f), Icons.Rounded.ExpandLess, BtnStyle.SECONDARY, onClick = onExpand)
           BigButton(if (plan.addingStop) (if (narrow) "Premi…" else "Tieni premuto…") else "Tappa", Modifier.weight(1f),
               Icons.Rounded.AddLocationAlt, BtnStyle.SECONDARY, onClick = onAddStop)
-          BigButton("Avvia", Modifier.weight(1.2f), Icons.Rounded.Navigation, enabled = plan.current != null && !plan.computing, onClick = onStart)
+          BigButton(startLabel, Modifier.weight(1.2f), startIcon, enabled = plan.current != null && !plan.computing, onClick = onStart)
         }
       }
     }
@@ -97,6 +102,23 @@ fun PlanPanel(
   }
   Panel(modifier, padding = 14.dp) {
     Column(Modifier.verticalScroll(rememberScrollState())) {
+      // the departure: where the vehicle is, or a point chosen to try the trip in simulation
+      Row(verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onPickStart).padding(vertical = 2.dp)) {
+        Box(Modifier.size(28.dp).clip(CircleShape).background(Nm.Accent), contentAlignment = Alignment.Center) {
+          Text("▶", fontSize = 12.sp, color = Color.White)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+          Text(plan.start?.label ?: "La tua posizione", color = Nm.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+              overflow = TextOverflow.Ellipsis)
+          Caption(if (plan.start != null) "Partenza scelta: solo simulazione" else "Partenza · tocca per sceglierne un'altra (simulazione)", size = 12)
+        }
+        if (plan.start != null) {
+          Icon(Icons.Rounded.Close, "Parti dalla tua posizione", tint = Nm.Muted,
+              modifier = Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClearStart).padding(8.dp))
+        }
+      }
       // stops
       for ((i, s) in plan.stops.withIndex()) {
         val last = i == plan.stops.size - 1
@@ -186,8 +208,11 @@ fun PlanPanel(
       }
       Spacer(Modifier.height(10.dp))
       Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        BigButton("Avvia", Modifier.weight(1.5f), Icons.Rounded.Navigation, enabled = plan.current != null && !plan.computing, onClick = onStart)
-        BigButton("Simula", Modifier.weight(1f), Icons.Rounded.PlayCircleOutline, BtnStyle.SECONDARY, enabled = plan.current != null && !plan.computing,
+        if (plan.start == null) {
+          BigButton("Avvia", Modifier.weight(1.5f), Icons.Rounded.Navigation, enabled = plan.current != null && !plan.computing, onClick = onStart)
+        }
+        BigButton("Simula", Modifier.weight(if (plan.start == null) 1f else 1.5f), Icons.Rounded.PlayCircleOutline,
+            if (plan.start == null) BtnStyle.SECONDARY else BtnStyle.PRIMARY, enabled = plan.current != null && !plan.computing,
             onClick = onSimulate)
         BigButton("Annulla", Modifier.weight(1f), style = BtnStyle.GHOST, onClick = onCancel)
       }

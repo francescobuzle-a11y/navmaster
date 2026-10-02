@@ -88,10 +88,14 @@ sleep 14; shot 05d_guida_pedaggio
 sleep 12; shot 05h_guida_pedaggio_2
 # off the motorway at Riccione (start on the A14, 2 km before the exit): the exit booth, where to pay
 TOLLOUT="--es nm_from 43.99500,12.61810 --es nm_dest 43.99007,12.64362 --es nm_label Riccione --es nm_profile camion --es nm_load 12 --es nm_tolls allow"
+# a video of this drive (as seen on the tablet), for looking at it before installing
+adb shell rm -f /sdcard/nm_v1.mp4
+(adb shell screenrecord --time-limit 40 --bit-rate 3000000 /sdcard/nm_v1.mp4 >/dev/null 2>&1 &)
 start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 16; shot 05f_guida_casello
 sleep 16; shot 05g_guida_casello_2
 sleep 3; shot 05j_guida_casello_3
+sleep 6; adb pull /sdcard/nm_v1.mp4 "$OUT/video_tablet_uscita.mp4" >/dev/null 2>&1 || echo "no video tablet" >> "$INFO"
 # the voice of that exit: when each sentence was queued (distance, speed) and when it was said
 adb logcat -d -s NavMasterVoice:* NavMasterLocation:* | grep -E "queued|say \(|cut|dead reckoning" | tail -30 >> "$INFO" || true
 # the same exit at night: night palette of the junction view, the gantry drawn behind the signs
@@ -187,10 +191,14 @@ adb shell wm size 1080x2400; adb shell wm density 420; sleep 3
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
 sleep 32; shot 18_percorsi_telefono
 adb shell input swipe 500 500 650 800 400; sleep 3; shot 18b_percorsi_telefono_ridotti
-# lane guidance and junction view on a phone, upright and sideways (the A14 exit at Riccione)
+# lane guidance and junction view on a phone, upright and sideways (the A14 exit at Riccione),
+# with a video of the phone
+adb shell rm -f /sdcard/nm_v2.mp4
+(adb shell screenrecord --time-limit 36 --bit-rate 3000000 /sdcard/nm_v2.mp4 >/dev/null 2>&1 &)
 start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 12; shot 20_corsie_telefono
 sleep 10; shot 20b_svincolo_telefono
+sleep 16; adb pull /sdcard/nm_v2.mp4 "$OUT/video_telefono_uscita.mp4" >/dev/null 2>&1 || echo "no video phone" >> "$INFO"
 adb shell wm size 2400x1080; sleep 3
 start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 12; shot 21_corsie_telefono_orizzontale

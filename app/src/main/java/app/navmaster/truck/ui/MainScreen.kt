@@ -156,6 +156,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     })
   }
   val searchGuided = initialSheet == "search_guided"
+  // the search opened to choose the departure of a simulated trip (not the destination)
+  var searchForStart by remember { mutableStateOf(false) }
   var openCrit by remember { mutableStateOf<Criticality?>(null) }
   // emulator test: open the detail of the n-th difficulty as soon as the routes are ready
   var critShown by remember { mutableStateOf(false) }
@@ -321,6 +323,13 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       LimitMarkers(remember(limitsAll) { limitsAll.filter { it.kind != "speed_camera" } })
       val stopPts = remember(plan.stops) { plan.stops.map { it.coordinate } }
       StopMarkers(stopPts)
+      // the departure chosen for a simulated trip: a green point
+      plan.start?.takeIf { !navigating }?.let { st ->
+        val startJson = remember(st.coordinate) { points(listOf(st.coordinate.lat to st.coordinate.lng)) }
+        val startSrc = rememberJsonSource(startJson)
+        CircleLayer(id = "nm-start", source = startSrc, color = const(Nm.Accent), radius = const(10.dp), strokeColor = const(Color.White),
+            strokeWidth = const(3.dp))
+      }
       if (navigating) {
         // pins on the road: speed cameras (where warning about them is allowed) and the events;
         // the ones left behind go away every 250 m
@@ -372,7 +381,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     } else {
       BrowsingOverlay(
           vm, plan, garage.active.name, garage.active.type.icon, landscape,
-          onSearch = { sheet = Sheet.SEARCH },
+          onSearch = { searchForStart = false; sheet = Sheet.SEARCH },
+          onPickStart = { searchForStart = true; sheet = Sheet.SEARCH },
           onVehicle = { sheet = Sheet.VEHICLE },
           onSettings = { sheet = Sheet.SETTINGS },
           onRegions = { sheet = Sheet.REGIONS },
@@ -422,6 +432,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           modifier = Modifier.align(Alignment.Center),
           onVia = { if (navigating) vm.addStopDuringNav(pt, "Passa di qui", via = true) else vm.addVia(pt); pendingPoint = null },
           onDetour = { vm.detourAndReturn(pt); pendingPoint = null },
+          onStartHere = { vm.setStart(pt, "Punto sulla mappa"); pendingPoint = null },
           onGo = { vm.selectDestination(pt, "Punto sulla mappa"); pendingPoint = null },
           onAvoid = { vm.avoidArea(pt); pendingPoint = null },
           onDismiss = { pendingPoint = null },
@@ -435,8 +446,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     when (sheet) {
       Sheet.SEARCH -> SearchScreen(location?.coordinates, startGuided = searchGuided, onPick = { f ->
         sheet = Sheet.NONE
-        vm.selectDestination(f.coordinate, f.title)
-      }, onClose = { sheet = Sheet.NONE })
+        if (searchForStart) vm.setStart(f.coordinate, f.title) else vm.selectDestination(f.coordinate, f.title)
+        searchForStart = false
+      }, onClose = { sheet = Sheet.NONE; searchForStart = false })
       Sheet.VEHICLE -> VehicleEditor(onClose = {
         sheet = Sheet.NONE
         if (plan.stops.isNotEmpty()) vm.planRoutes()
@@ -506,6 +518,7 @@ private fun BrowsingOverlay(
     tracking: Boolean = false,
     onPois: () -> Unit = {},
     mapMoved: Long = 0L,
+    onPickStart: () -> Unit = {},
 ) {
   // the routes panel goes down while the map is moved, and comes back with "Dettagli"
   var collapsed by remember { mutableStateOf(false) }
@@ -567,6 +580,8 @@ private fun BrowsingOverlay(
           onStart = { vm.start(false) },
           onSimulate = { vm.start(true) },
           onCancel = vm::clearPlan,
+          onPickStart = onPickStart,
+          onClearStart = vm::clearStart,
       )
     } else {
       Text("Cerca un indirizzo o tieni premuto sulla mappa", color = Color(0xCCFFFFFF), fontSize = 14.sp,
@@ -804,6 +819,7 @@ private fun PointChooser(
     onAvoid: () -> Unit,
     onDismiss: () -> Unit,
     onDetour: () -> Unit = {},
+    onStartHere: () -> Unit = {},
 ) {
   Panel(modifier.widthIn(max = 460.dp).padding(16.dp), padding = 16.dp) {
     Title("Punto sulla mappa", size = 20)
@@ -826,6 +842,9 @@ private fun PointChooser(
       BigButton("Vai qui (nuova destinazione)", Modifier.fillMaxWidth(), Icons.Rounded.Navigation, BtnStyle.SECONDARY, onClick = onGo)
       Spacer(Modifier.height(8.dp))
       BigButton("Evita questa zona", Modifier.fillMaxWidth(), Icons.Rounded.Block, BtnStyle.SECONDARY, onClick = onAvoid)
+      Spacer(Modifier.height(8.dp))
+      // to try a trip from somewhere else: the route is computed from here and can be simulated
+      BigButton("Parti da qui (simulazione)", Modifier.fillMaxWidth(), Icons.Rounded.Navigation, BtnStyle.SECONDARY, onClick = onStartHere)
     }
     Spacer(Modifier.height(8.dp))
     BigButton("Annulla", Modifier.fillMaxWidth(), style = BtnStyle.GHOST, onClick = onDismiss)
