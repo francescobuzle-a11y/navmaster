@@ -93,7 +93,7 @@ fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier
         )
       }
       Text(
-          primary.text,
+          primary.text.trim().trimEnd('.'),
           color = Color.White,
           fontSize = 24.sp,
           fontWeight = FontWeight.Bold,

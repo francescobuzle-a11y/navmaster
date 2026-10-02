@@ -891,12 +891,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     if (settings.voiceWarnings && now - critSaidAt > 10_000L) {
       val c = extras.criticalities.filter { c ->
         c.kind != CritKind.RAMP && c.kind != CritKind.BAN && c.severity != Severity.INFO &&
-            c.startM - traveled in 0.0..(if (c.severity == Severity.CRITICAL) 1500.0 else 600.0) && "say:${c.id}" !in asked
+            c.startM - traveled in 0.0..(if (c.severity == Severity.CRITICAL) 1000.0 else 400.0) && "say:${c.id}" !in asked
       }.minByOrNull { it.startM }
       if (c != null) {
         asked += "say:${c.id}"
         critSaidAt = now
-        say("Attenzione, tra ${app.navmaster.truck.nav.SpeechIt.distance(c.startM - traveled)}: ${c.title}.")
+        // only what it is and where: the street is on the screen ("Svolta a destra stretta tra 400 metri")
+        val what = c.title.substringBefore(" (").substringBefore(" in ").trim().replaceFirstChar { it.lowercase() }
+        val d = app.navmaster.truck.nav.SpeechIt.distance(c.startM - traveled)
+        say(if (c.severity == Severity.CRITICAL) "Attenzione, $what tra $d." else "${what.replaceFirstChar { it.uppercase() }} tra $d.")
       }
     }
 

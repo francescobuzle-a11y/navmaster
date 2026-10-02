@@ -80,11 +80,11 @@ import app.navmaster.truck.routing.Criticality
 import app.navmaster.truck.routing.Severity
 import app.navmaster.truck.vehicle.VehicleProfile
 import com.stadiamaps.ferrostar.composeui.runtime.KeepScreenOnDisposableEffect
+import com.stadiamaps.ferrostar.core.boundingBox
 import com.stadiamaps.ferrostar.core.measurement.MeasurementSpeedUnit
 import com.stadiamaps.ferrostar.maplibreui.NavigationMapClickResult
 import com.stadiamaps.ferrostar.maplibreui.NavigationMapPuckStyle
 import com.stadiamaps.ferrostar.maplibreui.NavigationMapView
-import com.stadiamaps.ferrostar.maplibreui.routeline.BorderedPolyline
 import com.stadiamaps.ferrostar.maplibreui.routeline.RouteOverlayBuilder
 import com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraOptions
 import com.stadiamaps.ferrostar.maplibreui.runtime.rememberNavigationMapState
@@ -200,6 +200,19 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
               else PaddingValues(top = (h * 0.40f).dp),
       )
   val mapState = rememberNavigationMapState()
+  // routes computed (or another one chosen): the whole route on screen, beside the routes panel;
+  // the map goes back to the driver when the plan is cleared
+  val previewGeom = if (!navigating) plan.current?.route?.geometry else null
+  LaunchedEffect(previewGeom?.size, previewGeom?.firstOrNull(), previewGeom?.lastOrNull()) {
+    val g = previewGeom ?: return@LaunchedEffect
+    val box = g.boundingBox() ?: return@LaunchedEffect
+    runCatching {
+      mapState.showRouteOverview(box,
+          if (landscape) PaddingValues(start = (w * 0.5f).dp, top = 90.dp, end = 90.dp, bottom = 40.dp)
+          else PaddingValues(start = 40.dp, top = 110.dp, end = 90.dp, bottom = (h * 0.42f).dp))
+    }
+  }
+  LaunchedEffect(plan.stops.isEmpty()) { if (plan.stops.isEmpty() && !navigating) mapState.recenter(false) }
   // the buttons show up when the map is touched and go away by themselves
   var lastMapTap by remember { mutableStateOf(System.currentTimeMillis()) }
   var mapMoved by remember { mutableLongStateOf(0L) }
@@ -268,10 +281,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         mapOptions = MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false)),
         routeOverlayBuilder =
             RouteOverlayBuilder(
+                // the route handed to the map once per route, not at every frame (see MapLines)
                 navigationPath = { state ->
-                  state.routeGeometry?.let {
-                    BorderedPolyline(points = it, idPrefix = "nm-route", color = Nm.Route, lineWidth = 13f, borderWidth = 3f)
-                  }
+                  NmRouteLine(state.routeGeometry, "nm-route", Nm.Route, 13f, 3f)
                 }),
         navigationCameraOptions = cameraOptions,
         locationPuckStyle =
@@ -297,9 +309,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     ) { _ ->
       if (!navigating) {
         plan.variants.forEachIndexed { i, v ->
-          if (i != plan.selected) BorderedPolyline(points = v.route.geometry, idPrefix = "nm-alt-$i", color = Color(0xFF8C97A3), lineWidth = 8f, borderWidth = 2f)
+          if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF8C97A3), 8f, 2f)
         }
-        plan.current?.let { BorderedPolyline(points = it.route.geometry, idPrefix = "nm-preview", color = Nm.Route, lineWidth = 11f, borderWidth = 3f) }
+        plan.current?.let { NmRouteLine(it.route.geometry, "nm-preview", Nm.Route, 11f, 3f) }
       }
       // the markers change with the route, not at every position: worked out once (redoing them
       // each second rebuilt the map sources and made the map stutter)
@@ -617,7 +629,7 @@ private fun NavigatingOverlay(
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
   // the junction view fits the screen: about a third of the height upright, never taller than wide
-  val jvHeight = (maxHeight.value * 0.30f).coerceIn(150f, 300f).coerceAtMost(maxWidth.value * 0.75f).dp
+  val jvHeight = (maxHeight.value * 0.36f).coerceIn(170f, 360f).coerceAtMost(maxWidth.value * 0.8f).dp
   Column(Modifier.fillMaxSize()) {
   Row(Modifier.weight(1f).fillMaxWidth()) {
   Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -757,8 +769,8 @@ private fun points(list: List<Pair<Double, Double>>): String =
 private fun LimitMarkers(limits: List<RouteLimit>) {
   val okJson = remember(limits) { points(limits.filter { !it.blocking }.map { it.lat to it.lon }) }
   val badJson = remember(limits) { points(limits.filter { it.blocking }.map { it.lat to it.lon }) }
-  val ok = rememberGeoJsonSource(GeoJsonData.JsonString(okJson))
-  val bad = rememberGeoJsonSource(GeoJsonData.JsonString(badJson))
+  val ok = rememberJsonSource(okJson)
+  val bad = rememberJsonSource(badJson)
   CircleLayer(id = "nm-limits-ok", source = ok, color = const(NmAmber), radius = const(7.dp), strokeColor = const(Color.White), strokeWidth = const(2.dp))
   CircleLayer(id = "nm-limits-bad", source = bad, color = const(NmRed), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
@@ -768,8 +780,8 @@ private fun LimitMarkers(limits: List<RouteLimit>) {
 private fun CritMarkers(list: List<Criticality>) {
   val warnJson = remember(list) { points(list.filter { it.severity == Severity.WARN }.map { it.lat to it.lon }) }
   val critJson = remember(list) { points(list.filter { it.severity == Severity.CRITICAL }.map { it.lat to it.lon }) }
-  val warn = rememberGeoJsonSource(GeoJsonData.JsonString(warnJson))
-  val crit = rememberGeoJsonSource(GeoJsonData.JsonString(critJson))
+  val warn = rememberJsonSource(warnJson)
+  val crit = rememberJsonSource(critJson)
   CircleLayer(id = "nm-crit-warn", source = warn, color = const(Nm.Amber), radius = const(9.dp), strokeColor = const(Color(0xFF111111)), strokeWidth = const(3.dp))
   CircleLayer(id = "nm-crit-bad", source = crit, color = const(Nm.Red), radius = const(11.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
@@ -778,7 +790,7 @@ private fun CritMarkers(list: List<Criticality>) {
 @MaplibreComposable
 private fun StopMarkers(stops: List<GeographicCoordinate>) {
   val json = remember(stops) { points(stops.map { it.lat to it.lng }) }
-  val src = rememberGeoJsonSource(GeoJsonData.JsonString(json))
+  val src = rememberJsonSource(json)
   CircleLayer(id = "nm-stops", source = src, color = const(Color(0xFFD50000)), radius = const(10.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
 }
 

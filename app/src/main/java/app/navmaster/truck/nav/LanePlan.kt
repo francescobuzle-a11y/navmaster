@@ -38,11 +38,7 @@ object LanePlan {
     val label: String
       get() = when (kind) {
         Kind.EXIT -> if (side < 0) "USCITA A SINISTRA" else "USCITA A DESTRA"
-        Kind.FORK -> when {
-          side < 0 -> "BIVIO: TIENI LA SINISTRA"
-          side > 0 -> "BIVIO: TIENI LA DESTRA"
-          else -> "BIVIO"
-        }
+        Kind.FORK -> "BIVIO"
         Kind.MERGE -> "IMMISSIONE"
         Kind.JUNCTION -> "INCROCIO"
       }
@@ -68,7 +64,8 @@ object LanePlan {
     val side = sideOf(modifier)
     val kind = when {
       "OFFRAMP" in t -> Kind.EXIT
-      "ONRAMP" in t -> if (motorway) Kind.EXIT else Kind.FORK
+      // the slip road towards a motorway is a branch to keep, not an exit
+      "ONRAMP" in t -> Kind.FORK
       "FORK" in t -> Kind.FORK
       "MERGE" in t -> Kind.MERGE
       else -> Kind.JUNCTION

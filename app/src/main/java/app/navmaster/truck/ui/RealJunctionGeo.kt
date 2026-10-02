@@ -18,7 +18,22 @@ import kotlin.math.min
 internal class Pt(val x: Double, val y: Double)
 
 /** A shape on the ground (or a barrier band) in metres around the junction, drawn in order. */
-internal class Shape(val kind: Int, val pts: List<Pt>, val z0: Double = 0.0, val z1: Double = 0.0, val layer: Int = 0)
+internal class Shape(val kind: Int, val pts: List<Pt>, val z0: Double = 0.0, val z1: Double = 0.0, val layer: Int = 0) {
+  /** Centre and radius of the shape (x, y, r): a shape far from the camera is not even looked at. */
+  val bound: DoubleArray by lazy {
+    var x0 = Double.MAX_VALUE
+    var y0 = Double.MAX_VALUE
+    var x1 = -Double.MAX_VALUE
+    var y1 = -Double.MAX_VALUE
+    for (p in pts) {
+      if (p.x < x0) x0 = p.x
+      if (p.x > x1) x1 = p.x
+      if (p.y < y0) y0 = p.y
+      if (p.y > y1) y1 = p.y
+    }
+    doubleArrayOf((x0 + x1) / 2, (y0 + y1) / 2, kotlin.math.hypot(x1 - x0, y1 - y0) / 2)
+  }
+}
 
 internal class RealJv(
     val route: List<Pt>,

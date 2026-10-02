@@ -234,12 +234,14 @@ fun SatelliteView(lat: Double, lon: Double, route: List<GeographicCoordinate>?, 
       if (route != null && route.size > 1) {
         val near = route.filter { kotlin.math.abs(it.lat - lat) < 0.02 && kotlin.math.abs(it.lng - lon) < 0.03 }
         if (near.size > 1) {
-          val line = rememberGeoJsonSource(GeoJsonData.JsonString(
-              """{"type":"Feature","geometry":{"type":"LineString","coordinates":[${near.joinToString(",") { "[${it.lng},${it.lat}]" }}]},"properties":{}}"""))
+          val lineJson = androidx.compose.runtime.remember(near.size, near.first(), near.last()) {
+            """{"type":"Feature","geometry":{"type":"LineString","coordinates":[${near.joinToString(",") { "[${it.lng},${it.lat}]" }}]},"properties":{}}"""
+          }
+          val line = rememberJsonSource(lineJson)
           LineLayer(id = "sat-route", source = line, color = const(Nm.Route), width = const(6.dp), opacity = const(0.85f))
         }
       }
-      val pt = rememberGeoJsonSource(GeoJsonData.JsonString("""{"type":"Feature","geometry":{"type":"Point","coordinates":[$lon,$lat]},"properties":{}}"""))
+      val pt = rememberJsonSource("""{"type":"Feature","geometry":{"type":"Point","coordinates":[$lon,$lat]},"properties":{}}""")
       CircleLayer(id = "sat-point", source = pt, color = const(Nm.Amber), radius = const(9.dp), strokeColor = const(Color.White), strokeWidth = const(3.dp))
     }
   }

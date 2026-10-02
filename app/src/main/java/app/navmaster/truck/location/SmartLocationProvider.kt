@@ -26,10 +26,8 @@ import uniffi.ferrostar.GeographicCoordinate
  * map can centre on the driver and suggest the country's map before GPS has a fix. As soon as GPS
  * answers, network fixes are ignored unless GPS has been silent for a while (parking garages).
  *
- * During guidance, while driving: between two satellite fixes (they come once a second) positions
- * along the route are added four times a second, so the map and the arrow glide instead of
- * jumping. In tunnels (dead reckoning, as the dedicated navigators do) the same goes on when the
- * satellites are silent: the vehicle goes on along the route at the speed it had, so the map, the
+ * In tunnels (dead reckoning, as the dedicated navigators do), during guidance: when the satellites
+ * are silent the vehicle goes on along the route at the speed it had, so the map, the
  * distances and the voice keep moving instead of freezing at the tunnel mouth and jumping forward
  * at the exit; when GPS comes back it takes over again at once.
  */
@@ -143,10 +141,8 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           .onSuccess { listeners += listener }
           .onFailure { Log.w(TAG, "$p: $it") }
     }
-    // between two satellite fixes (one a second) and in tunnels: positions along the route four
-    // times a second, at the speed of the last fix. The map, the arrow and the distances glide
-    // instead of jumping once a second; in a tunnel (no fix for more than 1.5 s) the same goes on
-    // until the satellites are back
+    // in a tunnel (no satellite fix for more than 1.5 s while driving on the route): a position
+    // along the route every second at the speed of the entry, until the satellites are back
     val reckoning = launch {
       var lastSent = 0L
       while (isActive) {
@@ -158,7 +154,9 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         }
         val now = SystemClock.elapsedRealtime()
         val silent = now - fixAt
-        if (silent < 200 || now - maxOf(lastSent, fixAt) < 250) continue
+        // only when the satellites are silent (a tunnel): between two normal fixes the map itself
+        // glides the arrow along the route; extra positions there made the map jump back and forth
+        if (silent < 1500 || now - maxOf(lastSent, fixAt) < 1000) continue
         // at most 4 minutes or 8 km on the speed of the entry: a longer silence is not a tunnel
         if (silent > 240_000 || fixSpeed * silent / 1000.0 > 8000) {
           if (tunnel) Log.i(TAG, "dead reckoning stopped after ${silent / 1000} s")
@@ -171,7 +169,6 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           tunnel = true
           Log.i(TAG, "no satellites: dead reckoning along the route at ${"%.0f".format(fixSpeed * 3.6)} km/h")
         }
-        if (silent < 1500) tunnel = false
         val s = (fixAlong + fixSpeed * silent / 1000.0).coerceAtMost(ln.cum.last() - 1)
         drAlong = s
         lastSent = now

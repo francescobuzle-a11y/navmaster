@@ -67,7 +67,7 @@ private fun points(list: List<Pair<Double, Double>>): String =
 private fun PinLayer(id: String, at: List<Pair<Double, Double>>, glyph: String, ring: Long) {
   val painter = remember(glyph, ring) { pin(glyph, ring.toInt()) }
   val json = androidx.compose.runtime.remember(at) { points(at) }
-  val src = rememberGeoJsonSource(GeoJsonData.JsonString(json))
+  val src = rememberJsonSource(json)
   SymbolLayer(
       id = id,
       source = src,
