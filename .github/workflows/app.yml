@@ -111,3 +111,4 @@ jobs:
           files: |
             shots/*.png
             shots/*.txt
+            shots/*.mp4
