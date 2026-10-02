@@ -62,7 +62,7 @@ internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, near: Bool
   val rx = fy
   val ry = -fx
   // the camera over the lane of the vehicle, then over the middle of the road taken
-  fun laneR(sAt: Double): Double = if (sAt <= rj.nodeS) -rj.actOff else -rj.actOff * max(0.0, 1 - (sAt - rj.nodeS) / 25.0)
+  fun laneR(sAt: Double): Double = -rj.actOff * RealJv.glide(sAt - rj.nodeS)
   val camX = laneR(sCam + 30) * 0.5
 
   // the camera: height, looking down, and the scale that frames the road at the vehicle

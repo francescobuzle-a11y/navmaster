@@ -198,6 +198,23 @@ class Announcer(
       }
     }
 
+    // at the manoeuvre (already said) with the next one very close behind it: the next one is said
+    // now ("Poi svolta a destra"), not when the guidance moves on to it, metres before it
+    if ("$id:now" in done && toManeuver < 40) {
+      val nxt = steps.getOrNull(index + 1)
+      val nid = "$key:${index + 1}"
+      if (nxt != null && "$nid:now" !in done && index + 2 < steps.size && !isRoundaboutExit(nxt)) {
+        val nText = textOf(nxt)
+        if (nText != null && toManeuver + nxt.distance <= dNow) {
+          done += "$nid:now"
+          done += "$nid:prep"
+          done += "$nid:far"
+          val at = maneuverAt + nxt.distance
+          speak("Poi " + SpeechIt.short(nText, dropRoad = false).replaceFirstChar { it.lowercase() } + ".", true, nid) { curKey == key && curAlong < at - 5 }
+        }
+      }
+    }
+
     // when the next sentence about this manoeuvre is due (warnings wait if they would overlap it)
     val dueAt = when {
       "$id:now" in done -> null

@@ -281,7 +281,8 @@ internal class RealJv(
         val ss = (0 until n).map { s0 + it * (sh - s0) / (n - 1) } + s1
         val body = ss.map { rj0.along(it) }
         // before the junction in its lane, then gliding into the middle of the road taken
-        val offs = ss.map { s -> if (s <= nodeS) lo else lo * max(0.0, 1 - (s - nodeS) / 25.0) }
+        // the lane change into the road taken is a smooth curve over 70 m (no zigzag at the node)
+        val offs = ss.map { s -> lo * glide(s - nodeS) }
         val mid = offset(body) { i -> offs[i] }
         val half = LANE * 0.33
         val hh = LANE * 0.72
@@ -305,6 +306,13 @@ internal class RealJv(
       val c = DoubleArray(p.size)
       for (i in 1 until p.size) c[i] = c[i - 1] + dist(p[i - 1], p[i])
       return c
+    }
+
+    /** 1 before the node, 0 from 70 m after it, smoothly in between. */
+    fun glide(afterNode: Double): Double {
+      if (afterNode <= 0) return 1.0
+      val t = (afterNode / 70.0).coerceIn(0.0, 1.0)
+      return 1 - t * t * (3 - 2 * t)
     }
 
     fun at(p: List<Pt>, c: DoubleArray, s: Double): Pt {
