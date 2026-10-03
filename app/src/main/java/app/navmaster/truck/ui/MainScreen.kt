@@ -323,7 +323,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         navigationMapState = mapState,
         // the arrow and the camera follow the position worked out here along the route (see
         // SmoothTrack); "off route" only tells the map to use it as it is, without its own snapping
-        uiState = if (smooth != null) ui.copy(location = smooth, routeDeviation = uniffi.ferrostar.RouteDeviation.OffRoute(0.0)) else ui,
+        uiState = if (smooth != null) ui.copy(location = smooth, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0))) else ui,
         mapOptions = MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false)),
         routeOverlayBuilder =
             RouteOverlayBuilder(

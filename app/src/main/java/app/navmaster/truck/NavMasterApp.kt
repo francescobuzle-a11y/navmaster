@@ -34,6 +34,7 @@ import uniffi.ferrostar.WaypointAdvanceMode
 import uniffi.ferrostar.stepAdvanceDistanceEntryAndSnappedExit
 import uniffi.ferrostar.stepAdvanceDistanceFromStep
 import uniffi.ferrostar.stepAdvanceOr
+import uniffi.ferrostar.DeviationCalculationPolicy
 import uniffi.ferrostar.stepAdvanceDistanceToEndOfStep
 
 class NavMasterApp : Application() {
@@ -127,7 +128,7 @@ object AppGraph {
   private fun navigationConfig() =
       NavigationControllerConfig(
           WaypointAdvanceMode.WaypointWithinRange(100.0),
-          stepAdvanceOr(listOf(stepAdvanceDistanceEntryAndSnappedExit(30u, 5u, 50u), stepAdvanceDistanceFromStep(60u, 50u))),
+          stepAdvanceOr(listOf(stepAdvanceDistanceEntryAndSnappedExit(30u, 5u, 50u), stepAdvanceDistanceFromStep(60u, 50u, DeviationCalculationPolicy.WHILE_ON_ROUTE))),
           stepAdvanceDistanceToEndOfStep(10u, 32u),
           RouteDeviationTracking.StaticThreshold(15U, 35.0),
           CourseFiltering.SNAP_TO_ROUTE,
