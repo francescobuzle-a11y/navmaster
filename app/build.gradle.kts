@@ -1,3 +1,13 @@
+import com.android.build.api.instrumentation.AsmClassVisitorFactory
+import com.android.build.api.instrumentation.ClassContext
+import com.android.build.api.instrumentation.ClassData
+import com.android.build.api.instrumentation.FramesComputationMode
+import com.android.build.api.instrumentation.InstrumentationParameters
+import com.android.build.api.instrumentation.InstrumentationScope
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Opcodes
+
 plugins {
   alias(libs.plugins.androidApplication)
   alias(libs.plugins.composeCompiler)
@@ -104,4 +114,38 @@ dependencies {
 
   implementation(platform(libs.okhttp.bom))
   implementation(libs.okhttp)
+}
+
+/**
+ * GraphHopper's memory-mapped storage calls ByteBuffer.get/put(index, array, offset, length), which
+ * Android has only from version 15: those calls are redirected, in GraphHopper's own class, to
+ * routing/gh/NioCompat (same result on every Android version).
+ */
+abstract class NioCompatFactory : AsmClassVisitorFactory<InstrumentationParameters.None> {
+  override fun createClassVisitor(classContext: ClassContext, nextClassVisitor: ClassVisitor): ClassVisitor =
+      object : ClassVisitor(Opcodes.ASM9, nextClassVisitor) {
+        override fun visitMethod(access: Int, name: String?, descriptor: String?, signature: String?, exceptions: Array<out String>?): MethodVisitor? {
+          val mv = super.visitMethod(access, name, descriptor, signature, exceptions) ?: return null
+          return object : MethodVisitor(Opcodes.ASM9, mv) {
+            override fun visitMethodInsn(opcode: Int, owner: String?, name: String?, descriptor: String?, isInterface: Boolean) {
+              if (opcode == Opcodes.INVOKEVIRTUAL && (owner == "java/nio/ByteBuffer" || owner == "java/nio/MappedByteBuffer") &&
+                  (name == "get" || name == "put") && descriptor == "(I[BII)Ljava/nio/ByteBuffer;") {
+                super.visitMethodInsn(Opcodes.INVOKESTATIC, "app/navmaster/truck/routing/gh/NioCompat", name,
+                    "(Ljava/nio/ByteBuffer;I[BII)Ljava/nio/ByteBuffer;", false)
+              } else {
+                super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+              }
+            }
+          }
+        }
+      }
+
+  override fun isInstrumentable(classData: ClassData): Boolean = classData.className == "com.graphhopper.storage.MMapDataAccess"
+}
+
+androidComponents {
+  onVariants { variant ->
+    variant.instrumentation.transformClassesWith(NioCompatFactory::class.java, InstrumentationScope.ALL) {}
+    variant.instrumentation.setAsmFramesComputationMode(FramesComputationMode.COPY_FRAMES)
+  }
 }

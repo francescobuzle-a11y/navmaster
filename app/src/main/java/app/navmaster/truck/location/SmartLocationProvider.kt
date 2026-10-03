@@ -170,7 +170,15 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     val list = providers()
     Log.d(TAG, "location from ${list.joinToString()}")
     for (p in list) {
-      val listener = LocationListener { accept(it) }
+      // every method spelt out: on Android 10 they have no default and switching a provider off
+      // crashed the app (AbstractMethodError onProviderDisabled)
+      val listener = object : LocationListener {
+        override fun onLocationChanged(location: android.location.Location) = accept(location)
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+      }
       val interval = if (p == LocationManager.GPS_PROVIDER) intervalMillis else maxOf(intervalMillis, 3000L)
       runCatching { lm.requestLocationUpdates(p, interval, 0f, listener, Looper.getMainLooper()) }
           .onSuccess { listeners += listener }
