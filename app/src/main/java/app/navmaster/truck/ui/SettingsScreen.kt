@@ -242,6 +242,11 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
           "solo sul tratto di percorso davanti, ogni 2 minuti e mai da fermo.", s.personalFeed) { v ->
         set { it.copy(personalFeed = v, personalFeedDirect = true) }
       }
+      if (app.navmaster.truck.live.PersonalFeed.refused) {
+        Caption("Waze ora protegge i dati della mappa pubblica e non li dà all'app: le segnalazioni di Waze si vedono con il " +
+            "pulsante «Traffico Waze» sulla mappa (la mappa ufficiale di Waze), ma la voce non le dice.",
+            Modifier.padding(start = 4.dp, bottom = 6.dp), color = Nm.Amber, size = 13, lines = 5)
+      }
       ToggleRow("Centrali del traffico dei Paesi", "Dati ufficiali di Spagna, Paesi Bassi, Belgio, Lussemburgo, Francia, Germania, " +
           "Finlandia, Polonia, Lituania e Svezia, letti solo per i Paesi che attraversi.", s.nationalTraffic) { v ->
         set { it.copy(nationalTraffic = v) }

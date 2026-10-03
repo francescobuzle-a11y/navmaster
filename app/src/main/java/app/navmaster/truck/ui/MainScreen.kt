@@ -45,6 +45,7 @@ import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Traffic
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
@@ -172,6 +173,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var reportOpen by remember { mutableStateOf(initialSheet == "report") }
   var stopsOpen by remember { mutableStateOf(initialSheet == "stops") }
   var poiOpen by remember { mutableStateOf(initialSheet == "pois") }
+  // the official live map of Waze (traffic and reports), in a panel over the map
+  var wazeOpen by remember { mutableStateOf(initialSheet == "waze") }
   var countryHintClosed by remember { mutableStateOf(false) }
   val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && app.navmaster.truck.live.ApiKeys.tomtom(settings).isNotBlank())
     app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(app.navmaster.truck.live.ApiKeys.tomtom(settings), night) else null
@@ -355,7 +358,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
           settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it },
           live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
-          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true })
+          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true }, onWaze = { wazeOpen = true })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -383,6 +386,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           vm, plan, garage.active.name, garage.active.type.icon, landscape,
           onSearch = { searchForStart = false; sheet = Sheet.SEARCH },
           onPickStart = { searchForStart = true; sheet = Sheet.SEARCH },
+          onWaze = { wazeOpen = true },
           onVehicle = { sheet = Sheet.VEHICLE },
           onSettings = { sheet = Sheet.SETTINGS },
           onRegions = { sheet = Sheet.REGIONS },
@@ -437,6 +441,14 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onAvoid = { vm.avoidArea(pt); pendingPoint = null },
           onDismiss = { pendingPoint = null },
       )
+    }
+
+    if (wazeOpen) {
+      // upright: the lower part of the screen (the manoeuvre stays visible); sideways: the right half
+      val wazeMod = if (landscape) Modifier.align(Alignment.CenterEnd).fillMaxHeight().fillMaxWidth(0.5f)
+      else Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.6f)
+      WazePanel(location?.coordinates?.lat, location?.coordinates?.lng, onClose = { wazeOpen = false },
+          modifier = wazeMod.statusBarsPadding().navigationBarsPadding().padding(8.dp))
     }
 
     if (installed.isEmpty() && sheet != Sheet.REGIONS) {
@@ -519,6 +531,7 @@ private fun BrowsingOverlay(
     onPois: () -> Unit = {},
     mapMoved: Long = 0L,
     onPickStart: () -> Unit = {},
+    onWaze: () -> Unit = {},
 ) {
   // the routes panel goes down while the map is moved, and comes back with "Dettagli"
   var collapsed by remember { mutableStateOf(false) }
@@ -554,6 +567,7 @@ private fun BrowsingOverlay(
       if (plan.stops.isEmpty()) RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
       RoundAction(Icons.Rounded.Layers, "Satellite", container = if (satellite) Nm.Accent else Nm.Panel, onClick = onSatellite)
       RoundAction(Icons.Rounded.Place, "Punti di interesse", onClick = onPois)
+      RoundAction(Icons.Rounded.Traffic, "Traffico Waze", onClick = onWaze)
     }
     if (!tracking) RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
 
@@ -620,6 +634,7 @@ private fun NavigatingOverlay(
     stopsCount: Int = 0,
     onStops: () -> Unit = {},
     onPois: () -> Unit = {},
+    onWaze: () -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
@@ -686,6 +701,7 @@ private fun NavigatingOverlay(
           ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
         }
         RoundAction(Icons.Rounded.Settings, "Impostazioni", size = 56.dp, onClick = onSettings)
+        RoundAction(Icons.Rounded.Traffic, "Traffico Waze", size = 56.dp, onClick = onWaze)
         if (stopsCount > 0) StopsButton(stopsCount, onStops)
         // the map was moved by hand: "centre" stays until the driver uses it
         if (!mapState.isTrackingUser) RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }

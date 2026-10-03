@@ -111,7 +111,16 @@ object PersonalFeed {
    * (no computer needed). The caller asks only the stretch of route ahead and at most every
    * 2 minutes. Null when nothing could be read (no network, refused, format changed).
    */
+  // the Live Map now asks a reCAPTCHA token of its own page with every request: without it the
+  // answer is 403. After a refusal the tablet stops asking for an hour (no pointless traffic)
+  @Volatile private var refusedUntil = 0L
+
+  /** True when Waze refused the last request (its data is protected): see WazePanel. */
+  val refused: Boolean
+    get() = System.currentTimeMillis() < refusedUntil
+
   fun readDirect(box: GeoBox): List<LiveEvent>? {
+    if (refused && !directUrl.startsWith("http://10.")) return null
     var (w, s, e, n) = listOf(box.w, box.s, box.e, box.n)
     if (n - s > MAX_SIDE) { val c = (n + s) / 2; s = c - MAX_SIDE / 2; n = c + MAX_SIDE / 2 }
     if (e - w > MAX_SIDE) { val c = (e + w) / 2; w = c - MAX_SIDE / 2; e = c + MAX_SIDE / 2 }
@@ -122,7 +131,10 @@ object PersonalFeed {
           .header("User-Agent", "NavMaster/1.0 (Android; personal test)")
           .header("Referer", "https://www.waze.com/live-map/")
           .header("Accept", "application/json").build()).execute().use { r ->
-        if (r.isSuccessful) r.body.string() else null.also { Log.w(TAG, "waze direct: HTTP ${r.code}") }
+        if (r.isSuccessful) r.body.string() else null.also {
+          Log.w(TAG, "waze direct: HTTP ${r.code}")
+          if (r.code == 403 || r.code == 401 || r.code == 429) refusedUntil = System.currentTimeMillis() + 3_600_000L
+        }
       }
     } catch (ex: Exception) {
       Log.w(TAG, "waze direct: $ex")
