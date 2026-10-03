@@ -243,8 +243,8 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         set { it.copy(personalFeed = v, personalFeedDirect = true) }
       }
       if (app.navmaster.truck.live.PersonalFeed.refused) {
-        Caption("Waze ora protegge i dati della mappa pubblica e non li dà all'app: le segnalazioni di Waze si vedono con il " +
-            "pulsante «Traffico Waze» sulla mappa (la mappa ufficiale di Waze), ma la voce non le dice.",
+        Caption("Waze ora protegge i dati della mappa pubblica (controllo anti-robot) e non li dà all'app: per ora le " +
+            "segnalazioni di Waze non arrivano.",
             Modifier.padding(start = 4.dp, bottom = 6.dp), color = Nm.Amber, size = 13, lines = 5)
       }
       ToggleRow("Centrali del traffico dei Paesi", "Dati ufficiali di Spagna, Paesi Bassi, Belgio, Lussemburgo, Francia, Germania, " +

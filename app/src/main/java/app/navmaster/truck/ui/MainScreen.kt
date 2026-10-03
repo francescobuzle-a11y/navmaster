@@ -45,7 +45,6 @@ import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Traffic
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
@@ -54,6 +53,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -173,8 +173,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var reportOpen by remember { mutableStateOf(initialSheet == "report") }
   var stopsOpen by remember { mutableStateOf(initialSheet == "stops") }
   var poiOpen by remember { mutableStateOf(initialSheet == "pois") }
-  // the official live map of Waze (traffic and reports), in a panel over the map
-  var wazeOpen by remember { mutableStateOf(initialSheet == "waze") }
+
   var countryHintClosed by remember { mutableStateOf(false) }
   val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && app.navmaster.truck.live.ApiKeys.tomtom(settings).isNotBlank())
     app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(app.navmaster.truck.live.ApiKeys.tomtom(settings), night) else null
@@ -263,6 +262,43 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
 
+  // ---- the arrow along the route at every frame (see SmoothTrack)
+  val track = remember { SmoothTrack() }
+  val smoothLoc = remember { mutableStateOf<uniffi.ferrostar.UserLocation?>(null) }
+  val trackAnalysis = nav.analysis
+  val coreLoc = ui.location
+  val measuredSpeed by vm.speedMs.collectAsState()
+  // the guidance's own position along the route matches the route of the analysis: otherwise (a
+  // new route not yet analysed, really off the route) the map shows the guidance's position as is
+  val trackOk = navigating && trackAnalysis != null && coreLoc != null &&
+      ui.routeDeviation is uniffi.ferrostar.RouteDeviation.NoDeviation &&
+      app.navmaster.truck.core.Geo.dist(trackAnalysis.pointAt(traveled), coreLoc.coordinates) < 40.0
+  SideEffect {
+    if (trackOk) {
+      if (traveled != track.target) {
+        track.target = traveled
+        track.targetAt = System.nanoTime()
+      }
+      track.speed = maxOf(coreLoc?.speed?.value ?: 0.0, measuredSpeed ?: 0.0).coerceIn(0.0, 45.0)
+      track.accuracy = coreLoc?.horizontalAccuracy ?: 5.0
+      track.speedObj = coreLoc?.speed
+    }
+  }
+  LaunchedEffect(trackOk, trackAnalysis) {
+    val a = trackAnalysis
+    if (!trackOk || a == null) {
+      smoothLoc.value = null
+      return@LaunchedEffect
+    }
+    track.shown = -1.0
+    track.lastFrame = 0L
+    while (true) {
+      androidx.compose.runtime.withFrameNanos { t ->
+        smoothLoc.value = track.step(t, a)
+      }
+    }
+  }
+
   Box(Modifier.fillMaxSize().background(Nm.Bg)) {
     // a new map view when the tablet turns: the old one kept drawing at the old size (a blank strip
     // on one side in portrait); the camera state survives, it is kept outside
@@ -279,10 +315,15 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         }
       }
     }) {
+    // only this part is redrawn at every frame while the arrow glides (not the whole screen)
+    ScopedMap {
+    val smooth = smoothLoc.value
     NavigationMapView(
         baseStyle = BaseStyle.Uri(styleUri),
         navigationMapState = mapState,
-        uiState = ui,
+        // the arrow and the camera follow the position worked out here along the route (see
+        // SmoothTrack); "off route" only tells the map to use it as it is, without its own snapping
+        uiState = if (smooth != null) ui.copy(location = smooth, routeDeviation = uniffi.ferrostar.RouteDeviation.OffRoute(0.0)) else ui,
         mapOptions = MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false)),
         routeOverlayBuilder =
             RouteOverlayBuilder(
@@ -350,6 +391,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
     }
     }
+    }
 
     if (navigating) {
       val booth = nav.analysis?.nodes?.firstOrNull { it.alongM > traveled - 20 }
@@ -358,7 +400,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
           settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it },
           live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
-          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true }, onWaze = { wazeOpen = true })
+          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -386,7 +428,6 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           vm, plan, garage.active.name, garage.active.type.icon, landscape,
           onSearch = { searchForStart = false; sheet = Sheet.SEARCH },
           onPickStart = { searchForStart = true; sheet = Sheet.SEARCH },
-          onWaze = { wazeOpen = true },
           onVehicle = { sheet = Sheet.VEHICLE },
           onSettings = { sheet = Sheet.SETTINGS },
           onRegions = { sheet = Sheet.REGIONS },
@@ -441,14 +482,6 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onAvoid = { vm.avoidArea(pt); pendingPoint = null },
           onDismiss = { pendingPoint = null },
       )
-    }
-
-    if (wazeOpen) {
-      // upright: the lower part of the screen (the manoeuvre stays visible); sideways: the right half
-      val wazeMod = if (landscape) Modifier.align(Alignment.CenterEnd).fillMaxHeight().fillMaxWidth(0.5f)
-      else Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.6f)
-      WazePanel(location?.coordinates?.lat, location?.coordinates?.lng, onClose = { wazeOpen = false },
-          modifier = wazeMod.statusBarsPadding().navigationBarsPadding().padding(8.dp))
     }
 
     if (installed.isEmpty() && sheet != Sheet.REGIONS) {
@@ -531,7 +564,6 @@ private fun BrowsingOverlay(
     onPois: () -> Unit = {},
     mapMoved: Long = 0L,
     onPickStart: () -> Unit = {},
-    onWaze: () -> Unit = {},
 ) {
   // the routes panel goes down while the map is moved, and comes back with "Dettagli"
   var collapsed by remember { mutableStateOf(false) }
@@ -567,7 +599,6 @@ private fun BrowsingOverlay(
       if (plan.stops.isEmpty()) RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
       RoundAction(Icons.Rounded.Layers, "Satellite", container = if (satellite) Nm.Accent else Nm.Panel, onClick = onSatellite)
       RoundAction(Icons.Rounded.Place, "Punti di interesse", onClick = onPois)
-      RoundAction(Icons.Rounded.Traffic, "Traffico Waze", onClick = onWaze)
     }
     if (!tracking) RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
 
@@ -634,7 +665,6 @@ private fun NavigatingOverlay(
     stopsCount: Int = 0,
     onStops: () -> Unit = {},
     onPois: () -> Unit = {},
-    onWaze: () -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
@@ -701,7 +731,6 @@ private fun NavigatingOverlay(
           ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
         }
         RoundAction(Icons.Rounded.Settings, "Impostazioni", size = 56.dp, onClick = onSettings)
-        RoundAction(Icons.Rounded.Traffic, "Traffico Waze", size = 56.dp, onClick = onWaze)
         if (stopsCount > 0) StopsButton(stopsCount, onStops)
         // the map was moved by hand: "centre" stays until the driver uses it
         if (!mapState.isTrackingUser) RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
@@ -883,4 +912,54 @@ private fun cameraFacesUs(l: RouteLimit, a: app.navmaster.truck.routing.RouteAna
   // OSM gives the direction the camera looks at, i.e. towards the traffic it checks
   val facing = kotlin.math.abs(app.navmaster.truck.core.Geo.angleDiff(heading, (deg + 180) % 360))
   return facing < 70
+}
+
+
+/** A composable part of its own: what it reads is redrawn without redrawing the whole screen. */
+@Composable
+private fun ScopedMap(content: @Composable () -> Unit) = content()
+
+/**
+ * The arrow on the map, moved at every frame along the route instead of once a second.
+ *
+ * Why: the position of the guidance changes once a second (one fix a second), and the map drew it
+ * snapped onto the whole route. Where the route passes again close to itself (a U-turn at a
+ * roundabout, a loop) the snapping could pick the later part: the arrow jumped ahead and then
+ * stood still until the vehicle caught up; standing still, the wandering fixes made it twitch.
+ *
+ * Here the position comes from the progress of the guidance along the route (metres driven, worked
+ * out on the current step, so never on another part of the route), carried forward between two
+ * fixes at the speed of the vehicle and corrected softly towards each new one. It never goes
+ * backwards, and it stands still when the vehicle does.
+ */
+private class SmoothTrack {
+  var shown = -1.0
+  var lastFrame = 0L
+  var target = 0.0
+  var targetAt = 0L
+  var speed = 0.0
+  var accuracy = 5.0
+  var speedObj: uniffi.ferrostar.Speed? = null
+
+  fun step(t: Long, a: app.navmaster.truck.routing.RouteAnalysis): uniffi.ferrostar.UserLocation {
+    val dt = if (lastFrame == 0L) 0.0 else ((t - lastFrame) / 1e9).coerceIn(0.0, 0.1)
+    lastFrame = t
+    // where the vehicle should be now: the last position of the guidance, carried on at its speed
+    val ahead = ((t - targetAt) / 1e9).coerceIn(0.0, 1.2)
+    val predicted = target + speed * ahead
+    if (shown < 0 || kotlin.math.abs(predicted - shown) > 60) {
+      shown = predicted
+    } else {
+      val rate = (speed + 1.8 * (predicted - shown)).coerceAtLeast(0.0)
+      shown += rate * dt
+    }
+    shown = shown.coerceIn(0.0, a.length)
+    val p = a.pointAt(shown)
+    val b0 = a.pointAt((shown - 5).coerceAtLeast(0.0))
+    val b1 = a.pointAt((shown + 15).coerceAtMost(a.length))
+    val brg = ((app.navmaster.truck.core.Geo.bearing(b0, b1) % 360.0) + 360.0) % 360.0
+    return uniffi.ferrostar.UserLocation(
+        p, accuracy, uniffi.ferrostar.CourseOverGround(brg.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()),
+        java.time.Instant.now(), speedObj)
+  }
 }

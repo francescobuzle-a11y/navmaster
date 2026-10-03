@@ -104,31 +104,66 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   @SuppressLint("MissingPermission")
   override fun locationUpdates(intervalMillis: Long): Flow<Location> = callbackFlow {
     val listeners = mutableListOf<LocationListener>()
+    // the last position handed on (to hold it still while the vehicle stands)
+    var lastSent: Location? = null
+    var lastOnRouteAt = 0L
+    fun send(l: Location) {
+      lastSent = l
+      trySend(l)
+    }
     fun accept(l: Location) {
       val now = System.currentTimeMillis()
       if (l.provider == LocationManager.GPS_PROVIDER) {
+        val el = SystemClock.elapsedRealtime()
+        val ln = line
+        if (ln == null) {
+          lastGpsAt = now
+          send(l)
+          return
+        }
+        val s = alongOf(l)
+        val v = if (l.hasSpeed()) l.speed.toDouble() else 0.0
+        val acc = if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0
+        val driving = fixAlong >= 0 && fixSpeed >= 3.0 && el - fixAt < 30_000
+        // a poor fix while driving on the route (tunnel mouths, under bridges, between buildings:
+        // positions tens of metres off, or "off the route" for a few seconds) is not handed on: it
+        // made the arrow jump sideways or backwards and could start a needless recalculation. For
+        // the guidance it is as if the satellites were silent, so the position goes on along the
+        // route (below) until good fixes come back. Off the route for more than 8 s is real.
+        if (driving && (acc > 35.0 || (s == null && el - lastOnRouteAt < 8_000))) {
+          Log.d(TAG, "poor fix left out (accuracy ${acc.toInt()} m, on route ${s != null})")
+          return
+        }
         lastGpsAt = now
         val wasTunnel = tunnel
         tunnel = false
         drAlong = -1.0
-        if (line != null) {
-          val s = alongOf(l)
-          val v = if (l.hasSpeed()) l.speed.toDouble() else 0.0
-          if (s != null) {
-            fixAlong = s
-            // the speed measured by the satellites (Doppler): precise, and current when braking
-            fixSpeed = v
-            fixAt = SystemClock.elapsedRealtime()
-          } else {
-            fixAlong = -1.0
-          }
-          if (wasTunnel) Log.i(TAG, "satellites back: dead reckoning ends")
+        if (s != null) {
+          lastOnRouteAt = el
+          fixAlong = s
+          // the speed measured by the satellites (Doppler): precise, and current when braking
+          fixSpeed = v
+          fixAt = el
+        } else {
+          fixAlong = -1.0
         }
-        trySend(l)
+        if (wasTunnel) Log.i(TAG, "satellites back: dead reckoning ends")
+        // standing still (a queue, a light, a roundabout entry): the fixes wander by some metres;
+        // the position handed on stays where it is, so the map does not twitch
+        val prev = lastSent
+        if (s != null && v < 0.8 && prev != null && prev.distanceTo(l) < 20f) {
+          send(Location(prev).apply {
+            time = l.time
+            elapsedRealtimeNanos = l.elapsedRealtimeNanos
+            speed = 0f
+          })
+          return
+        }
+        send(l)
       } else if (drAlong < 0 && now - lastGpsAt > 8000) {
         // the network position only when there is nothing better (never inside a tunnel being
         // driven through: there the position along the route is far more precise)
-        trySend(l)
+        send(l)
       }
     }
     lastLocation()?.let { trySend(it) }
@@ -144,7 +179,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     // in a tunnel (no satellite fix for more than 1.5 s while driving on the route): a position
     // along the route every second at the speed of the entry, until the satellites are back
     val reckoning = launch {
-      var lastSent = 0L
+      var lastDr = 0L
       while (isActive) {
         delay(80)
         val ln = line ?: continue
@@ -156,7 +191,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         val silent = now - fixAt
         // only when the satellites are silent (a tunnel): between two normal fixes the map itself
         // glides the arrow along the route; extra positions there made the map jump back and forth
-        if (silent < 1500 || now - maxOf(lastSent, fixAt) < 1000) continue
+        if (silent < 1500 || now - maxOf(lastDr, fixAt) < 1000) continue
         // at most 4 minutes or 8 km on the speed of the entry: a longer silence is not a tunnel
         if (silent > 240_000 || fixSpeed * silent / 1000.0 > 8000) {
           if (tunnel) Log.i(TAG, "dead reckoning stopped after ${silent / 1000} s")
@@ -171,8 +206,8 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         }
         val s = (fixAlong + fixSpeed * silent / 1000.0).coerceAtMost(ln.cum.last() - 1)
         drAlong = s
-        lastSent = now
-        trySend(locationAt(ln, s, fixSpeed))
+        lastDr = now
+        send(locationAt(ln, s, fixSpeed))
       }
     }
     awaitClose {

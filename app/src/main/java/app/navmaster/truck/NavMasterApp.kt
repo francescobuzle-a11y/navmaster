@@ -31,7 +31,9 @@ import uniffi.ferrostar.NavigationControllerConfig
 import uniffi.ferrostar.Route
 import uniffi.ferrostar.RouteDeviationTracking
 import uniffi.ferrostar.WaypointAdvanceMode
-import uniffi.ferrostar.stepAdvanceDistanceEntryAndExit
+import uniffi.ferrostar.stepAdvanceDistanceEntryAndSnappedExit
+import uniffi.ferrostar.stepAdvanceDistanceFromStep
+import uniffi.ferrostar.stepAdvanceOr
 import uniffi.ferrostar.stepAdvanceDistanceToEndOfStep
 
 class NavMasterApp : Application() {
@@ -115,11 +117,17 @@ object AppGraph {
   /**
    * A long vehicle needs a bit more room before being declared off route, and steps advance only
    * once the vehicle is really through the junction.
+   *
+   * The step moves on when the vehicle came near its end and its position ON THE ROUTE has gone past
+   * it (not the raw GPS one: in a roundabout, with short steps and a fix a second, the raw position
+   * often never got far enough from the step, the arrow stayed nailed to the end of the step and
+   * jumped forward only later). A position more than 60 m from the step also moves it on. Fixes up
+   * to 50 m of accuracy count (tunnel mouths, built-up areas), not only the very precise ones.
    */
   private fun navigationConfig() =
       NavigationControllerConfig(
           WaypointAdvanceMode.WaypointWithinRange(100.0),
-          stepAdvanceDistanceEntryAndExit(30u, 5u, 32u),
+          stepAdvanceOr(listOf(stepAdvanceDistanceEntryAndSnappedExit(30u, 5u, 50u), stepAdvanceDistanceFromStep(60u, 50u))),
           stepAdvanceDistanceToEndOfStep(10u, 32u),
           RouteDeviationTracking.StaticThreshold(15U, 35.0),
           CourseFiltering.SNAP_TO_ROUTE,

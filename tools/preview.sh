@@ -204,8 +204,6 @@ start $TOLLOUT --ei nm_variant 0 --ez nm_sim true
 sleep 12; shot 21_corsie_telefono_orizzontale
 sleep 10; shot 21b_svincolo_telefono_orizzontale
 adb shell wm size reset; adb shell wm density reset; sleep 3
-# the official live map of Waze in its panel (traffic and reports as on waze.com)
-start --es nm_sheet waze; sleep 20; shot 22_waze_traffico
 # a place shared from Google Maps (text + link with the pin): becomes the destination
 start; sleep 14
 adb shell am start -a android.intent.action.SEND -t text/plain -n $PKG/.MainActivity --es android.intent.extra.TEXT "'Arco d Augusto https://www.google.com/maps/place/Arco+d%27Augusto/@44.0597,12.5683,17z/data=!3m1!4b1!4m6!3m5!8m2!3d44.0595836!4d12.5704111'"
