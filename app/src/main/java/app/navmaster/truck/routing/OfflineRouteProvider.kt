@@ -118,7 +118,9 @@ class OfflineRouteProvider(
       JsonObject(mapOf("location" to JsonArray(listOf(JsonPrimitive(r.lon[i]), JsonPrimitive(r.lat[i]))), "name" to JsonPrimitive("")))
     })
     val base = root - "locations" - "alternates" - "exclude_polygons"
-    for (match in listOf("edge_walk", "map_snap")) {
+    // map matching: GraphHopper stores the road shapes slightly simplified, so the exact walk along
+    // Valhalla's edges (edge_walk) never matched; map_snap follows the path in a few milliseconds
+    for (match in listOf("map_snap")) {
       val started = System.currentTimeMillis()
       val trace = JsonObject(base + mapOf(
           "shape" to shape,
