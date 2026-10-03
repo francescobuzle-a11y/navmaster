@@ -218,4 +218,6 @@ adb shell wm size reset; adb shell wm density reset; sleep 3
 log
 grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|say \(|queued|real junction|shared" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|Valhalla ready|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
+echo "== GraphHopper" >> "$INFO"
+grep -E "GraphHopper|Valhalla trace" "$OUT/logcat.txt" | head -60 >> "$INFO"
 echo done >> "$INFO"

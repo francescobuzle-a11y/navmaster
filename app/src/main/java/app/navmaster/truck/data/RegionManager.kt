@@ -1,5 +1,6 @@
 package app.navmaster.truck.data
 
+import app.navmaster.truck.routing.GhRouting
 import android.app.DownloadManager
 import android.content.Context
 import android.net.ConnectivityManager
@@ -66,7 +67,7 @@ data class InstalledRegion(val id: String, val manifest: Manifest, val dir: File
     get() = File(dir, "europa-tiles.txt").exists()
 
   val sizeBytes: Long
-    get() = dir.listFiles()?.sumOf { it.length() } ?: 0
+    get() = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 }
 
 sealed class DownloadState {
@@ -329,6 +330,11 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       File(dir, "europa-tiles.txt").writeText(list.joinToString("\n"))
       tar.delete()
       File(dir, "percorsi.tar").delete()
+    }
+    // the GraphHopper graph comes packed: unpacked now, once, not at the first route
+    if (File(dir, GhRouting.PACKAGE).exists()) {
+      setState(id, DownloadState.Running(total, total, "Installazione grafo GraphHopper"))
+      GhRouting.ready(dir)
     }
     File(dir, "manifest.json").writeText(manifestText)
     tmp.deleteRecursively()

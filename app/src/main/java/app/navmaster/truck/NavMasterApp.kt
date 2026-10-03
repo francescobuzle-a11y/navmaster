@@ -8,6 +8,7 @@ import app.navmaster.truck.live.TomTomGuard
 import app.navmaster.truck.location.SmartLocationProvider
 import app.navmaster.truck.poi.PoiIndex
 import app.navmaster.truck.routing.CriticalityFinder
+import app.navmaster.truck.routing.GhRouting
 import app.navmaster.truck.routing.OfflineRouteProvider
 import app.navmaster.truck.routing.RoutingEngine
 import app.navmaster.truck.search.AddressIndex
@@ -61,6 +62,8 @@ object AppGraph {
   val catalog by lazy { CatalogStore(app) }
   val regions by lazy { RegionManager(app, catalog) }
   val engine by lazy { RoutingEngine(app, regions) }
+  /** GraphHopper: the route itself, with the vehicle's measures (see OfflineRouteProvider). */
+  val gh by lazy { GhRouting(app, regions) }
   val limits by lazy { LimitsIndex(regions) }
   val poi by lazy { PoiIndex(regions) }
   val addresses by lazy { AddressIndex(regions) }
@@ -88,7 +91,7 @@ object AppGraph {
   fun findRoute(geometry: List<GeographicCoordinate>): Route? =
       recent.firstOrNull { it.geometry.size == geometry.size && it.geometry.firstOrNull() == geometry.firstOrNull() && it.geometry.lastOrNull() == geometry.lastOrNull() }
 
-  val routes by lazy { OfflineRouteProvider(engine, { profiles.garage.value }, { trip.value }) { remember(it) } }
+  val routes by lazy { OfflineRouteProvider(engine, gh, { profiles.garage.value }, { trip.value }) { remember(it) } }
 
   /** The simulated drive (its speed can be changed while it runs). */
   val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }

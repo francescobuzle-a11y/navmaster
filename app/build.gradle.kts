@@ -56,7 +56,12 @@ android {
   }
 
   packaging {
-    resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    resources {
+      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+      // the same licence / module files in several of GraphHopper's libraries
+      excludes += listOf("/META-INF/DEPENDENCIES", "/META-INF/LICENSE*", "/META-INF/NOTICE*", "/META-INF/INDEX.LIST",
+          "/META-INF/versions/*/module-info.class", "/module-info.class", "/META-INF/versions/*/OSGI-INF/MANIFEST.MF")
+    }
     jniLibs { useLegacyPackaging = true }
   }
 }
@@ -87,6 +92,12 @@ dependencies {
   implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
 
   // offline routing on the tablet
+  // GraphHopper (Apache 2.0) computes the route with the vehicle's measures, offline. Janino (its
+  // run-time compiler of custom models) is left out: Android cannot run what it compiles, the
+  // rules are written in code instead (routing/gh/NmWeightingFactory)
+  implementation(libs.graphhopper.core) {
+    exclude(group = "org.codehaus.janino")
+  }
   implementation(libs.valhalla.mobile)
   implementation(libs.valhalla.models)
   implementation(libs.valhalla.models.config)

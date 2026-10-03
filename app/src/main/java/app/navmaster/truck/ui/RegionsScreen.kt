@@ -99,7 +99,7 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
       for (r in inst) {
         val c = catalog?.countries?.firstOrNull { it.id == r.id }
         if (c != null) CountryRow(c, true, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
-        else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.engine.reset() }
+        else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.engine.reset(); AppGraph.gh.reset() }
       }
     }
     SectionHeader("Tutti i Paesi")
@@ -187,6 +187,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         installed -> RoundAction(Icons.Rounded.DeleteOutline, "Elimina", size = 52.dp, container = Nm.Raised) {
           AppGraph.regions.delete(c.id)
           AppGraph.engine.reset()
+          AppGraph.gh.reset()
         }
         state is DownloadState.Running || state is DownloadState.Queued -> {}
         c.available -> RoundAction(Icons.Rounded.CloudDownload, "Scarica", size = 52.dp, container = Nm.Accent) {

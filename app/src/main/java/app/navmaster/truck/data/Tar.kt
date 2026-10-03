@@ -3,13 +3,17 @@ package app.navmaster.truck.data
 import java.io.File
 import java.io.InputStream
 
-/** Minimal reader for the (ustar / pax) tar files of the Europe routing tiles. */
+/** Minimal reader for the (ustar / pax) tar files of the Europe routing tiles and of the GraphHopper graphs. */
 object Tar {
   /** Extracts every regular file into [dest]; returns the relative paths written. */
-  fun extract(tar: File, dest: File, onProgress: (Long) -> Unit = {}): List<String> {
+  fun extract(tar: File, dest: File, onProgress: (Long) -> Unit = {}): List<String> =
+      tar.inputStream().buffered(1 shl 20).use { extract(it, dest, onProgress) }
+
+  /** The same from a stream (e.g. a .tar.gz being unzipped); [onProgress] counts the bytes of the tar. */
+  fun extract(input: InputStream, dest: File, onProgress: (Long) -> Unit = {}): List<String> {
     val written = mutableListOf<String>()
     val destCanon = dest.canonicalPath
-    tar.inputStream().buffered(1 shl 20).use { input ->
+    run {
       val header = ByteArray(512)
       var paxPath: String? = null
       var done = 0L

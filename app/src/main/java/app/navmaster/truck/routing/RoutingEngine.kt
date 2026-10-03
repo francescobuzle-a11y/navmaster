@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import app.navmaster.truck.data.RegionManager
 import com.valhalla.config.ValhallaConfigBuilder
+import com.valhalla.config.models.ServiceLimitsTrace
+import com.valhalla.config.models.ValhallaConfig
 import com.valhalla.valhalla.Valhalla
 
 /**
@@ -37,7 +39,7 @@ class RoutingEngine(private val context: Context, private val regions: RegionMan
     }
     if (key != loadedKey) {
       valhalla?.close()
-      valhalla = Valhalla(context, builder.build())
+      valhalla = Valhalla(context, withLongTraces(builder.build()))
       loadedKey = key
       Log.i(TAG, "Valhalla ready on $key")
     }
@@ -56,6 +58,16 @@ class RoutingEngine(private val context: Context, private val regions: RegionMan
     valhalla?.close()
     valhalla = null
     loadedKey = null
+  }
+
+  /**
+   * GraphHopper's routes are followed by Valhalla's map matching (trace_route), whose limits are
+   * made for GPS traces (200 km, 16,000 points): raised to whole trips across Europe.
+   */
+  private fun withLongTraces(config: ValhallaConfig): ValhallaConfig {
+    val limits = config.serviceLimits ?: return config
+    val trace = (limits.trace ?: ServiceLimitsTrace()).copy(maxDistance = 4_000_000, maxShape = 400_000, maxSearchRadius = 100)
+    return config.copy(serviceLimits = limits.copy(trace = trace))
   }
 
   companion object {
