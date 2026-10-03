@@ -95,7 +95,7 @@ dependencies {
   // GraphHopper (Apache 2.0) computes the route with the vehicle's measures, offline. Janino (its
   // run-time compiler of custom models) is left out: Android cannot run what it compiles, the
   // rules are written in code instead (routing/gh/NmWeightingFactory)
-  implementation(libs.graphhopper.core) {
+  implementation("com.graphhopper:graphhopper-core:11.0") {
     exclude(group = "org.codehaus.janino")
   }
   implementation(libs.valhalla.mobile)
