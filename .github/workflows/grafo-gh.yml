@@ -1,0 +1,184 @@
+# GraphHopper graphs for the tablet, one per country (plus the small test area), added to the
+# country's package (release dati-<country>, file gh.tar.gz in the manifest). The app computes the
+# route with them, offline, with the measures of the vehicle (app/src/main/java/.../routing/gh).
+# The graph is built with the same base model and settings the app opens it with (GhEngine), then
+# checked on the runner with the app's own routing code before it is published.
+name: Grafo GraphHopper
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Paesi separati da virgola (es. test,italy)"
+        default: "test"
+      preview:
+        description: "Dopo il grafo di prova, anteprima dell'app sull'emulatore"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths: [".github/workflows/grafo-gh.yml"]
+
+permissions:
+  contents: write
+  actions: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GEOFABRIK: https://download.geofabrik.de/europe
+  TEST_BBOX: "12.30,43.85,12.72,44.12"
+  GH_VERSION: "11.0"
+  # the roads a lorry, a bus or a camper can drive on (as for the Valhalla graphs)
+  VEHICLE_ROADS: motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.p.outputs.regions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        run: |
+          python3 - <<'PY' >> $GITHUB_OUTPUT
+          import json
+          want = "${{ inputs.regions }}" or "test"
+          ids = {c["id"] for c in json.load(open("data/countries.json"))}
+          sel = [x.strip() for x in want.split(",") if x.strip() in ids or x.strip() == "test"]
+          print("regions=" + json.dumps(sel or ["test"]))
+          PY
+
+  graph:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        region: ${{ fromJson(needs.plan.outputs.regions) }}
+    steps:
+      - name: Spazio sul disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup /usr/share/swift || true
+          sudo mkdir -p /mnt/w && sudo chown $USER /mnt/w
+          df -h / /mnt; free -g
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "21"}
+      - name: Estratto OSM (solo strade per veicoli, traghetti, divieti di svolta)
+        working-directory: /mnt/w
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          if [ "${{ matrix.region }}" = "test" ]; then
+            curl -fsSL -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+            osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
+          else
+            curl -fsSL -o src.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
+            mv src.osm.pbf region.osm.pbf
+          fi
+          rm -f src.osm.pbf
+          osmium tags-filter region.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry r/type=restriction \
+            -o roads.osm.pbf --overwrite
+          rm region.osm.pbf
+          ls -la
+      - name: Grafo GraphHopper ${{ env.GH_VERSION }}
+        working-directory: /mnt/w
+        run: |
+          curl -fsSL -o gh.jar "https://github.com/graphhopper/graphhopper/releases/download/$GH_VERSION/graphhopper-web-$GH_VERSION.jar"
+          # the same profile and settings as GhEngine on the tablet
+          cat > config.yml <<EOF
+          graphhopper:
+            datareader.file: /mnt/w/roads.osm.pbf
+            graph.location: /mnt/w/gh
+            custom_models.directory: $GITHUB_WORKSPACE/app/src/main/assets/gh
+            import.osm.ignored_highways: footway,cycleway,path,pedestrian,steps,bridleway,corridor,construction,proposed,platform,raceway
+            graph.encoded_values: car_access, car_average_speed, road_access, road_class, road_environment, max_speed, hgv, max_width, max_height, max_weight, max_weight_except, max_length, max_axle_load, hazmat, hazmat_tunnel, hazmat_water, toll, surface, roundabout
+            profiles:
+              - name: nm
+                turn_costs:
+                  vehicle_types: [hgv, motorcar, motor_vehicle]
+                  u_turn_costs: 60
+                custom_model_files: [nm_base.json]
+            profiles_lm:
+              - profile: nm
+            prepare.lm.landmarks: 16
+            graph.dataaccess.default_type: RAM_STORE
+          EOF
+          cat config.yml
+          MEM=$(( $(free -g | awk '/Mem:/{print $2}') - 2 ))
+          date; java -Xmx${MEM}g -jar gh.jar import config.yml 2>&1 | grep -vE "DEBUG" | tail -40; date
+          test -f gh/properties
+          rm -f roads.osm.pbf
+          du -sh gh; ls -la gh
+      - name: Prova con il codice dell'app (senza Janino, come sul tablet)
+        working-directory: /mnt/w
+        run: |
+          cp gh.jar nojan.jar && zip -q -d nojan.jar 'org/codehaus/*'
+          mkdir -p cls
+          javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
+            $GITHUB_WORKSPACE/tools/gh/GhCheck.java
+          if [ "${{ matrix.region }}" = "test" ]; then
+            # Rimini -> San Marino: lorry 4 m / 40 t, camper 3 m / 3.5 t
+            java -cp nojan.jar:cls GhCheck gh $GITHUB_WORKSPACE/app/src/main/assets/gh "44.0597,12.5653;43.9360,12.4460" \
+              4.0 2.55 16.5 40 3.0 2.2 7 3.5 2>&1 | grep -v DEBUG | tail -20
+          else
+            java -cp nojan.jar:cls GhCheck gh $GITHUB_WORKSPACE/app/src/main/assets/gh - 2>&1 | grep -v DEBUG | tail -20
+          fi
+      - name: Pacchetto gh.tar.gz
+        working-directory: /mnt/w
+        run: |
+          rm -f gh/*.lock
+          tar -C gh -cf - . | gzip -6 > gh.tar.gz
+          ls -la gh.tar.gz
+          SIZE=$(stat -c%s gh.tar.gz)
+          if [ $SIZE -gt 1900000000 ]; then
+            split -b 1900000000 -d -a 1 gh.tar.gz gh.tar.gz.part && rm gh.tar.gz
+          fi
+          mkdir -p pub && mv gh.tar.gz* pub/ && ls -la pub
+      - name: Nel pacchetto del Paese (release dati-${{ matrix.region }})
+        working-directory: /mnt/w
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="dati-${{ matrix.region }}"
+          R="${{ github.repository }}"
+          gh release download "$TAG" -R "$R" -p manifest.json -D old
+          python3 - <<'PY'
+          import hashlib, json, os
+          m = json.load(open("old/manifest.json"))
+          parts = []
+          for p in sorted(os.listdir("pub")):
+              h = hashlib.sha256()
+              with open(os.path.join("pub", p), "rb") as fh:
+                  for chunk in iter(lambda: fh.read(1 << 20), b""):
+                      h.update(chunk)
+              parts.append({"name": p, "size": os.path.getsize(os.path.join("pub", p)), "sha256": h.hexdigest()})
+          m["files"] = [f for f in m["files"] if f["file"] != "gh.tar.gz"]
+          m["files"].append({"file": "gh.tar.gz", "size": sum(p["size"] for p in parts), "parts": parts})
+          m["graphhopper"] = os.environ["GH_VERSION"]
+          json.dump(m, open("pub/manifest.json", "w"), indent=1)
+          print(json.dumps(m, indent=1))
+          PY
+          # old pieces of a previous graph that are not in the new one
+          for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name' | grep -E '^gh\.tar\.gz(\.part[0-9]+)?$' || true); do
+            [ -f "pub/$a" ] || gh release delete-asset "$TAG" "$a" -R "$R" --yes
+          done
+          gh release upload "$TAG" pub/* -R "$R" --clobber
+
+  after:
+    needs: [plan, graph]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Catalogo e anteprima
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run catalogo.yml --repo "${{ github.repository }}" --ref main || true
+          if [ "${{ inputs.preview }}" != "false" ] && [ "${{ needs.graph.result }}" = "success" ] && echo '${{ needs.plan.outputs.regions }}' | grep -q '"test"'; then
+            gh workflow run app.yml --repo "${{ github.repository }}" --ref main -f preview=true
+          fi
