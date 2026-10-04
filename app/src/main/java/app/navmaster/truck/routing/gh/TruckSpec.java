@@ -37,6 +37,8 @@ public final class TruckSpec {
   public boolean preferTruckRoutes = false;
   /** The shortest route rather than the fastest. */
   public boolean shortest = false;
+  /** Roads (edge ids) made twice as costly: those of the routes already found, to find another one. */
+  public com.carrotsearch.hppc.IntHashSet penalized = null;
   /** Zones to avoid: each one a closed ring of [lat, lon]. */
   public final List<double[][]> avoidZones = new ArrayList<>();
 
@@ -48,6 +50,7 @@ public final class TruckSpec {
     t.topSpeedKmh = topSpeedKmh; t.avoidTolls = avoidTolls; t.avoidFerries = avoidFerries; t.avoidUnpaved = avoidUnpaved;
     t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest;
     t.avoidZones.addAll(avoidZones);
+    t.penalized = penalized;
     return t;
   }
 

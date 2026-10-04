@@ -8,7 +8,9 @@ import com.graphhopper.ResponsePath;
 import com.graphhopper.config.LMProfile;
 import com.graphhopper.config.Profile;
 import com.graphhopper.routing.WeightingFactory;
+import com.carrotsearch.hppc.IntHashSet;
 import com.graphhopper.util.PointList;
+import com.graphhopper.util.details.PathDetail;
 import com.graphhopper.util.TurnCostsConfig;
 import com.graphhopper.util.shapes.GHPoint;
 import java.io.Closeable;
@@ -127,39 +129,33 @@ public final class GhEngine implements Closeable {
     return routes(points, headings, spec, 1).get(0);
   }
 
+  /** Trips shorter than this (in a straight line) get GraphHopper's own search for alternatives. */
+  static final double SHORT_TRIP_M = 60_000;
+
   /**
-   * Up to [maxPaths] different routes from GraphHopper itself (its "alternative route" search, for
-   * a trip without stops): the best one first. With stops, or when the alternatives cannot be
-   * worked out, only the best one. Never empty: a failure is a Result with [Result#error].
+   * Up to [maxPaths] different routes, the best one first (alternatives only for a trip without
+   * stops). Never empty: a failure is a Result with [Result#error].
+   *
+   * The best route is one fast search on the landmarks. The alternatives: on short trips
+   * GraphHopper's own "alternative route" search (it compares whole corridors and gives the nicest
+   * alternatives, but its time grows with the distance: Milano - Roma 20 s); on longer trips the
+   * roads of the routes already found are made twice as costly and the search is run again, which
+   * finds the next good route in a fraction of a second.
    */
   public List<Result> routes(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     long t0 = System.currentTimeMillis();
     List<Result> out = new ArrayList<>();
-    String note0 = null;
+    String note = null;
     try {
       boolean alt = maxPaths > 1 && points.size() == 2;
-      GHResponse rsp = hopper.route(request(points, headings, spec, alt ? maxPaths : 1));
-      String note = null;
-      if (alt && rsp.hasErrors()) {
-        Throwable t = rsp.getErrors().get(0);
-        note = "alternative_route: " + t;
-        StackTraceElement[] st = t.getStackTrace();
-        for (int i = 0; i < st.length && i < 6; i++) note += " < " + st[i];
-        rsp = hopper.route(request(points, headings, spec, 1));
-      } else if (alt) {
-        note = "alternative_route: " + rsp.getAll().size() + " paths";
-      }
-      note0 = note;
-      if (rsp.hasErrors()) {
-        Result r = new Result();
-        r.error = String.valueOf(rsp.getErrors().get(0).getMessage());
-        out.add(r);
-      } else {
-        List<ResponsePath> paths = new ArrayList<>(rsp.getAll());
+      boolean shortTrip = alt && crow(points) < SHORT_TRIP_M;
+      if (shortTrip) {
+        GHResponse rsp = hopper.route(request(points, headings, spec, maxPaths));
+        List<ResponsePath> paths = rsp.hasErrors() ? new ArrayList<>() : new ArrayList<>(rsp.getAll());
+        note = "alternative_route: " + paths.size() + " paths";
         // the search for alternatives is sensitive to the small preference for lorry roads: when it
-        // finds fewer than asked, the alternatives are searched again without it (the best route
-        // stays the one with the preference)
-        if (alt && paths.size() < maxPaths && spec.preferTruckRoutes) {
+        // finds fewer than asked, they are searched again without it (the best route stays first)
+        if (!paths.isEmpty() && paths.size() < maxPaths && spec.preferTruckRoutes) {
           TruckSpec plain = spec.copy();
           plain.preferTruckRoutes = false;
           GHResponse more = hopper.route(request(points, headings, plain, maxPaths));
@@ -170,20 +166,24 @@ public final class GhEngine implements Closeable {
               if (!dup && paths.size() < maxPaths) paths.add(p);
             }
           }
-          note = "alternative_route: " + rsp.getAll().size() + " paths, " + paths.size() + " with the plain search";
+          note += ", " + paths.size() + " with the plain search";
         }
-        for (int k = 0; k < paths.size() && k < Math.max(1, maxPaths); k++) {
-          ResponsePath path = paths.get(k);
-          if (path.hasErrors()) continue;
-          out.add(result(path));
-        }
-        if (out.isEmpty()) {
+        for (ResponsePath p : paths) if (!p.hasErrors() && out.size() < maxPaths) out.add(result(p));
+      }
+      if (out.isEmpty()) {
+        GHRequest req = request(points, headings, spec, 1);
+        if (alt) req.setPathDetails(Collections.singletonList("edge_id"));
+        GHResponse rsp = hopper.route(req);
+        if (rsp.hasErrors()) {
           Result r = new Result();
-          r.error = "nessun percorso";
+          r.error = String.valueOf(rsp.getErrors().get(0).getMessage());
           out.add(r);
+        } else {
+          ResponsePath best = rsp.getBest();
+          out.add(result(best));
+          if (alt) note = penaltyAlternatives(points, headings, spec, maxPaths, best, out);
         }
       }
-      note0 = note;
     } catch (Exception e) {
       Result r = new Result();
       r.error = e.toString();
@@ -192,8 +192,53 @@ public final class GhEngine implements Closeable {
     }
     long ms = System.currentTimeMillis() - t0;
     for (Result r : out) r.computeMs = ms;
-    if (!out.isEmpty() && note0 != null) out.get(0).note = note0;
+    if (!out.isEmpty() && note != null) out.get(0).note = note;
     return out;
+  }
+
+  /** The alternatives of a long trip: the roads already used cost double, search again. */
+  private String penaltyAlternatives(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths,
+      ResponsePath best, List<Result> out) {
+    IntHashSet used = edgeIds(best);
+    int tries = 0;
+    String note = "penalty alternatives:";
+    while (out.size() < maxPaths && tries < maxPaths + 1) {
+      tries++;
+      TruckSpec s2 = spec.copy();
+      s2.penalized = new IntHashSet(used);
+      GHRequest req = request(points, headings, s2, 1);
+      req.setPathDetails(Collections.singletonList("edge_id"));
+      long t = System.currentTimeMillis();
+      GHResponse rsp = hopper.route(req);
+      if (rsp.hasErrors()) break;
+      ResponsePath p = rsp.getBest();
+      IntHashSet mine = edgeIds(p);
+      int shared = 0;
+      for (com.carrotsearch.hppc.cursors.IntCursor c : mine) if (used.contains(c.value)) shared++;
+      double share = mine.isEmpty() ? 1 : shared / (double) mine.size();
+      note += String.format(java.util.Locale.ROOT, " %.0f km/%.0f%% shared/%d ms", p.getDistance() / 1000, share * 100,
+          System.currentTimeMillis() - t);
+      // not much longer than the best one, and a really different way
+      if (p.getTime() > best.getTime() * 1.4) break;
+      used.addAll(mine);
+      if (share > 0.8) continue;
+      out.add(result(p));
+    }
+    return note;
+  }
+
+  private static IntHashSet edgeIds(ResponsePath p) {
+    IntHashSet set = new IntHashSet();
+    List<PathDetail> details = p.getPathDetails().get("edge_id");
+    if (details != null) for (PathDetail d : details) if (d.getValue() instanceof Number) set.add(((Number) d.getValue()).intValue());
+    return set;
+  }
+
+  private static double crow(List<double[]> points) {
+    double[] a = points.get(0), b = points.get(points.size() - 1);
+    double k = Math.cos(Math.toRadians((a[0] + b[0]) / 2));
+    double dy = (b[0] - a[0]) * 111_195, dx = (b[1] - a[1]) * 111_195 * k;
+    return Math.sqrt(dx * dx + dy * dy);
   }
 
   private static GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {

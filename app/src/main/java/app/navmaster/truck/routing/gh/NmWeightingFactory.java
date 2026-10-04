@@ -231,6 +231,7 @@ public final class NmWeightingFactory implements WeightingFactory {
       if (t == Toll.ALL || (truck && t == Toll.HGV)) v *= 0.02;
     }
     for (Polygon z : zones) if (CustomWeightingHelper.in(z, edge)) return 0.0;
+    if (s.penalized != null && s.penalized.contains(edge.getEdge())) v *= 0.5;
     return Math.min(v, 1.0);
   }
 }

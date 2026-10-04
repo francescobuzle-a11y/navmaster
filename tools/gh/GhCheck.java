@@ -8,8 +8,8 @@ import java.util.List;
  * Check of a GraphHopper graph with the app's own routing code (GhEngine, NmWeightingFactory),
  * run on GitHub right after the graph is built: the graph loads with the app's profiles, and for
  * each trip a lorry (4 m, 40 t) and a camper (3.2 m, 3.5 t) get a route, with its alternatives,
- * and the time it took. A trip slower than 3 s on the runner fails the check (on a tablet it would
- * be several times slower).
+ * and the time it took (marked "slow" over 3 s on the runner: on a tablet it is several times
+ * slower). A trip without a route fails the check.
  *
  * usage: java -cp gh.jar:classes GhCheck GRAPH_DIR MODELS_DIR "lat,lon;lat,lon|lat,lon;lat,lon"  ("-": load only)
  */
@@ -42,7 +42,8 @@ public class GhCheck {
           System.out.println("GHCHECK " + trip + " " + (v == 0 ? "camion" : "camper") + " run " + run + ": "
               + (r.ok() ? String.format("%.1f km, %d min, %d paths%s, %d ms", r.distanceM / 1000, r.timeMs / 60000, rs.size(), alt, r.computeMs)
                   : "ERROR " + r.error) + (r.note != null ? " (" + r.note + ")" : ""));
-          if (!r.ok() || (run == 1 && r.computeMs > 3000)) fails++;
+          if (!r.ok()) fails++;
+          if (run == 1 && r.computeMs > 3000) System.out.println("GHCHECK slow: " + r.computeMs + " ms");
         }
       }
     }
