@@ -138,9 +138,8 @@ public final class GhEngine implements Closeable {
    *
    * The best route is one fast search on the landmarks. The alternatives: on short trips
    * GraphHopper's own "alternative route" search (it compares whole corridors and gives the nicest
-   * alternatives, but its time grows with the distance: Milano - Roma 20 s); on longer trips the
-   * roads of the routes already found are made twice as costly and the search is run again, which
-   * finds the next good route in a fraction of a second.
+   * alternatives, but its time grows with the distance: Milano - Roma 20 s); on longer trips routes
+   * pulled to one side or the other of the best one (viaAlternatives), a fraction of a second each.
    */
   public List<Result> routes(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     long t0 = System.currentTimeMillis();
@@ -181,7 +180,7 @@ public final class GhEngine implements Closeable {
         } else {
           ResponsePath best = rsp.getBest();
           out.add(result(best));
-          if (alt) note = penaltyAlternatives(points, headings, spec, maxPaths, best, out);
+          if (alt) note = viaAlternatives(points, headings, spec, maxPaths, best, out);
         }
       }
     } catch (Exception e) {
@@ -196,33 +195,68 @@ public final class GhEngine implements Closeable {
     return out;
   }
 
-  /** The alternatives of a long trip: the roads already used cost double, search again. */
-  private String penaltyAlternatives(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths,
+  /**
+   * The alternatives of a long trip: the route through a point to one side of the best route's
+   * middle (left and right, nearer and farther), kept when not much slower and really different.
+   * Every search has the vehicle's own weights, so each one takes a fraction of a second.
+   */
+  private String viaAlternatives(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths,
       ResponsePath best, List<Result> out) {
-    IntHashSet used = edgeIds(best);
-    int tries = 0;
-    String note = "penalty alternatives:";
-    while (out.size() < maxPaths && tries < maxPaths + 1) {
-      tries++;
-      TruckSpec s2 = spec.copy();
-      s2.penalized = new IntHashSet(used);
-      GHRequest req = request(points, headings, s2, 1);
+    List<IntHashSet> chosen = new ArrayList<>();
+    chosen.add(edgeIds(best));
+    PointList pl = best.getPoints();
+    double[] a = points.get(0), b = points.get(points.size() - 1);
+    double crow = crow(points);
+    // the middle of the best route
+    double total = best.getDistance(), along = 0;
+    double midLat = pl.getLat(pl.size() / 2), midLon = pl.getLon(pl.size() / 2);
+    for (int i = 1; i < pl.size(); i++) {
+      along += crow(Arrays.asList(new double[] {pl.getLat(i - 1), pl.getLon(i - 1)}, new double[] {pl.getLat(i), pl.getLon(i)}));
+      if (along >= total / 2) {
+        midLat = pl.getLat(i);
+        midLon = pl.getLon(i);
+        break;
+      }
+    }
+    // across the direction of the trip, in metres
+    double k = Math.cos(Math.toRadians(midLat));
+    double dy = (b[0] - a[0]) * 111_195, dx = (b[1] - a[1]) * 111_195 * k;
+    double len = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    double px = -dy / len, py = dx / len;
+    String note = "via alternatives:";
+    double[] offsets = {0.12, -0.12, 0.22, -0.22, 0.06, -0.06};
+    for (double off : offsets) {
+      if (out.size() >= maxPaths) break;
+      double vLat = midLat + py * off * crow / 111_195, vLon = midLon + px * off * crow / (111_195 * k);
+      List<double[]> via = Arrays.asList(a, new double[] {vLat, vLon}, b);
+      List<Double> hs = null;
+      if (headings != null && !headings.isEmpty()) hs = Arrays.asList(headings.get(0), Double.NaN, Double.NaN);
+      GHRequest req = request(via, hs, spec, 1);
       req.setPathDetails(Collections.singletonList("edge_id"));
+      // no turning back at the point: it is only there to pull the route to that side
+      req.getHints().putObject("pass_through", true);
       long t = System.currentTimeMillis();
       GHResponse rsp = hopper.route(req);
-      if (rsp.hasErrors()) break;
+      if (rsp.hasErrors()) {
+        note += " (no road)";
+        continue;
+      }
       ResponsePath p = rsp.getBest();
       IntHashSet mine = edgeIds(p);
-      int shared = 0;
-      for (com.carrotsearch.hppc.cursors.IntCursor c : mine) if (used.contains(c.value)) shared++;
-      double share = mine.isEmpty() ? 1 : shared / (double) mine.size();
-      note += String.format(java.util.Locale.ROOT, " %.0f km/%.0f%% shared/%d ms", p.getDistance() / 1000, share * 100,
-          System.currentTimeMillis() - t);
-      // not much longer than the best one, and a really different way
-      if (p.getTime() > best.getTime() * 1.4) break;
-      used.addAll(mine);
-      if (share > 0.8) continue;
-      out.add(result(p));
+      double share = 0;
+      for (IntHashSet other : chosen) {
+        int shared = 0;
+        for (com.carrotsearch.hppc.cursors.IntCursor c : mine) if (other.contains(c.value)) shared++;
+        share = Math.max(share, mine.isEmpty() ? 1 : shared / (double) mine.size());
+      }
+      note += String.format(java.util.Locale.ROOT, " %.0f km/%.0f min/%.0f%%/%d ms", p.getDistance() / 1000, p.getTime() / 60000.0,
+          share * 100, System.currentTimeMillis() - t);
+      if (p.getTime() > best.getTime() * 1.35 || share > 0.7) continue;
+      chosen.add(mine);
+      Result r = result(p);
+      // the pulling point is not a stop: only the start and the destination are waypoints
+      r.waypointIndex = new int[] {0, r.lat.length - 1};
+      out.add(r);
     }
     return note;
   }
