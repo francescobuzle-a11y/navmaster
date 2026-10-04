@@ -98,6 +98,8 @@ public final class GhEngine implements Closeable {
     public long timeMs;
     public long computeMs;
     public String error;
+    /** Why GraphHopper gave no alternatives (when asked and it could not), for the log. */
+    public String note;
 
     public boolean ok() {
       return error == null && lat.length >= 2;
@@ -120,10 +122,21 @@ public final class GhEngine implements Closeable {
   public List<Result> routes(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     long t0 = System.currentTimeMillis();
     List<Result> out = new ArrayList<>();
+    String note0 = null;
     try {
       boolean alt = maxPaths > 1 && points.size() == 2;
       GHResponse rsp = hopper.route(request(points, headings, spec, alt ? maxPaths : 1));
-      if (alt && rsp.hasErrors()) rsp = hopper.route(request(points, headings, spec, 1));
+      String note = null;
+      if (alt && rsp.hasErrors()) {
+        Throwable t = rsp.getErrors().get(0);
+        note = "alternative_route: " + t;
+        StackTraceElement[] st = t.getStackTrace();
+        for (int i = 0; i < st.length && i < 6; i++) note += " < " + st[i];
+        rsp = hopper.route(request(points, headings, spec, 1));
+      } else if (alt) {
+        note = "alternative_route: " + rsp.getAll().size() + " paths";
+      }
+      note0 = note;
       if (rsp.hasErrors()) {
         Result r = new Result();
         r.error = String.valueOf(rsp.getErrors().get(0).getMessage());
@@ -149,6 +162,7 @@ public final class GhEngine implements Closeable {
     }
     long ms = System.currentTimeMillis() - t0;
     for (Result r : out) r.computeMs = ms;
+    if (!out.isEmpty() && note0 != null) out.get(0).note = note0;
     return out;
   }
 

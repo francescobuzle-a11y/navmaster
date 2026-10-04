@@ -99,6 +99,7 @@ class OfflineRouteProvider(
     val kinds = locs.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: "break" }
     val spec = vehicle.ghSpec(loadT, options)
     val found = gh.routes(points, headings, spec, 1 + options.alternates.coerceAtLeast(0)) ?: return null
+    found.firstOrNull()?.note?.let { Log.i(TAG, "GraphHopper $it") }
     val ok = found.filter { it.ok() }
     if (ok.isEmpty()) {
       Log.w(TAG, "GraphHopper: no route (${found.firstOrNull()?.error}) for $spec")
