@@ -109,65 +109,108 @@ public final class GhEngine implements Closeable {
    * point in degrees, NaN where there is none (the first one is the direction of the vehicle).
    */
   public Result route(List<double[]> points, List<Double> headings, TruckSpec spec) {
-    Result r = new Result();
+    return routes(points, headings, spec, 1).get(0);
+  }
+
+  /**
+   * Up to [maxPaths] different routes from GraphHopper itself (its "alternative route" search, for
+   * a trip without stops): the best one first. With stops, or when the alternatives cannot be
+   * worked out, only the best one. Never empty: a failure is a Result with [Result#error].
+   */
+  public List<Result> routes(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     long t0 = System.currentTimeMillis();
+    List<Result> out = new ArrayList<>();
     try {
-      List<GHPoint> pts = new ArrayList<>();
-      for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
-      GHRequest req = new GHRequest(pts).setProfile(PROFILE).setLocale(Locale.ITALIAN);
-      if (headings != null && headings.size() == pts.size()) {
-        boolean any = false;
-        for (Double h : headings) if (h != null && !h.isNaN()) any = true;
-        if (any) {
-          List<Double> hs = new ArrayList<>();
-          for (Double h : headings) hs.add(h == null ? Double.NaN : h);
-          req.setHeadings(hs);
-        }
-      }
-      req.getHints().putObject(NmWeightingFactory.SPEC, spec);
-      req.getHints().putObject("instructions", false);
-      req.getHints().putObject("calc_points", true);
-      // every point of the roads, not simplified: Valhalla matches the path edge by edge
-      req.getHints().putObject("way_point_max_distance", 0);
-      GHResponse rsp = hopper.route(req);
+      boolean alt = maxPaths > 1 && points.size() == 2;
+      GHResponse rsp = hopper.route(request(points, headings, spec, alt ? maxPaths : 1));
+      if (alt && rsp.hasErrors()) rsp = hopper.route(request(points, headings, spec, 1));
       if (rsp.hasErrors()) {
+        Result r = new Result();
         r.error = String.valueOf(rsp.getErrors().get(0).getMessage());
-        return r;
-      }
-      ResponsePath best = rsp.getBest();
-      PointList pl = best.getPoints();
-      int n = pl.size();
-      r.lat = new double[n];
-      r.lon = new double[n];
-      for (int i = 0; i < n; i++) {
-        r.lat[i] = pl.getLat(i);
-        r.lon[i] = pl.getLon(i);
-      }
-      PointList wp = best.getWaypoints();
-      r.waypointIndex = new int[wp.size()];
-      int from = 0;
-      for (int k = 0; k < wp.size(); k++) {
-        int bestI = from;
-        double bestD = Double.MAX_VALUE;
-        for (int i = from; i < n; i++) {
-          double dLat = pl.getLat(i) - wp.getLat(k), dLon = pl.getLon(i) - wp.getLon(k);
-          double d = dLat * dLat + dLon * dLon;
-          if (d < bestD) {
-            bestD = d;
-            bestI = i;
-          }
-          if (d == 0) break;
+        out.add(r);
+      } else {
+        List<ResponsePath> paths = rsp.getAll();
+        for (int k = 0; k < paths.size() && k < Math.max(1, maxPaths); k++) {
+          ResponsePath path = paths.get(k);
+          if (path.hasErrors()) continue;
+          out.add(result(path));
         }
-        r.waypointIndex[k] = k == 0 ? 0 : (k == wp.size() - 1 ? n - 1 : bestI);
-        from = r.waypointIndex[k];
+        if (out.isEmpty()) {
+          Result r = new Result();
+          r.error = "nessun percorso";
+          out.add(r);
+        }
       }
-      r.distanceM = best.getDistance();
-      r.timeMs = best.getTime();
     } catch (Exception e) {
+      Result r = new Result();
       r.error = e.toString();
-    } finally {
-      r.computeMs = System.currentTimeMillis() - t0;
+      out.clear();
+      out.add(r);
     }
+    long ms = System.currentTimeMillis() - t0;
+    for (Result r : out) r.computeMs = ms;
+    return out;
+  }
+
+  private static GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
+    List<GHPoint> pts = new ArrayList<>();
+    for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
+    GHRequest req = new GHRequest(pts).setProfile(PROFILE).setLocale(Locale.ITALIAN);
+    if (headings != null && headings.size() == pts.size()) {
+      boolean any = false;
+      for (Double h : headings) if (h != null && !h.isNaN()) any = true;
+      if (any) {
+        List<Double> hs = new ArrayList<>();
+        for (Double h : headings) hs.add(h == null ? Double.NaN : h);
+        req.setHeadings(hs);
+      }
+    }
+    req.getHints().putObject(NmWeightingFactory.SPEC, spec);
+    req.getHints().putObject("instructions", false);
+    req.getHints().putObject("calc_points", true);
+    // every point of the roads, not simplified: Valhalla follows the path closely
+    req.getHints().putObject("way_point_max_distance", 0);
+    if (maxPaths > 1) {
+      // routes that are really different (at most 70% of road in common) and not much longer
+      // (at most 50% more) than the best one: on Rimini - San Marino three routes, as Valhalla gave
+      req.setAlgorithm("alternative_route");
+      req.getHints().putObject("alternative_route.max_paths", maxPaths);
+      req.getHints().putObject("alternative_route.max_weight_factor", 1.5);
+      req.getHints().putObject("alternative_route.max_share_factor", 0.7);
+    }
+    return req;
+  }
+
+  private static Result result(ResponsePath best) {
+    Result r = new Result();
+    PointList pl = best.getPoints();
+    int n = pl.size();
+    r.lat = new double[n];
+    r.lon = new double[n];
+    for (int i = 0; i < n; i++) {
+      r.lat[i] = pl.getLat(i);
+      r.lon[i] = pl.getLon(i);
+    }
+    PointList wp = best.getWaypoints();
+    r.waypointIndex = new int[wp.size()];
+    int from = 0;
+    for (int k = 0; k < wp.size(); k++) {
+      int bestI = from;
+      double bestD = Double.MAX_VALUE;
+      for (int i = from; i < n; i++) {
+        double dLat = pl.getLat(i) - wp.getLat(k), dLon = pl.getLon(i) - wp.getLon(k);
+        double d = dLat * dLat + dLon * dLon;
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
+        }
+        if (d == 0) break;
+      }
+      r.waypointIndex[k] = k == 0 ? 0 : (k == wp.size() - 1 ? n - 1 : bestI);
+      from = r.waypointIndex[k];
+    }
+    r.distanceM = best.getDistance();
+    r.timeMs = best.getTime();
     return r;
   }
 

@@ -37,13 +37,16 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return engine
   }
 
-  /** The route of [spec] through [points] ([lat, lon]) with GraphHopper, or null without a graph. */
+  /**
+   * Up to [maxPaths] routes of [spec] through [points] ([lat, lon]) with GraphHopper (alternatives
+   * only for a trip without stops), best first; null without a graph.
+   */
   @Synchronized
-  fun route(points: List<DoubleArray>, headings: List<Double>, spec: TruckSpec): GhEngine.Result? {
+  fun routes(points: List<DoubleArray>, headings: List<Double>, spec: TruckSpec, maxPaths: Int = 1): List<GhEngine.Result>? {
     val first = points.firstOrNull() ?: return null
     val e = runCatching { engineAt(first[0], first[1]) }.onFailure { Log.w(TAG, "GraphHopper not available: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }.getOrNull()
         ?: return null
-    return e.route(points, headings, spec)
+    return e.routes(points, headings, spec, maxPaths)
   }
 
   @Synchronized

@@ -61,6 +61,10 @@ start --es nm_sheet search_guided; sleep 9; shot 04b_ricerca_guidata
 # route choice: variants, tolls advice, difficulties
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
 sleep 30; shot 05_scelta_percorso
+# "Altri percorsi": GraphHopper's routes, then Valhalla's added on request
+start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ez nm_more true
+sleep 40; shot 05s_altri_percorsi
+adb logcat -d -s NavMasterRoute:* NavMasterVM:* | grep -E "GraphHopper route [0-9]|more routes|variant " | tail -16 >> "$INFO" || true
 # long press on the map with a route on screen: go / pass here / avoid this zone
 adb shell input swipe 1900 700 1900 700 1600; sleep 3; shot 05i_punto_sulla_mappa
 # moving the map with a finger: the routes go down to a small bar, the map stays free

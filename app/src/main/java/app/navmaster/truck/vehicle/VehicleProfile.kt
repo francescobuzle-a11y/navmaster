@@ -188,6 +188,8 @@ data class TripOptions(
     val avoidTolls: Boolean = false,
     val shortest: Boolean = false,
     val alternates: Int = 0,
+    /** Valhalla's own routes, not GraphHopper's: the "more routes" the driver asks for. */
+    val valhallaOnly: Boolean = false,
     /** Rings of [lon, lat] the route must not touch (points the driver chose to avoid). */
     val excludePolygons: List<List<List<Double>>> = emptyList(),
     /** Diagnosis only: costing options that override the vehicle's ("use_highways" → 1.0 ...). */

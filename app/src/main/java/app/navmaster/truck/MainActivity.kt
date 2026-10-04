@@ -142,7 +142,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     intent?.getStringExtra("nm_load")?.toDoubleOrNull()?.let { AppGraph.profiles.setLoad(it) }
     val label = intent?.getStringExtra("nm_label") ?: "Prova"
     // plan only: the route choice with its difficulties stays on screen
-    if (intent?.getBooleanExtra("nm_plan", false) == true) vm.autoPlan(c, label)
+    if (intent?.getBooleanExtra("nm_plan", false) == true) vm.autoPlan(c, label, intent?.getBooleanExtra("nm_more", false) == true)
     else vm.autoRun(c, label, intent?.getBooleanExtra("nm_sim", true) ?: true, intent?.getIntExtra("nm_variant", -1)?.takeIf { it >= 0 })
   }
 

@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddLocationAlt
+import androidx.compose.material.icons.rounded.AltRoute
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Lightbulb
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.navmaster.truck.nav.MoreRoutes
 import app.navmaster.truck.nav.PlanState
 import app.navmaster.truck.nav.RouteVariant
 import app.navmaster.truck.routing.Criticality
@@ -73,6 +75,8 @@ fun PlanPanel(
     onExpand: () -> Unit = {},
     onPickStart: () -> Unit = {},
     onClearStart: () -> Unit = {},
+    /** "Altri percorsi": Valhalla's routes added to GraphHopper's. */
+    onMore: () -> Unit = {},
 ) {
   // a departure chosen by the driver: the trip can only be simulated
   val startLabel = if (plan.start != null) "Simula" else "Avvia"
@@ -84,6 +88,7 @@ fun PlanPanel(
     Panel(modifier, padding = 10.dp) {
       Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         plan.variants.forEachIndexed { i, v -> VariantChip(v, i == plan.selected) { onSelect(i) } }
+        if (!plan.computing) MoreRoutesCard(plan.more, compact = true, onClick = onMore)
       }
       Spacer(Modifier.height(8.dp))
       androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -159,6 +164,7 @@ fun PlanPanel(
         Spacer(Modifier.height(8.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
           plan.variants.forEachIndexed { i, v -> VariantCard(v, i == plan.selected) { onSelect(i) } }
+          if (!plan.computing) MoreRoutesCard(plan.more, compact = false, onClick = onMore)
         }
         plan.advice?.let {
           Row(Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp)).background(Color(0x332EB85C)).padding(10.dp),
@@ -234,6 +240,36 @@ private fun VariantChip(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
     Column {
       Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
       Caption("${v.title} · ${Fmt.distanceText(v.distanceM)}" + if (v.analysis.tollKm > 0.5) " · 💶" else "", size = 12, lines = 1)
+    }
+  }
+}
+
+/**
+ * After the routes: "Altri percorsi" asks Valhalla for its own routes (other roads, still with the
+ * vehicle's measures); a spinner while it looks; a note when it finds nothing new; gone once added.
+ */
+@Composable
+private fun MoreRoutesCard(state: MoreRoutes, compact: Boolean, onClick: () -> Unit) {
+  if (state == MoreRoutes.ADDED) return
+  val enabled = state == MoreRoutes.NONE
+  Column(
+      Modifier.widthIn(min = if (compact) 120.dp else 150.dp).heightIn(min = if (compact) 56.dp else 120.dp)
+          .clip(RoundedCornerShape(if (compact) 14.dp else 18.dp)).background(Color(0x14FFFFFF))
+          .border(2.dp, Nm.Accent.copy(alpha = if (enabled) 0.6f else 0.2f), RoundedCornerShape(if (compact) 14.dp else 18.dp))
+          .clickable(enabled = enabled, onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally,
+  ) {
+    when (state) {
+      MoreRoutes.LOADING -> {
+        CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(24.dp))
+        Caption("Cerco altre strade…", size = 13, color = Nm.Text)
+      }
+      MoreRoutes.NONE_FOUND -> Caption("Nessun altro percorso", size = 13, color = Nm.Muted, lines = 2)
+      else -> {
+        Icon(Icons.Rounded.AltRoute, null, tint = Nm.Accent, modifier = Modifier.size(if (compact) 22.dp else 30.dp))
+        Text("Altri percorsi", color = Nm.Text, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.Bold)
+      }
     }
   }
 }

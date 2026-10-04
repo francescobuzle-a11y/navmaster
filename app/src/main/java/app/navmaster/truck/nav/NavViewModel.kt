@@ -88,6 +88,9 @@ data class RouteVariant(
     get() = criticalities.count { it.severity == Severity.WARN }
 }
 
+/** The routes the driver asked for in addition (Valhalla's): not asked yet, searching, found, none. */
+enum class MoreRoutes { NONE, LOADING, ADDED, NONE_FOUND }
+
 data class PlanState(
     val stops: List<Stop> = emptyList(),
     val variants: List<RouteVariant> = emptyList(),
@@ -104,6 +107,8 @@ data class PlanState(
     val avoidAreas: List<GeographicCoordinate> = emptyList(),
     /** A departure chosen by the driver (to try a trip in simulation); null = where the vehicle is. */
     val start: Stop? = null,
+    /** The "more routes" button: Valhalla's own routes added to GraphHopper's. */
+    val more: MoreRoutes = MoreRoutes.NONE,
 ) {
   val current: RouteVariant?
     get() = variants.getOrNull(selected)
@@ -166,6 +171,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   val simulating: StateFlow<Boolean> = _simulating.asStateFlow()
 
   private var planJob: Job? = null
+  private var moreJob: Job? = null
+  /** Where from, through which stops and with which choices the routes on screen were computed. */
+  private var planRequest: Triple<UserLocation, List<Waypoint>, TripOptions>? = null
   private val asked = mutableSetOf<String>()
   private var lastGeometryKey: String? = null
 
@@ -349,6 +357,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
 
   fun clearPlan() {
     planJob?.cancel()
+    moreJob?.cancel()
+    planRequest = null
     _plan.value = PlanState()
   }
 
@@ -390,7 +400,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
       return
     }
     planJob?.cancel()
-    _plan.value = p.copy(computing = true, error = null)
+    moreJob?.cancel()
+    planRequest = null
+    _plan.value = p.copy(computing = true, error = null, more = MoreRoutes.NONE)
     planJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val settings = AppGraph.settings.settings.value
@@ -403,18 +415,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
             p.avoidAreas.map { Geo.squareAround(it.lat, it.lng, 60.0) }
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions)
+        // GraphHopper's routes (the best one and its alternatives) with the vehicle's measures
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2))
+        planRequest = Triple(from, waypoints, base)
         val noToll = if (!avoidTolls) runCatching { AppGraph.routes.routes(from, waypoints, base.copy(avoidTolls = true)) }.getOrNull() else null
         val departure = LocalDateTime.now()
 
-        fun build(kind: VariantKind, title: String, r: Route, opts: TripOptions): RouteVariant {
-          val analysis = RouteAnalysis.analyse(AppGraph.engine, r, v, garage.loadT)
-          val m = RouteMatcher(r.geometry)
-          val weight = v.tripWeightT(garage.loadT)
-          val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
-          val crit = AppGraph.criticalities.find(analysis, m, limits, v, garage.loadT, departure)
-          return RouteVariant(kind, title, r, analysis, limits, crit, opts)
-        }
+        fun build(kind: VariantKind, title: String, r: Route, opts: TripOptions): RouteVariant =
+            buildVariant(kind, title, r, opts, departure)
 
         val variants = mutableListOf<RouteVariant>()
         main.firstOrNull()?.let { variants += build(VariantKind.FASTEST, if (avoidTolls) "Senza pedaggi" else "Più veloce", it, base) }
@@ -475,6 +483,53 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
+  /** A route with its analysis: tolls, signed limits and difficulties for the active vehicle. */
+  private fun buildVariant(kind: VariantKind, title: String, r: Route, opts: TripOptions, departure: LocalDateTime): RouteVariant {
+    val garage = AppGraph.profiles.garage.value
+    val v = garage.active
+    val analysis = RouteAnalysis.analyse(AppGraph.engine, r, v, garage.loadT)
+    val m = RouteMatcher(r.geometry)
+    val weight = v.tripWeightT(garage.loadT)
+    val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
+    val crit = AppGraph.criticalities.find(analysis, m, limits, v, garage.loadT, departure)
+    return RouteVariant(kind, title, r, analysis, limits, crit, opts)
+  }
+
+  /**
+   * "Altri percorsi": Valhalla's own routes for the same trip (with the same measures and choices),
+   * added after GraphHopper's, leaving out those already on screen.
+   */
+  fun loadMoreRoutes() {
+    val req = planRequest ?: return
+    val p = _plan.value
+    if (p.computing || p.more == MoreRoutes.LOADING) return
+    _plan.value = p.copy(more = MoreRoutes.LOADING)
+    moreJob?.cancel()
+    moreJob = viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val (from, waypoints, base) = req
+        val routes = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2, valhallaOnly = true))
+        val departure = LocalDateTime.now()
+        val cur = _plan.value
+        val added = mutableListOf<RouteVariant>()
+        var n = cur.variants.count { it.kind == VariantKind.ALTERNATIVE }
+        for (r in routes) {
+          if ((cur.variants + added).any { same(it.route, r) }) continue
+          n++
+          added += buildVariant(VariantKind.ALTERNATIVE, "Alternativa $n", r, base, departure)
+        }
+        Log.i(TAG, "more routes (Valhalla): ${routes.size} found, ${added.size} new")
+        if (planRequest !== req) return@launch
+        _plan.update { it.copy(variants = it.variants + added, more = if (added.isEmpty()) MoreRoutes.NONE_FOUND else MoreRoutes.ADDED) }
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.e(TAG, "more routes failed", e)
+        _plan.update { it.copy(more = MoreRoutes.NONE_FOUND) }
+      }
+    }
+  }
+
   private fun km(v: Double, signed: Boolean = true): String {
     val s = if (abs(v) < 10) String.format(java.util.Locale.ITALY, "%.1f km", abs(v)) else "${abs(v).roundToInt()} km"
     return if (!signed) s else if (v >= 0) "+$s" else "−$s"
@@ -497,7 +552,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     // the route for the tunnels (the position goes on along it when the satellites are silent)
     AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry)
-    AppGraph.trip.value = v.options.copy(alternates = 0)
+    AppGraph.trip.value = v.options.copy(alternates = 0, valhallaOnly = false)
     asked.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
     _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, pois(v.route), v.analysis.length)
@@ -1626,11 +1681,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     }
   }
 
-  fun autoPlan(dest: GeographicCoordinate, label: String?) {
+  fun autoPlan(dest: GeographicCoordinate, label: String?, more: Boolean = false) {
     viewModelScope.launch {
       while (lastLocation.value == null) delay(500)
       _plan.value = PlanState(stops = listOf(Stop(dest, label ?: "Prova")))
-      planRoutes()
+      // the emulator test of "Altri percorsi" presses it as soon as the routes are there
+      planRoutes(then = if (more) ({ _ -> loadMoreRoutes() }) else null)
     }
   }
 
