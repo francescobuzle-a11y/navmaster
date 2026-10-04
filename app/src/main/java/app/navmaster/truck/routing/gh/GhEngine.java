@@ -30,12 +30,20 @@ import java.util.Locale;
  * Plain Java, no Android: the same class runs in the routing test on the computer.
  */
 public final class GhEngine implements Closeable {
-  /** Name of the only profile of the graph. */
-  public static final String PROFILE = "nm";
-  /** File name of the base model, as given when the graph was built (part of the profile's identity). */
-  public static final String BASE_MODEL_FILE = "nm_base.json";
+  /**
+   * The two profiles of the graph, each with its own landmarks: lorries (hgv rules, lorry speeds)
+   * and the other vehicles (campers, vans, buses: car rules and speeds). A vehicle is routed on the
+   * profile of its class, whose base model matches its default choices exactly - a search with
+   * weights far from the landmarks' ones is tens of times slower (Milano - Roma 6 s instead of 0.1).
+   */
+  public static final String PROFILE_TRUCK = "nm_truck";
+  public static final String PROFILE_CAR = "nm_car";
+  /** Base models, as given when the graph was built (part of each profile's identity). */
+  public static final String TRUCK_MODEL_FILE = "nm_truck.json";
+  public static final String CAR_MODEL_FILE = "nm_car.json";
   /** Vehicle types whose turn restrictions are followed (as when the graph was built). */
-  public static final List<String> TURN_VEHICLES = Arrays.asList("hgv", "motorcar", "motor_vehicle");
+  public static final List<String> TURN_VEHICLES_TRUCK = Arrays.asList("hgv", "motorcar", "motor_vehicle");
+  public static final List<String> TURN_VEHICLES_CAR = Arrays.asList("motorcar", "motor_vehicle");
   public static final int U_TURN_COSTS = 60;
   /** Ways left out of the graph (no vehicle drives on them); the same list as on GitHub. */
   public static final String IGNORED_HIGHWAYS =
@@ -48,21 +56,26 @@ public final class GhEngine implements Closeable {
   }
 
   /**
-   * The profile exactly as the graph was built with it (GraphHopper checks its fingerprint): the
-   * base model is read by GraphHopper from [BASE_MODEL_FILE] in the models folder, as on GitHub.
+   * A profile exactly as the graph was built with it (GraphHopper checks its fingerprint): the
+   * base model is read by GraphHopper from its file in the models folder, as on GitHub.
    */
-  public static Profile profile() {
-    Profile p = new Profile(PROFILE);
-    p.setTurnCostsConfig(new TurnCostsConfig(TURN_VEHICLES, U_TURN_COSTS));
+  public static Profile profile(String name, String modelFile, List<String> turnVehicles) {
+    Profile p = new Profile(name);
+    p.setTurnCostsConfig(new TurnCostsConfig(turnVehicles, U_TURN_COSTS));
     // as read from a config file: no inline model (Profile(name) puts an empty one), only the file
     p.getHints().remove("custom_model");
-    p.putHint("custom_model_files", Collections.singletonList(BASE_MODEL_FILE));
+    p.putHint("custom_model_files", Collections.singletonList(modelFile));
     return p;
+  }
+
+  public static List<Profile> profiles() {
+    return Arrays.asList(profile(PROFILE_TRUCK, TRUCK_MODEL_FILE, TURN_VEHICLES_TRUCK),
+        profile(PROFILE_CAR, CAR_MODEL_FILE, TURN_VEHICLES_CAR));
   }
 
   /**
    * Opens the graph in [dir] (the folder with "properties", "nodes", "edges"...). [modelsDir]: the
-   * folder with [BASE_MODEL_FILE]. [mmap]: memory mapped (tablet) or in RAM (small test graphs).
+   * folder with the base models. [mmap]: memory mapped (tablet) or in RAM (small test graphs).
    */
   public static GhEngine open(File dir, File modelsDir, boolean mmap) throws Exception {
     GraphHopperConfig cfg = new GraphHopperConfig();
@@ -71,8 +84,8 @@ public final class GhEngine implements Closeable {
     // as when the graph was built (only checked, nothing is imported here)
     cfg.putObject("import.osm.ignored_highways", IGNORED_HIGHWAYS);
     cfg.putObject("graph.dataaccess.default_type", mmap ? "MMAP" : "RAM_STORE");
-    cfg.setProfiles(Collections.singletonList(profile()));
-    cfg.setLMProfiles(Collections.singletonList(new LMProfile(PROFILE)));
+    cfg.setProfiles(profiles());
+    cfg.setLMProfiles(Arrays.asList(new LMProfile(PROFILE_TRUCK), new LMProfile(PROFILE_CAR)));
     GraphHopper gh = new GraphHopper() {
       @Override
       protected WeightingFactory createWeightingFactory() {
@@ -186,7 +199,7 @@ public final class GhEngine implements Closeable {
   private static GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     List<GHPoint> pts = new ArrayList<>();
     for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
-    GHRequest req = new GHRequest(pts).setProfile(PROFILE).setLocale(Locale.ITALIAN);
+    GHRequest req = new GHRequest(pts).setProfile(spec.hgv ? PROFILE_TRUCK : PROFILE_CAR).setLocale(Locale.ITALIAN);
     if (headings != null && headings.size() == pts.size()) {
       boolean any = false;
       for (Double h : headings) if (h != null && !h.isNaN()) any = true;

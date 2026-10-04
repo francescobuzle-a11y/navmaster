@@ -1,0 +1,14 @@
+{
+  "distance_influence": 20,
+  "priority": [
+    { "if": "!car_access", "multiply_by": "0" },
+    { "if": "road_access == NO", "multiply_by": "0" },
+    { "if": "road_access == PRIVATE || road_access == DESTINATION || road_access == CUSTOMERS || road_access == DELIVERY || road_access == AGRICULTURAL || road_access == FORESTRY", "multiply_by": "0.1" },
+    { "if": "road_environment == FERRY", "multiply_by": "0.02" },
+    { "if": "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND", "multiply_by": "0.02" }
+  ],
+  "speed": [
+    { "if": "true", "limit_to": "car_average_speed" },
+    { "if": "true", "limit_to": "110" }
+  ]
+}

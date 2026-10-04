@@ -1,9 +1,0 @@
-{
-  "distance_influence": 0,
-  "priority": [
-    { "if": "!car_access && hgv != YES && hgv != DESIGNATED && hgv != DESTINATION && hgv != DELIVERY", "multiply_by": "0" }
-  ],
-  "speed": [
-    { "if": "true", "limit_to": "car_average_speed" }
-  ]
-}

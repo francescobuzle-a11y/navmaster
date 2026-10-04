@@ -56,12 +56,14 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     loadedKey = null
   }
 
-  /** The base model, from the app's assets, where GraphHopper reads it (same file as on GitHub). */
+  /** The base models, from the app's assets, where GraphHopper reads them (same files as on GitHub). */
   private fun modelsDir(): File {
     val d = File(context.filesDir, "gh-models").apply { mkdirs() }
-    val f = File(d, GhEngine.BASE_MODEL_FILE)
-    val text = context.assets.open("gh/" + GhEngine.BASE_MODEL_FILE).bufferedReader().use { it.readText() }
-    if (!f.exists() || f.readText() != text) f.writeText(text)
+    for (name in listOf(GhEngine.TRUCK_MODEL_FILE, GhEngine.CAR_MODEL_FILE)) {
+      val f = File(d, name)
+      val text = context.assets.open("gh/$name").bufferedReader().use { it.readText() }
+      if (!f.exists() || f.readText() != text) f.writeText(text)
+    }
     return d
   }
 

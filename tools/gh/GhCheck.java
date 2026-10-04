@@ -2,15 +2,16 @@ import app.navmaster.truck.routing.gh.GhEngine;
 import app.navmaster.truck.routing.gh.TruckSpec;
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
  * Check of a GraphHopper graph with the app's own routing code (GhEngine, NmWeightingFactory),
- * run on the computer / on GitHub right after the graph is built: the graph loads with the app's
- * profile, and routes are found for a lorry and a camper.
+ * run on GitHub right after the graph is built: the graph loads with the app's profiles, and for
+ * each trip a lorry (4 m, 40 t) and a camper (3.2 m, 3.5 t) get a route, with its alternatives,
+ * and the time it took. A trip slower than 3 s on the runner fails the check (on a tablet it would
+ * be several times slower).
  *
- * usage: java -cp gh.jar:classes GhCheck GRAPH_DIR MODELS_DIR "lat1,lon1;lat2,lon2" [h w l t]...  (points "-": load only)
+ * usage: java -cp gh.jar:classes GhCheck GRAPH_DIR MODELS_DIR "lat,lon;lat,lon|lat,lon;lat,lon"  ("-": load only)
  */
 public class GhCheck {
   public static void main(String[] a) throws Exception {
@@ -21,28 +22,34 @@ public class GhCheck {
       e.close();
       return;
     }
-    List<double[]> pts = new ArrayList<>();
-    for (String s : a[2].split(";")) {
-      String[] c = s.split(",");
-      pts.add(new double[] {Double.parseDouble(c[0]), Double.parseDouble(c[1])});
-    }
     int fails = 0;
-    for (int k = 3; k + 3 < a.length + 0 || k == 3; k += 4) {
-      TruckSpec s = new TruckSpec();
-      if (a.length > k + 3) {
-        s.heightM = Double.parseDouble(a[k]);
-        s.widthM = Double.parseDouble(a[k + 1]);
-        s.lengthM = Double.parseDouble(a[k + 2]);
-        s.weightT = Double.parseDouble(a[k + 3]);
-        s.hgv = s.weightT > 3.5;
+    for (String trip : a[2].split("\\|")) {
+      List<double[]> pts = new ArrayList<>();
+      for (String s : trip.split(";")) {
+        String[] c = s.split(",");
+        pts.add(new double[] {Double.parseDouble(c[0]), Double.parseDouble(c[1])});
       }
-      GhEngine.Result r = e.route(pts, null, s);
-      System.out.println("GHCHECK " + s + " -> " + (r.ok() ? String.format("%.0f m, %d s, %d points, %d ms", r.distanceM,
-          r.timeMs / 1000, r.lat.length, r.computeMs) : "ERROR " + r.error) + " wp=" + Arrays.toString(r.waypointIndex));
-      if (!r.ok()) fails++;
-      if (a.length <= k + 3) break;
+      for (int v = 0; v < 2; v++) {
+        TruckSpec s = new TruckSpec();
+        if (v == 1) {
+          s.hgv = false; s.heightM = 3.2; s.widthM = 2.3; s.lengthM = 7.5; s.weightT = 3.5; s.axleLoadT = 2.0;
+        }
+        for (int run = 0; run < 2; run++) {
+          List<GhEngine.Result> rs = e.routes(pts, null, s, 3);
+          GhEngine.Result r = rs.get(0);
+          StringBuilder alt = new StringBuilder();
+          for (int k = 1; k < rs.size(); k++) alt.append(String.format(" / %.0f km", rs.get(k).distanceM / 1000));
+          System.out.println("GHCHECK " + trip + " " + (v == 0 ? "camion" : "camper") + " run " + run + ": "
+              + (r.ok() ? String.format("%.1f km, %d min, %d paths%s, %d ms", r.distanceM / 1000, r.timeMs / 60000, rs.size(), alt, r.computeMs)
+                  : "ERROR " + r.error) + (r.note != null ? " (" + r.note + ")" : ""));
+          if (!r.ok() || (run == 1 && r.computeMs > 3000)) fails++;
+        }
+      }
     }
     e.close();
-    if (fails > 0) System.exit(1);
+    if (fails > 0) {
+      System.out.println("GHCHECK " + fails + " failures");
+      System.exit(1);
+    }
   }
 }
