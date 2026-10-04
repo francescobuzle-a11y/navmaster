@@ -40,6 +40,17 @@ public final class TruckSpec {
   /** Zones to avoid: each one a closed ring of [lat, lon]. */
   public final List<double[][]> avoidZones = new ArrayList<>();
 
+  /** The same vehicle and choices (the zones are shared, they are not changed). */
+  public TruckSpec copy() {
+    TruckSpec t = new TruckSpec();
+    t.hgv = hgv; t.heightM = heightM; t.widthM = widthM; t.lengthM = lengthM; t.weightT = weightT;
+    t.axleLoadT = axleLoadT; t.hazmat = hazmat; t.tunnelCode = tunnelCode; t.hazmatWater = hazmatWater;
+    t.topSpeedKmh = topSpeedKmh; t.avoidTolls = avoidTolls; t.avoidFerries = avoidFerries; t.avoidUnpaved = avoidUnpaved;
+    t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest;
+    t.avoidZones.addAll(avoidZones);
+    return t;
+  }
+
   @Override
   public String toString() {
     return "TruckSpec{hgv=" + hgv + ", h=" + heightM + ", w=" + widthM + ", l=" + lengthM + ", t=" + weightT +

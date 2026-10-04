@@ -169,7 +169,7 @@ public final class NmWeightingFactory implements WeightingFactory {
       if (h == Hgv.NO) return 0.0;
       if (h == Hgv.DESTINATION || h == Hgv.DELIVERY) v *= 0.1;
       if (h == Hgv.DISCOURAGED || h == Hgv.AGRICULTURAL) v *= 0.3;
-      if (s.preferTruckRoutes && h != Hgv.DESIGNATED) v *= 0.9;
+      if (s.preferTruckRoutes && h != Hgv.DESIGNATED) v *= 0.97; // a tie-breaker: 3%, never a long detour
     } else if (!car) {
       return 0.0;
     }

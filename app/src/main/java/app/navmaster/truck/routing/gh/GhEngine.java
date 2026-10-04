@@ -142,7 +142,23 @@ public final class GhEngine implements Closeable {
         r.error = String.valueOf(rsp.getErrors().get(0).getMessage());
         out.add(r);
       } else {
-        List<ResponsePath> paths = rsp.getAll();
+        List<ResponsePath> paths = new ArrayList<>(rsp.getAll());
+        // the search for alternatives is sensitive to the small preference for lorry roads: when it
+        // finds fewer than asked, the alternatives are searched again without it (the best route
+        // stays the one with the preference)
+        if (alt && paths.size() < maxPaths && spec.preferTruckRoutes) {
+          TruckSpec plain = spec.copy();
+          plain.preferTruckRoutes = false;
+          GHResponse more = hopper.route(request(points, headings, plain, maxPaths));
+          if (!more.hasErrors()) {
+            for (ResponsePath p : more.getAll()) {
+              boolean dup = false;
+              for (ResponsePath q : paths) if (Math.abs(q.getDistance() - p.getDistance()) < 0.003 * q.getDistance() + 20) dup = true;
+              if (!dup && paths.size() < maxPaths) paths.add(p);
+            }
+          }
+          note = "alternative_route: " + rsp.getAll().size() + " paths, " + paths.size() + " with the plain search";
+        }
         for (int k = 0; k < paths.size() && k < Math.max(1, maxPaths); k++) {
           ResponsePath path = paths.get(k);
           if (path.hasErrors()) continue;
@@ -154,6 +170,7 @@ public final class GhEngine implements Closeable {
           out.add(r);
         }
       }
+      note0 = note;
     } catch (Exception e) {
       Result r = new Result();
       r.error = e.toString();

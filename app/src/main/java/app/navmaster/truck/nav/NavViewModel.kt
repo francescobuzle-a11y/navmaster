@@ -514,7 +514,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val added = mutableListOf<RouteVariant>()
         var n = cur.variants.count { it.kind == VariantKind.ALTERNATIVE }
         for (r in routes) {
-          if ((cur.variants + added).any { same(it.route, r) }) continue
+          // the same road as a route already on screen (Valhalla often finds GraphHopper's again,
+          // with a few metres of difference): not offered twice
+          if ((cur.variants + added).any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
           n++
           added += buildVariant(VariantKind.ALTERNATIVE, "Alternativa $n", r, base, departure)
         }
@@ -533,6 +535,28 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private fun km(v: Double, signed: Boolean = true): String {
     val s = if (abs(v) < 10) String.format(java.util.Locale.ITALY, "%.1f km", abs(v)) else "${abs(v).roundToInt()} km"
     return if (!signed) s else if (v >= 0) "+$s" else "−$s"
+  }
+
+  /** 90% of [b] runs within 25 m of [a]: the same route, whatever small differences in length. */
+  private fun alongSameRoads(b: Route, a: Route): Boolean {
+    val ga = a.geometry
+    val gb = b.geometry
+    if (ga.size < 2 || gb.size < 2) return false
+    val step = (gb.size / 60).coerceAtLeast(1)
+    var n = 0
+    var near = 0
+    for (i in gb.indices step step) {
+      n++
+      val p = gb[i]
+      var best = Double.MAX_VALUE
+      for (k in 0 until ga.size - 1) {
+        val d = Geo.pointToSegment(p, ga[k], ga[k + 1]).first
+        if (d < best) best = d
+        if (best < 25) break
+      }
+      if (best < 25) near++
+    }
+    return near >= n * 0.9
   }
 
   private fun same(a: Route, b: Route): Boolean =
