@@ -128,6 +128,23 @@ class RouteAnalysis(
   val tollKm: Double
     get() = tolls.sumOf { it.length } / 1000.0
 
+  /** The tunnels along the route, in order. */
+  val tunnels: List<Span> = merge(edges.filter { it.tunnel })
+
+  /**
+   * The toll stretches as the driver sees them, from where the toll starts to where it ends: the
+   * ramps and service areas between toll roads are often not tagged, gaps up to 3 km are joined.
+   */
+  val tollStretches: List<Span>
+    get() {
+      val out = mutableListOf<Span>()
+      for (t in tolls) {
+        val last = out.lastOrNull()
+        if (last != null && t.startM - last.endM < 3000) out[out.size - 1] = Span(last.startM, maxOf(last.endM, t.endM)) else out += t
+      }
+      return out.filter { it.length >= 1000 }
+    }
+
   /** Toll booths (and gantries) along the route, in order. */
   val tollBooths: List<RouteNode> = nodes.filter { it.isToll }
 

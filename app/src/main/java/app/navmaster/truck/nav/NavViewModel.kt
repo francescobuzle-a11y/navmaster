@@ -74,6 +74,8 @@ data class RouteVariant(
     val criticalities: List<Criticality>,
     val options: TripOptions,
     val recommended: Boolean = false,
+    /** Who computed it: "GH" GraphHopper, "VH" Valhalla. */
+    val source: String? = null,
 ) {
   val durationS: Double
     get() = analysis.durationS
@@ -109,6 +111,8 @@ data class PlanState(
     val start: Stop? = null,
     /** The "more routes" button: Valhalla's own routes added to GraphHopper's. */
     val more: MoreRoutes = MoreRoutes.NONE,
+    /** Why the routes are Valhalla's and not GraphHopper's (no graph, old graph, nothing found). */
+    val routeNote: String? = null,
 ) {
   val current: RouteVariant?
     get() = variants.getOrNull(selected)
@@ -402,7 +406,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     planJob?.cancel()
     moreJob?.cancel()
     planRequest = null
-    _plan.value = p.copy(computing = true, error = null, more = MoreRoutes.NONE)
+    _plan.value = p.copy(computing = true, error = null, more = MoreRoutes.NONE, routeNote = null)
     planJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val settings = AppGraph.settings.settings.value
@@ -417,6 +421,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions)
         // GraphHopper's routes (the best one and its alternatives) with the vehicle's measures
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2))
+        val routeNote = if (main.firstOrNull()?.let { AppGraph.routes.sourceOf(it) } == "VH") AppGraph.routes.whyValhalla else null
         planRequest = Triple(from, waypoints, base)
         val noToll = if (!avoidTolls) runCatching { AppGraph.routes.routes(from, waypoints, base.copy(avoidTolls = true)) }.getOrNull() else null
         val departure = LocalDateTime.now()
@@ -467,10 +472,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         }
         val list = variants.mapIndexed { i, x -> if (i == recommended) x.copy(recommended = true) else x }
         if (list.isEmpty()) throw IllegalStateException("Nessun percorso trovato")
-        for (x in list) Log.i(TAG, "variant ${x.title}: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
+        for (x in list) Log.i(TAG, "variant ${x.title} [${x.source}]: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
             "toll ${"%.1f".format(x.analysis.tollKm)} km, booths ${x.analysis.tollBooths.size}, crit ${x.critical}/${x.warnings}${if (x.recommended) " CONSIGLIATO" else ""}")
         Log.i(TAG, "advice: $advice")
-        val state = _plan.value.copy(variants = list, selected = recommended, computing = false, advice = advice)
+        val state = _plan.value.copy(variants = list, selected = recommended, computing = false, advice = advice, routeNote = routeNote)
         _plan.value = state
         if (advice != null && settings.voiceWarnings && settings.tollPolicy == TollPolicy.ASK && recommended != 0) say(advice)
         withContext(Dispatchers.Main) { then?.invoke(state) }
@@ -492,7 +497,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     val weight = v.tripWeightT(garage.loadT)
     val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
     val crit = AppGraph.criticalities.find(analysis, m, limits, v, garage.loadT, departure)
-    return RouteVariant(kind, title, r, analysis, limits, crit, opts)
+    return RouteVariant(kind, title, r, analysis, limits, crit, opts, source = AppGraph.routes.sourceOf(r))
   }
 
   /**

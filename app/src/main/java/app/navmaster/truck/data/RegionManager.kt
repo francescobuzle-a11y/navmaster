@@ -254,14 +254,28 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
           it.body.string()
         }
     val manifest = json.decodeFromString(Manifest.serializer(), manifestText)
-    val tiles = if (job.useEurope) catalog.country(id)?.europeTiles?.takeIf { it.parts.isNotEmpty() } else null
+    val dir = File(root, id).apply { mkdirs() }
+    // an update of a country already on the tablet: only the files that changed (same name, other
+    // checksum) or are missing are brought down, e.g. only the GraphHopper graph
+    val prev = File(dir, "manifest.json").takeIf { it.exists() }
+        ?.let { runCatching { json.decodeFromString(Manifest.serializer(), it.readText()) }.getOrNull() }
+    fun sums(f: PackageFile) = f.parts.joinToString(",") { it.sha256 }
+    fun unchanged(f: PackageFile): Boolean {
+      val old = prev?.files?.firstOrNull { it.file == f.file } ?: return f.file == GhRouting.PACKAGE && GhRouting.source(dir) == sums(f)
+      if (sums(old) != sums(f)) return false
+      return if (f.file == GhRouting.PACKAGE) GhRouting.state(dir) == GhRouting.GhState.READY && GhRouting.source(dir) == sums(f)
+          else File(dir, f.file).length() == f.size
+    }
+    val europe = if (job.useEurope) catalog.country(id)?.europeTiles?.takeIf { it.parts.isNotEmpty() } else null
+    // the Europe tiles already installed for this country stay as they are in an update
+    val tiles = europe?.takeUnless { prev != null && File(dir, "europa-tiles.txt").exists() }
 
     // with the Europe graph the country graph is not needed
-    val files = manifest.files.filter { tiles == null || it.file != "percorsi.tar" }
+    val files = manifest.files.filter { (europe == null || it.file != "percorsi.tar") && !unchanged(it) }
+    if (prev != null) Log.i(TAG, "update $id: ${files.joinToString { it.file }.ifEmpty { "nothing changed" }}")
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } } +
         (tiles?.parts?.map { "$RELEASES/grafo-europa/${it.name}" to it } ?: emptyList())
     val total = parts.sumOf { it.second.size }
-    val dir = File(root, id).apply { mkdirs() }
     val tmp = File(dir, ".parts").apply { mkdirs() }
     // files already brought down by the old versions: kept, they are checked before use (a damaged
     // one is fetched again by itself), so the data already spent is not spent again
@@ -295,7 +309,9 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       }
     }
     // the files are written in place; only the files in several parts and the Europe tiles need room twice
-    val need = total - have + (tiles?.size ?: 0) + files.filter { it.parts.size > 1 }.sumOf { it.size } + 200_000_000
+    // (the GraphHopper graph is unpacked on the tablet: about 3.3 times its package)
+    val need = total - have + (tiles?.size ?: 0) + files.filter { it.parts.size > 1 }.sumOf { it.size } + 200_000_000 +
+        (files.firstOrNull { it.file == GhRouting.PACKAGE }?.size ?: 0L) * 7 / 2
     if (freeBytes() < need) {
       throw IllegalStateException(String.format(Locale.ITALIAN, "Spazio insufficiente: servono %.1f GB liberi", need / 1e9))
     }
@@ -334,7 +350,11 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     // the GraphHopper graph comes packed: unpacked now, once, not at the first route
     if (File(dir, GhRouting.PACKAGE).exists()) {
       setState(id, DownloadState.Running(total, total, "Installazione grafo GraphHopper"))
-      GhRouting.ready(dir)
+      // the graph in use is closed before it is replaced
+      runCatching { app.navmaster.truck.AppGraph.gh.reset() }
+      val gh = GhRouting.ready(dir)
+      val f = manifest.files.firstOrNull { it.file == GhRouting.PACKAGE }
+      if (gh != null && f != null) File(gh, GhRouting.SOURCE_FILE).writeText(sums(f))
     }
     File(dir, "manifest.json").writeText(manifestText)
     tmp.deleteRecursively()

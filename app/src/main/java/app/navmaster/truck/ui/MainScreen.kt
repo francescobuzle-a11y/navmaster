@@ -357,7 +357,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         plan.variants.forEachIndexed { i, v ->
           if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF8C97A3), 8f, 2f)
         }
-        plan.current?.let { NmRouteLine(it.route.geometry, "nm-preview", Nm.Route, 11f, 3f) }
+        plan.current?.let {
+          NmRouteLine(it.route.geometry, "nm-preview", Nm.Route, 11f, 3f)
+          // where the toll starts and ends, the tunnels
+          RouteFeaturePins(it.analysis)
+        }
       }
       // the markers change with the route, not at every position: worked out once (redoing them
       // each second rebuilt the map sources and made the map stutter)

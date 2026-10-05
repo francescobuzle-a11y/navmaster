@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import app.navmaster.truck.AppGraph
 import app.navmaster.truck.data.CountryInfo
 import app.navmaster.truck.data.DownloadState
+import app.navmaster.truck.routing.GhRouting
 import app.navmaster.truck.search.TextNorm
 
 private fun gb(bytes: Long): String =
@@ -164,6 +165,14 @@ private fun InstalledRow(label: String, size: Long, built: String, onDelete: () 
 @Composable
 fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEurope: Boolean, wifiOnly: Boolean, highlight: Boolean = false) {
   val size = c.downloadSize(useEurope && c.europeTiles != null)
+  // an update for a country already on the tablet: its GraphHopper graph (missing or made for an
+  // older version), or newer data; only what changed is downloaded
+  val inst = if (installed) AppGraph.regions.get(c.id) else null
+  val ghSize = c.files[GhRouting.PACKAGE]
+  val ghState = inst?.let { GhRouting.state(it.dir) }
+  val ghUpdate = inst != null && ghSize != null && ghState != GhRouting.GhState.READY
+  val newer = inst != null && c.built != null && c.built > inst.manifest.built
+  val busy = state is DownloadState.Running || state is DownloadState.Queued
   Column(
       Modifier.fillMaxWidth().padding(vertical = 5.dp).clip(RoundedCornerShape(18.dp))
           .background(if (highlight) Nm.Raised else Color.Transparent)
@@ -176,7 +185,12 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         Text(c.name, color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Caption(
             when {
-              installed -> "Scaricato · dati del ${c.built ?: "?"}"
+              installed -> "Scaricato · dati del ${inst?.manifest?.built ?: c.built ?: "?"}" + when {
+                ghState == GhRouting.GhState.READY -> " · calcolo GraphHopper ✓"
+                ghUpdate && ghState == GhRouting.GhState.OLD -> " · grafo GraphHopper vecchio"
+                ghUpdate -> " · manca il grafo GraphHopper"
+                else -> ""
+              }
               c.available -> "${gb(size)} · dati del ${c.built}" + if (c.europeTiles != null && useEurope) " · con percorsi europei" else ""
               else -> "In preparazione"
             },
@@ -184,16 +198,25 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         )
       }
       when {
+        busy -> {}
         installed -> RoundAction(Icons.Rounded.DeleteOutline, "Elimina", size = 52.dp, container = Nm.Raised) {
           AppGraph.regions.delete(c.id)
           AppGraph.engine.reset()
           AppGraph.gh.reset()
         }
-        state is DownloadState.Running || state is DownloadState.Queued -> {}
         c.available -> RoundAction(Icons.Rounded.CloudDownload, "Scarica", size = 52.dp, container = Nm.Accent) {
           AppGraph.regions.download(c.id, c.name, useEurope)
         }
         else -> {}
+      }
+    }
+    if (!busy && (ghUpdate || newer)) {
+      val what = when {
+        newer -> "Aggiorna: dati del ${c.built} (scarica solo i file cambiati)"
+        else -> "Aggiorna: calcolo percorsi GraphHopper · ${gb(ghSize ?: 0L)}"
+      }
+      BigButton(what, Modifier.fillMaxWidth().padding(top = 8.dp), Icons.Rounded.CloudDownload) {
+        AppGraph.regions.download(c.id, c.name, useEurope)
       }
     }
     when (state) {

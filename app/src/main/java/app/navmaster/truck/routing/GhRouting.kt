@@ -19,21 +19,49 @@ class GhRouting(private val context: Context, private val regions: RegionManager
   private var engine: GhEngine? = null
   private var loadedKey: String? = null
 
+  /** Why the last route could not use GraphHopper (shown under the routes), null when it could. */
+  @Volatile var problem: String? = null
+    private set
+
   /** The engine for a route starting at [lat], [lon], or null. */
   @Synchronized
   fun engineAt(lat: Double, lon: Double): GhEngine? {
-    val region = regions.regionAt(lat, lon) ?: regions.installed.value.firstOrNull() ?: return null
-    val dir = ready(region.dir) ?: return null
+    val region = regions.regionAt(lat, lon) ?: regions.installed.value.firstOrNull()
+    if (region == null) {
+      problem = "nessuna mappa scaricata in questa zona"
+      return null
+    }
+    ready(region.dir)
+    when (state(region.dir)) {
+      GhState.MISSING -> {
+        problem = "${region.label}: manca il grafo GraphHopper. In «Mappe d'Europa» tocca «Aggiorna» (scarica solo il grafo)"
+        Log.w(TAG, "GraphHopper: no graph in ${region.id}")
+        return null
+      }
+      GhState.OLD -> {
+        problem = "${region.label}: il grafo GraphHopper è di una versione vecchia. In «Mappe d'Europa» tocca «Aggiorna»"
+        Log.w(TAG, "GraphHopper: old graph in ${region.id} (no nm_truck/nm_car landmarks)")
+        return null
+      }
+      GhState.READY -> {}
+    }
+    val dir = File(region.dir, "gh")
     val key = dir.absolutePath + ":" + regions.version.value
     if (key != loadedKey) {
       engine?.close()
       engine = null
       loadedKey = null
       val started = SystemClock.elapsedRealtime()
-      engine = GhEngine.open(dir, modelsDir(), true)
+      try {
+        engine = GhEngine.open(dir, modelsDir(), true)
+      } catch (e: Exception) {
+        problem = "${region.label}: il grafo GraphHopper non si apre (${e.message?.take(80)}). In «Mappe d'Europa» tocca «Aggiorna»"
+        throw e
+      }
       loadedKey = key
       Log.i(TAG, "GraphHopper ready on ${region.id} in ${SystemClock.elapsedRealtime() - started} ms")
     }
+    problem = null
     return engine
   }
 
@@ -67,9 +95,29 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return d
   }
 
+  /** The GraphHopper graph of a country: not there, made for an older version of the app, ready. */
+  enum class GhState { MISSING, OLD, READY }
+
   companion object {
     private const val TAG = "NavMasterRoute"
     const val PACKAGE = "gh.tar.gz"
+
+    /** Which package the graph was unpacked from (the SHA-256 of its parts), to know when it changed. */
+    const val SOURCE_FILE = ".package"
+
+    /**
+     * The state of the graph in [regionDir]: the graphs made for this app have the landmarks of
+     * both profiles (camion: nm_truck, camper/auto: nm_car); the first graph had one profile only.
+     */
+    fun state(regionDir: File): GhState {
+      val dir = File(regionDir, "gh")
+      if (!File(dir, "properties").exists()) return GhState.MISSING
+      val ok = listOf(GhEngine.PROFILE_TRUCK, GhEngine.PROFILE_CAR).all { File(dir, "landmarks_$it").exists() }
+      return if (ok) GhState.READY else GhState.OLD
+    }
+
+    /** The package the graph came from (see SOURCE_FILE), or null. */
+    fun source(regionDir: File): String? = File(File(regionDir, "gh"), SOURCE_FILE).takeIf { it.exists() }?.readText()?.trim()
 
     /**
      * The "gh" folder of a country, unpacked from [PACKAGE] when a new one arrived (the package is

@@ -47,6 +47,8 @@ import androidx.compose.ui.unit.sp
 import app.navmaster.truck.nav.MoreRoutes
 import app.navmaster.truck.nav.PlanState
 import app.navmaster.truck.nav.RouteVariant
+import app.navmaster.truck.nav.TurnItem
+import app.navmaster.truck.nav.TurnList
 import app.navmaster.truck.routing.Criticality
 import app.navmaster.truck.routing.Severity
 
@@ -166,6 +168,10 @@ fun PlanPanel(
           plan.variants.forEachIndexed { i, v -> VariantCard(v, i == plan.selected) { onSelect(i) } }
           if (!plan.computing) MoreRoutesCard(plan.more, compact = false, onClick = onMore)
         }
+        plan.routeNote?.let {
+          Caption("VH = calcolato con Valhalla, non con GraphHopper: $it", color = Nm.Amber, size = 13, lines = 4,
+              modifier = Modifier.padding(top = 6.dp))
+        }
         plan.advice?.let {
           Row(Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(14.dp)).background(Color(0x332EB85C)).padding(10.dp),
               verticalAlignment = Alignment.CenterVertically) {
@@ -175,6 +181,7 @@ fun PlanPanel(
           }
         }
         val v = plan.current
+        if (v != null) RouteTurns(v)
         if (v != null) {
           val list = v.criticalities.filter { it.severity != Severity.INFO || it.kind.name == "BAN" }
           SectionHeader(if (list.isEmpty()) "Nessuna criticità per il mezzo" else "Criticità del percorso (${list.size})")
@@ -239,7 +246,8 @@ private fun VariantChip(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
     Spacer(Modifier.width(8.dp))
     Column {
       Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-      Caption("${v.title} · ${Fmt.distanceText(v.distanceM)}" + if (v.analysis.tollKm > 0.5) " · 💶" else "", size = 12, lines = 1)
+      Caption("${v.title} · ${Fmt.distanceText(v.distanceM)}" + (if (v.analysis.tollKm > 0.5) " · 💶" else "") +
+          (v.source?.let { " · $it" } ?: ""), size = 12, lines = 1)
     }
   }
 }
@@ -282,6 +290,7 @@ private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
   ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Caption(v.title, color = if (selected) Nm.Accent else Nm.Muted, size = 13)
+      v.source?.let { SourceTag(it) }
       if (v.recommended) {
         Spacer(Modifier.width(6.dp))
         Text("CONSIGLIATO", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold,
@@ -327,5 +336,55 @@ fun CritRow(c: Criticality, onClick: () -> Unit) {
       Caption("a ${Fmt.distanceText(c.startM)} · ${c.kind.label}", size = 13, lines = 1)
     }
     Box(Modifier.size(10.dp).clip(CircleShape).background(severityColor(c.severity)))
+  }
+}
+
+/** Who computed the route: GH (GraphHopper, with the vehicle's measures) or VH (Valhalla). */
+@Composable
+private fun SourceTag(source: String) {
+  Spacer(Modifier.width(6.dp))
+  Text(source, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+      modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(if (source == "GH") Nm.Blue else Color(0xFF6B7682))
+          .padding(horizontal = 5.dp, vertical = 1.dp))
+}
+
+/**
+ * The route before departure: the main roads in order, then its junctions and exits (all the turns
+ * on request), so the driver knows at once where it goes.
+ */
+@Composable
+private fun RouteTurns(v: RouteVariant) {
+  val turns = remember(v.route) { TurnList.of(v.route) }
+  val roads = remember(v.route) { TurnList.roads(v.analysis) }
+  if (turns.isEmpty() && roads.isEmpty()) return
+  val junctions = turns.filter { it.junction }
+  var all by remember(v.route) { mutableStateOf(junctions.size < 3) }
+  var expanded by remember(v.route) { mutableStateOf(false) }
+  SectionHeader("Il percorso")
+  if (roads.isNotEmpty()) {
+    Caption("Passa da: " + roads.joinToString(" → "), color = Nm.Text, size = 15, lines = 3)
+  }
+  if (junctions.isNotEmpty() && junctions.size < turns.size) {
+    TabPills(listOf("Svincoli e uscite ${junctions.size}", "Tutte le svolte ${turns.size}"), if (all) 1 else 0) { all = it == 1 }
+  }
+  val shown = if (all) turns else junctions
+  for (t in if (expanded) shown else shown.take(6)) TurnRow(t)
+  if (shown.size > 6) {
+    Caption(if (expanded) "Mostra meno" else "Mostra tutte (${shown.size})", color = Nm.Accent,
+        modifier = Modifier.clickable { expanded = !expanded }.padding(8.dp))
+  }
+}
+
+@Composable
+private fun TurnRow(t: TurnItem) {
+  Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 3.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Box(Modifier.size(36.dp).clip(CircleShape).background(if (t.junction) Color(0xFF1B8B47) else Nm.Raised), contentAlignment = Alignment.Center) {
+      ManeuverGlyph(t.type, t.modifier, Color.White, Modifier.size(24.dp))
+    }
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.weight(1f)) {
+      Text(t.text, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+      Caption("a ${Fmt.distanceText(t.atM)}" + (t.exit?.let { " · uscita $it" } ?: ""), size = 12, lines = 1)
+    }
   }
 }

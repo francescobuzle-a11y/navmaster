@@ -52,6 +52,24 @@ class OfflineRouteProvider(
 
   private val parser = createOsrmResponseParser(6u)
 
+  // which engine computed each route handed out (GH = GraphHopper, VH = Valhalla), for the route cards
+  private val sources = ArrayDeque<Pair<java.lang.ref.WeakReference<Route>, String>>()
+
+  /** Why the last trip's routes are Valhalla's and not GraphHopper's (null when they are GraphHopper's). */
+  @Volatile var whyValhalla: String? = null
+    private set
+
+  private fun mark(list: List<Route>, source: String) = synchronized(sources) {
+    for (r in list) sources.addLast(java.lang.ref.WeakReference(r) to source)
+    while (sources.size > 64) sources.removeFirst()
+  }
+
+  /** "GH" or "VH": who computed [r] (null for a route not computed here). */
+  fun sourceOf(r: Route): String? = synchronized(sources) { sources.lastOrNull { it.first.get() === r }?.second }
+
+  // why GraphHopper's routes were not used, besides a missing graph (see GhRouting.problem)
+  @Volatile private var ghNote: String? = null
+
   override suspend fun getRoutes(userLocation: UserLocation, waypoints: List<Waypoint>): List<Route> =
       routes(userLocation, waypoints, trip())
 
@@ -74,16 +92,26 @@ class OfflineRouteProvider(
         // 1. GraphHopper's routes with the vehicle's measures (the alternatives too), guided by
         //    Valhalla along each of them. Only Valhalla when the driver asked for more routes.
         if (!options.valhallaOnly) {
+          ghNote = null
           val ghRoutes = runCatching { ghRoutes(body, vehicle, g.loadT, options, c.lat, c.lng) }
-              .onFailure { Log.w(TAG, "GraphHopper route failed: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }
+              .onFailure {
+                Log.w(TAG, "GraphHopper route failed: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it)
+                ghNote = "errore di GraphHopper (${it.message?.take(80)})"
+              }
               .getOrNull()?.takeIf { it.isNotEmpty() }
-          if (ghRoutes != null) return@withContext ghRoutes.also(onRoutes)
+          if (ghRoutes != null) {
+            whyValhalla = null
+            mark(ghRoutes, "GH")
+            return@withContext ghRoutes.also(onRoutes)
+          }
+          whyValhalla = gh.problem ?: ghNote ?: "GraphHopper non ha trovato un percorso"
+          Log.i(TAG, "Valhalla instead of GraphHopper: $whyValhalla")
         }
         // 2. Valhalla's own routes: the "more routes" asked by the driver, or the routes when
         //    GraphHopper has no graph here or found nothing
         val raw = SpeedCap.apply(engine.use(c.lat, c.lng) { it.routeRaw(body) }, vehicle.topSpeedKmh)
         Log.i(TAG, "route computed in ${System.currentTimeMillis() - started} ms, ${raw.length} bytes (Valhalla)")
-        parser.parseResponse(raw.encodeToByteArray()).also(onRoutes)
+        parser.parseResponse(raw.encodeToByteArray()).also { mark(it, "VH") }.also(onRoutes)
       }
 
   /**
@@ -103,6 +131,7 @@ class OfflineRouteProvider(
     val ok = found.filter { it.ok() }
     if (ok.isEmpty()) {
       Log.w(TAG, "GraphHopper: no route (${found.firstOrNull()?.error}) for $spec")
+      ghNote = "GraphHopper non ha trovato un percorso con queste misure (${found.firstOrNull()?.error?.take(80) ?: "?"})"
       return null
     }
     val base = root - "locations" - "alternates" - "exclude_polygons"
@@ -112,7 +141,11 @@ class OfflineRouteProvider(
           n + 1, ok.size, r.distanceM / 1000, r.timeMs / 60000, r.lat.size, r.computeMs, spec))
       val guided = guide(r, kinds, base, vehicle, lat, lon)
       if (guided != null) out += guided
-      else if (n == 0) return null // the best route could not be guided: Valhalla's routes instead
+      else if (n == 0) {
+        // the best route could not be guided: Valhalla's routes instead
+        ghNote = "il percorso di GraphHopper non combacia con la mappa di guida"
+        return null
+      }
     }
     return out
   }
