@@ -110,7 +110,9 @@ data class VehicleProfile(
         if (trip.avoidTolls) put("exclude_tolls", true)
         put("use_ferry", if (avoidFerries) 0.0 else 0.5)
         put("exclude_unpaved", avoidUnpaved)
-        if (trip.shortest) put("shortest", true)
+        if (trip.shortest || trip.route == RouteKind.SHORTEST) put("shortest", true)
+        // more motorway: Valhalla's own preference for motorways at its highest
+        if (trip.route == RouteKind.MOTORWAY) put("use_highways", 1.0)
         for ((k, v) in trip.debugCosting) put(k, v)
       }
     }
@@ -184,9 +186,21 @@ data class VehicleProfile(
 }
 
 /** Choices that change from trip to trip (and during a trip). */
+/**
+ * The kind of route the driver prefers: the fastest (with the speeds a lorry really keeps), the one
+ * with more motorway (other roads count more, worth it only when it makes sense), the shorter one.
+ */
+@Serializable
+enum class RouteKind(val label: String, val gh: Int) {
+  FASTEST("Più veloce", 0),
+  MOTORWAY("Più autostrada", 1),
+  SHORTEST("Più corto", 2),
+}
+
 data class TripOptions(
     val avoidTolls: Boolean = false,
     val shortest: Boolean = false,
+    val route: RouteKind = RouteKind.FASTEST,
     val alternates: Int = 0,
     /** Valhalla's own routes, not GraphHopper's: the "more routes" the driver asks for. */
     val valhallaOnly: Boolean = false,

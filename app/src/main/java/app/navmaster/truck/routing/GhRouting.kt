@@ -87,7 +87,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
   /** The base models, from the app's assets, where GraphHopper reads them (same files as on GitHub). */
   private fun modelsDir(): File {
     val d = File(context.filesDir, "gh-models").apply { mkdirs() }
-    for (name in listOf(GhEngine.TRUCK_MODEL_FILE, GhEngine.CAR_MODEL_FILE)) {
+    for (name in GhEngine.modelFiles()) {
       val f = File(d, name)
       val text = context.assets.open("gh/$name").bufferedReader().use { it.readText() }
       if (!f.exists() || f.readText() != text) f.writeText(text)
@@ -112,7 +112,8 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     fun state(regionDir: File): GhState {
       val dir = File(regionDir, "gh")
       if (!File(dir, "properties").exists()) return GhState.MISSING
-      val ok = listOf(GhEngine.PROFILE_TRUCK, GhEngine.PROFILE_CAR).all { File(dir, "landmarks_$it").exists() }
+      // every profile of this app (fast / more motorway / shorter, lorry and car) with its landmarks
+      val ok = GhEngine.profileNames().all { File(dir, "landmarks_$it").exists() }
       return if (ok) GhState.READY else GhState.OLD
     }
 
@@ -169,6 +170,7 @@ fun app.navmaster.truck.vehicle.VehicleProfile.ghSpec(loadT: Double, trip: app.n
     avoidUnpaved = v.avoidUnpaved
     preferTruckRoutes = v.preferTruckRoutes
     shortest = trip.shortest
+    route = trip.route.gh
     // the zones are rings of [lon, lat] for Valhalla, [lat, lon] here
     for (ring in trip.excludePolygons) {
       avoidZones.add(ring.map { p -> doubleArrayOf(p[1], p[0]) }.toTypedArray())

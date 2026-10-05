@@ -60,8 +60,16 @@ data class Stop(val coordinate: GeographicCoordinate, val label: String, val via
 
 enum class VariantKind(val label: String) {
   FASTEST("Più veloce"),
+  MOTORWAY("Più autostrada"),
+  SHORTEST("Più corto"),
   NO_TOLL("Senza pedaggi"),
   ALTERNATIVE("Alternativa"),
+}
+
+private fun kindOf(k: app.navmaster.truck.vehicle.RouteKind): VariantKind = when (k) {
+  app.navmaster.truck.vehicle.RouteKind.FASTEST -> VariantKind.FASTEST
+  app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> VariantKind.MOTORWAY
+  app.navmaster.truck.vehicle.RouteKind.SHORTEST -> VariantKind.SHORTEST
 }
 
 /** One of the routes offered before departure, already checked for this vehicle. */
@@ -418,10 +426,18 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val exclusions = exclusionsFor(p.avoided, _plan.value.current?.analysis) +
             p.avoidAreas.map { Geo.squareAround(it.lat, it.lng, 60.0) }
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
-        val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions)
-        // GraphHopper's routes (the best one and its alternatives) with the vehicle's measures
-        val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2))
+        val pref = settings.routeKind
+        val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions, route = pref)
+        // GraphHopper's routes of the kind the driver prefers (the best one and an alternative)
+        // with the vehicle's measures
+        val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))
         val routeNote = if (main.firstOrNull()?.let { AppGraph.routes.sourceOf(it) } == "VH") AppGraph.routes.whyValhalla else null
+        // the other two kinds, one route each, next to it (only when GraphHopper computed the
+        // first: Valhalla alone has no such choice)
+        val others = if (routeNote != null || main.isEmpty()) emptyList() else
+          app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }.mapNotNull { k ->
+            runCatching { AppGraph.routes.routes(from, waypoints, base.copy(route = k)).firstOrNull() }.getOrNull()?.let { k to it }
+          }
         planRequest = Triple(from, waypoints, base)
         val noToll = if (!avoidTolls) runCatching { AppGraph.routes.routes(from, waypoints, base.copy(avoidTolls = true)) }.getOrNull() else null
         val departure = LocalDateTime.now()
@@ -430,10 +446,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
             buildVariant(kind, title, r, opts, departure)
 
         val variants = mutableListOf<RouteVariant>()
-        main.firstOrNull()?.let { variants += build(VariantKind.FASTEST, if (avoidTolls) "Senza pedaggi" else "Più veloce", it, base) }
-        for ((i, r) in main.drop(1).withIndex()) {
-          if (variants.any { same(it.route, r) }) continue
-          variants += build(VariantKind.ALTERNATIVE, "Alternativa ${i + 1}", r, base)
+        main.firstOrNull()?.let { variants += build(kindOf(pref), if (avoidTolls) "${pref.label} · senza pedaggi" else pref.label, it, base) }
+        for ((k, r) in others) {
+          // the same road as one already offered: said on that card instead
+          val same = variants.indexOfFirst { same(it.route, r) || alongSameRoads(r, it.route) }
+          if (same >= 0) {
+            val v0 = variants[same]
+            variants[same] = v0.copy(title = v0.title + " = " + k.label.lowercase())
+            continue
+          }
+          variants += build(kindOf(k), k.label, r, base.copy(route = k))
+        }
+        var nAlt = 0
+        for (r in main.drop(1)) {
+          if (variants.any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
+          nAlt++
+          variants += build(VariantKind.ALTERNATIVE, "Alternativa $nAlt", r, base)
         }
         val fastest = variants.firstOrNull()
         var advice: String? = null

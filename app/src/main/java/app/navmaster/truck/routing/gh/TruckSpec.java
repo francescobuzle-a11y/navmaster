@@ -35,8 +35,10 @@ public final class TruckSpec {
   public boolean avoidUnpaved = true;
   /** Roads signed for lorries (hgv=designated) as a tie-breaker. */
   public boolean preferTruckRoutes = false;
-  /** The shortest route rather than the fastest. */
+  /** The shortest route rather than the fastest (same as route = ROUTE_SHORT). */
   public boolean shortest = false;
+  /** The kind of route: GhEngine.ROUTE_FAST, ROUTE_MOTORWAY (more motorway), ROUTE_SHORT. */
+  public int route = 0;
   /** Roads (edge ids) made twice as costly: those of the routes already found, to find another one. */
   public com.carrotsearch.hppc.IntHashSet penalized = null;
   /** Zones to avoid: each one a closed ring of [lat, lon]. */
@@ -48,7 +50,7 @@ public final class TruckSpec {
     t.hgv = hgv; t.heightM = heightM; t.widthM = widthM; t.lengthM = lengthM; t.weightT = weightT;
     t.axleLoadT = axleLoadT; t.hazmat = hazmat; t.tunnelCode = tunnelCode; t.hazmatWater = hazmatWater;
     t.topSpeedKmh = topSpeedKmh; t.avoidTolls = avoidTolls; t.avoidFerries = avoidFerries; t.avoidUnpaved = avoidUnpaved;
-    t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest;
+    t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest; t.route = route;
     t.avoidZones.addAll(avoidZones);
     t.penalized = penalized;
     return t;
@@ -57,7 +59,7 @@ public final class TruckSpec {
   @Override
   public String toString() {
     return "TruckSpec{hgv=" + hgv + ", h=" + heightM + ", w=" + widthM + ", l=" + lengthM + ", t=" + weightT +
-        ", axle=" + axleLoadT + ", hazmat=" + hazmat + (tunnelCode != 0 ? "/" + tunnelCode : "") + (hazmatWater ? "/water" : "") + ", v=" + topSpeedKmh + ", tolls=" + !avoidTolls +
+        ", axle=" + axleLoadT + ", hazmat=" + hazmat + (tunnelCode != 0 ? "/" + tunnelCode : "") + (hazmatWater ? "/water" : "") + ", v=" + topSpeedKmh + ", route=" + route + ", tolls=" + !avoidTolls +
         ", ferries=" + !avoidFerries + ", unpaved=" + !avoidUnpaved + ", zones=" + avoidZones.size() + "}";
   }
 }

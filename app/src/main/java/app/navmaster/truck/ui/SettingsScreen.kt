@@ -103,7 +103,7 @@ fun SettingsScreen(onClose: () -> Unit, onRegions: () -> Unit, initialPage: Stri
 /** What is set now, in a few words, under each entry of the list. */
 private fun summary(p: SettingsPage, s: Settings): String =
     when (p) {
-      SettingsPage.ROUTE -> s.tollPolicy.label + if (s.tollPolicy == TollPolicy.ASK) " · fino a ${s.tollMaxExtraMin} min in più" else ""
+      SettingsPage.ROUTE -> s.routeKind.label + " · " + s.tollPolicy.label + if (s.tollPolicy == TollPolicy.ASK) " · fino a ${s.tollMaxExtraMin} min in più" else ""
       SettingsPage.DRIVING -> listOf(
           "voce " + s.voiceLevel.label.lowercase(),
           if (s.junctionView) "vista svincoli" else null,
@@ -175,6 +175,15 @@ private fun SmallPill(text: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
+  Card("Percorso preferito") {
+    Pills { for (k in app.navmaster.truck.vehicle.RouteKind.entries) Pill(k.label, s.routeKind == k) { set { it.copy(routeKind = k) } } }
+    Spacer(Modifier.height(6.dp))
+    Caption(when (s.routeKind) {
+      app.navmaster.truck.vehicle.RouteKind.FASTEST -> "Il più rapido per il mezzo, con le velocità reali di un camion su ogni strada, nei paesi e nelle rotonde."
+      app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> "Resta in autostrada e superstrada finché ha senso: le altre strade contano quasi il doppio del loro tempo."
+      app.navmaster.truck.vehicle.RouteKind.SHORTEST -> "Meno chilometri, sempre su strade adatte al mezzo, anche se ci vuole un po' di più."
+    } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 4)
+  }
   Card("Strade a pagamento") {
     Pills { for (p in TollPolicy.entries) Pill(p.label, s.tollPolicy == p) { set { it.copy(tollPolicy = p) } } }
     if (s.tollPolicy == TollPolicy.ASK) {

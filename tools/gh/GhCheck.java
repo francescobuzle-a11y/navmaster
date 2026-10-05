@@ -29,17 +29,19 @@ public class GhCheck {
         String[] c = s.split(",");
         pts.add(new double[] {Double.parseDouble(c[0]), Double.parseDouble(c[1])});
       }
-      for (int v = 0; v < 2; v++) {
+      for (int v = 0; v < 6; v++) {
         TruckSpec s = new TruckSpec();
-        if (v == 1) {
+        if (v >= 3) {
           s.hgv = false; s.heightM = 3.2; s.widthM = 2.3; s.lengthM = 7.5; s.weightT = 3.5; s.axleLoadT = 2.0;
         }
+        s.route = v % 3;
+        String kind = (v < 3 ? "camion" : "camper") + "/" + new String[] {"veloce", "autostrada", "corto"}[v % 3];
         for (int run = 0; run < 2; run++) {
-          List<GhEngine.Result> rs = e.routes(pts, null, s, 3);
+          List<GhEngine.Result> rs = e.routes(pts, null, s, s.route == GhEngine.ROUTE_FAST ? 3 : 1);
           GhEngine.Result r = rs.get(0);
           StringBuilder alt = new StringBuilder();
           for (int k = 1; k < rs.size(); k++) alt.append(String.format(" / %.0f km", rs.get(k).distanceM / 1000));
-          System.out.println("GHCHECK " + trip + " " + (v == 0 ? "camion" : "camper") + " run " + run + ": "
+          System.out.println("GHCHECK " + trip + " " + kind + " run " + run + ": "
               + (r.ok() ? String.format("%.1f km, %d min, %d paths%s, %d ms", r.distanceM / 1000, r.timeMs / 60000, rs.size(), alt, r.computeMs)
                   : "ERROR " + r.error) + (r.note != null ? " (" + r.note + ")" : ""));
           if (!r.ok()) fails++;

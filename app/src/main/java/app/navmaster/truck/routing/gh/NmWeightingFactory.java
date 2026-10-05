@@ -11,10 +11,12 @@ import com.graphhopper.routing.ev.HazmatWater;
 import com.graphhopper.routing.ev.Hgv;
 import com.graphhopper.routing.ev.MaxWeightExcept;
 import com.graphhopper.routing.ev.RoadAccess;
+import com.graphhopper.routing.ev.RoadClass;
 import com.graphhopper.routing.ev.RoadEnvironment;
 import com.graphhopper.routing.ev.Surface;
 import com.graphhopper.routing.ev.Toll;
 import com.graphhopper.routing.ev.TurnRestriction;
+import com.graphhopper.routing.ev.UrbanDensity;
 import com.graphhopper.routing.util.EncodingManager;
 import com.graphhopper.routing.weighting.DefaultTurnCostProvider;
 import com.graphhopper.routing.weighting.TurnCostProvider;
@@ -36,7 +38,10 @@ import java.util.List;
  * with the Janino compiler; Android cannot load that bytecode, so here the same rules are written
  * directly in Java and nothing is compiled on the tablet.
  *
- * Two profiles (GhEngine): lorries and the other vehicles. For each one:
+ * Six profiles (GhEngine): lorries and the other vehicles, each as the fastest route (with the
+ * speeds a lorry really keeps: by class of road, in towns, on roundabouts), the route with more
+ * motorway (other roads count 1/0.6 times their time) and the shorter route (each km worth 100 s).
+ * For each one:
  * - the BASE weighting, statement by statement the custom model the graph was built with
  *   (assets/gh/nm_truck.json, nm_car.json): the landmarks (the precomputed data that make long
  *   routes fast) were prepared with it, and a vehicle with the default choices gets exactly it;
@@ -63,6 +68,10 @@ public final class NmWeightingFactory implements WeightingFactory {
   private final EnumEncodedValue<HazmatWater> hazmatWater;
   private final EnumEncodedValue<Toll> toll;
   private final EnumEncodedValue<Surface> surface;
+  private final EnumEncodedValue<RoadClass> roadClass;
+  private final EnumEncodedValue<UrbanDensity> urban;
+  private final DecimalEncodedValue maxSpeedEnc;
+  private final BooleanEncodedValue roundabout, roadClassLink;
 
   public NmWeightingFactory(BaseGraph graph, EncodingManager em) {
     this.graph = graph;
@@ -83,6 +92,20 @@ public final class NmWeightingFactory implements WeightingFactory {
     hazmatWater = en(HazmatWater.KEY, HazmatWater.class);
     toll = en(Toll.KEY, Toll.class);
     surface = en(Surface.KEY, Surface.class);
+    roadClass = en(RoadClass.KEY, RoadClass.class);
+    urban = en(UrbanDensity.KEY, UrbanDensity.class);
+    maxSpeedEnc = dec("max_speed");
+    roundabout = em.hasEncodedValue("roundabout") ? em.getBooleanEncodedValue("roundabout") : null;
+    roadClassLink = em.hasEncodedValue("road_class_link") ? em.getBooleanEncodedValue("road_class_link") : null;
+  }
+
+  /** The kind of route of a profile: the fastest, more motorway, the shorter. */
+  enum Mode { FAST, MOTORWAY, SHORT }
+
+  static Mode modeOf(String profile) {
+    if (profile.endsWith(GhEngine.SUFFIX_MOTORWAY)) return Mode.MOTORWAY;
+    if (profile.endsWith(GhEngine.SUFFIX_SHORT)) return Mode.SHORT;
+    return Mode.FAST;
   }
 
   private DecimalEncodedValue dec(String key) {
@@ -96,7 +119,8 @@ public final class NmWeightingFactory implements WeightingFactory {
   @Override
   public Weighting createWeighting(Profile profile, PMap requestHints, boolean disableTurnCosts) {
     TruckSpec spec = requestHints.getObject(SPEC, null);
-    final boolean truck = !GhEngine.PROFILE_CAR.equals(profile.getName());
+    final boolean truck = profile.getName().startsWith(GhEngine.PROFILE_TRUCK);
+    final Mode mode = modeOf(profile.getName());
     TurnCostProvider turns = TurnCostProvider.NO_TURN_COST_PROVIDER;
     if (profile.hasTurnCosts() && !disableTurnCosts) {
       BooleanEncodedValue restriction = em.getTurnBooleanEncodedValue(TurnRestriction.key(profile.getName()));
@@ -120,12 +144,12 @@ public final class NmWeightingFactory implements WeightingFactory {
     CustomWeighting.Parameters p = new CustomWeighting.Parameters(
         (edge, reverse) -> speed(truck, edge, reverse),
         () -> maxSpeed,
-        (edge, reverse) -> s == null ? basePriority(truck, edge, reverse) : priority(truck, s, zones, edge, reverse),
+        (edge, reverse) -> s == null ? basePriority(truck, mode, edge, reverse) : priority(truck, mode, s, zones, edge, reverse),
         () -> 1.0,
         null,
         // seconds of time a kilometre is worth: the fastest route with a small push towards the
-        // shorter one (or mostly the shorter one when asked)
-        s != null && s.shortest ? 150.0 : DISTANCE_INFLUENCE,
+        // shorter one, or mostly the shorter one (its own profile, with its own landmarks)
+        mode == Mode.SHORT ? DISTANCE_INFLUENCE_SHORT : DISTANCE_INFLUENCE,
         300.0);
     return new CustomWeighting(turns, p);
   }
@@ -134,10 +158,40 @@ public final class NmWeightingFactory implements WeightingFactory {
   static final double TRUCK_SPEED = 85.0;
   static final double CAR_SPEED = 110.0;
   static final double DISTANCE_INFLUENCE = 20.0;
+  static final double DISTANCE_INFLUENCE_SHORT = 100.0;
+  /** "More motorway": the other roads (not motorway, dual carriageway or their ramps) weigh 1/0.6. */
+  static final double MOTORWAY_PREFERENCE = 0.6;
 
+  /**
+   * The speed on the road, statement by statement as in the "speed" part of the base models:
+   * lorries 90% of the car speed (at most 85 km/h), at most 75 on dual carriageways, 65 on main
+   * roads, 58 on secondary, 50 on minor and 35 on the others; in towns 35 (city) / 45 (outskirts),
+   * 38 where the limit is 50 km/h or less; 20 on roundabouts. Cars and campers: the car speed (at
+   * most 110 km/h), 40 / 50 in towns, 25 on roundabouts.
+   */
   private double speed(boolean truck, EdgeIteratorState edge, boolean reverse) {
     double v = baseSpeed(edge, reverse);
-    return truck ? Math.min(v * 0.9, TRUCK_SPEED) : Math.min(v, CAR_SPEED);
+    RoadClass rc = roadClass == null ? RoadClass.OTHER : edge.get(roadClass);
+    UrbanDensity ud = urban == null ? UrbanDensity.RURAL : edge.get(urban);
+    boolean motorway = rc == RoadClass.MOTORWAY;
+    if (truck) {
+      v = Math.min(v * 0.9, TRUCK_SPEED);
+      if (rc == RoadClass.TRUNK) v = Math.min(v, 75);
+      else if (rc == RoadClass.PRIMARY) v = Math.min(v, 65);
+      else if (rc == RoadClass.SECONDARY) v = Math.min(v, 58);
+      else if (rc == RoadClass.TERTIARY) v = Math.min(v, 50);
+      else if (!motorway) v = Math.min(v, 35);
+      if (!motorway && ud == UrbanDensity.CITY) v = Math.min(v, 35);
+      else if (!motorway && ud == UrbanDensity.RESIDENTIAL) v = Math.min(v, 45);
+      if (!motorway && maxSpeedEnc != null && (reverse ? edge.getReverse(maxSpeedEnc) : edge.get(maxSpeedEnc)) <= 50) v = Math.min(v, 38);
+      if (roundabout != null && edge.get(roundabout)) v = Math.min(v, 20);
+    } else {
+      v = Math.min(v, CAR_SPEED);
+      if (!motorway && ud == UrbanDensity.CITY) v = Math.min(v, 40);
+      else if (!motorway && ud == UrbanDensity.RESIDENTIAL) v = Math.min(v, 50);
+      if (roundabout != null && edge.get(roundabout)) v = Math.min(v, 25);
+    }
+    return v;
   }
 
   private double baseSpeed(EdgeIteratorState edge, boolean reverse) {
@@ -171,7 +225,7 @@ public final class NmWeightingFactory implements WeightingFactory {
    * nm_car.json (the landmarks were prepared with it: the default vehicle gets exactly these
    * weights, so the search stays as fast as GraphHopper can be).
    */
-  private double basePriority(boolean truck, EdgeIteratorState edge, boolean reverse) {
+  private double basePriority(boolean truck, Mode mode, EdgeIteratorState edge, boolean reverse) {
     double v = 1.0;
     boolean car = car(edge, reverse);
     RoadAccess ra = roadAccess == null ? RoadAccess.YES : edge.get(roadAccess);
@@ -190,6 +244,11 @@ public final class NmWeightingFactory implements WeightingFactory {
     if (restricted(ra)) v *= 0.1;
     if (roadEnv != null && edge.get(roadEnv) == RoadEnvironment.FERRY) v *= 0.02;
     if (surface != null && rough(edge.get(surface))) v *= 0.02;
+    if (mode == Mode.MOTORWAY) {
+      RoadClass rc = roadClass == null ? RoadClass.OTHER : edge.get(roadClass);
+      boolean link = roadClassLink != null && edge.get(roadClassLink);
+      if (rc != RoadClass.MOTORWAY && rc != RoadClass.TRUNK && !link) v *= MOTORWAY_PREFERENCE;
+    }
     return v;
   }
 
@@ -204,8 +263,8 @@ public final class NmWeightingFactory implements WeightingFactory {
    * the vehicle or the trip differ - roads closed by its measures, dangerous goods, zones; tolls
    * avoided; ferries, unpaved roads and roads for lorries as chosen.
    */
-  private double priority(boolean truck, TruckSpec s, List<Polygon> zones, EdgeIteratorState edge, boolean reverse) {
-    double v = basePriority(truck, edge, reverse);
+  private double priority(boolean truck, Mode mode, TruckSpec s, List<Polygon> zones, EdgeIteratorState edge, boolean reverse) {
+    double v = basePriority(truck, mode, edge, reverse);
     if (v == 0.0) return 0.0;
     // choices different from the base model (which avoids ferries and unpaved roads and prefers
     // roads signed for lorries)

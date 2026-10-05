@@ -43,6 +43,37 @@ public final class GhEngine implements Closeable {
   /** Base models, as given when the graph was built (part of each profile's identity). */
   public static final String TRUCK_MODEL_FILE = "nm_truck.json";
   public static final String CAR_MODEL_FILE = "nm_car.json";
+  /** The profiles "more motorway" and "shorter" of each vehicle: nm_truck_mw, nm_truck_short… */
+  public static final String SUFFIX_MOTORWAY = "_mw";
+  public static final String SUFFIX_SHORT = "_short";
+  /** The kinds of route a driver can ask for (TruckSpec.route). */
+  public static final int ROUTE_FAST = 0, ROUTE_MOTORWAY = 1, ROUTE_SHORT = 2;
+
+  /** Every profile name of the graph, in order: lorry fast/motorway/short, then car. */
+  public static List<String> profileNames() {
+    List<String> out = new ArrayList<>();
+    for (String base : new String[] {PROFILE_TRUCK, PROFILE_CAR}) {
+      out.add(base);
+      out.add(base + SUFFIX_MOTORWAY);
+      out.add(base + SUFFIX_SHORT);
+    }
+    return out;
+  }
+
+  /** The profile for a vehicle and the kind of route asked. */
+  public static String profileFor(TruckSpec s) {
+    String base = s.hgv ? PROFILE_TRUCK : PROFILE_CAR;
+    if (s.route == ROUTE_MOTORWAY) return base + SUFFIX_MOTORWAY;
+    if (s.route == ROUTE_SHORT || s.shortest) return base + SUFFIX_SHORT;
+    return base;
+  }
+
+  /** The models folder files: one per profile, named after it. */
+  public static List<String> modelFiles() {
+    List<String> out = new ArrayList<>();
+    for (String n : profileNames()) out.add(n + ".json");
+    return out;
+  }
   /** Vehicle types whose turn restrictions are followed (as when the graph was built). */
   public static final List<String> TURN_VEHICLES_TRUCK = Arrays.asList("hgv", "motorcar", "motor_vehicle");
   public static final List<String> TURN_VEHICLES_CAR = Arrays.asList("motorcar", "motor_vehicle");
@@ -71,8 +102,15 @@ public final class GhEngine implements Closeable {
   }
 
   public static List<Profile> profiles() {
-    return Arrays.asList(profile(PROFILE_TRUCK, TRUCK_MODEL_FILE, TURN_VEHICLES_TRUCK),
-        profile(PROFILE_CAR, CAR_MODEL_FILE, TURN_VEHICLES_CAR));
+    List<Profile> out = new ArrayList<>();
+    for (String n : profileNames()) out.add(profile(n, n + ".json", n.startsWith(PROFILE_TRUCK) ? TURN_VEHICLES_TRUCK : TURN_VEHICLES_CAR));
+    return out;
+  }
+
+  public static List<LMProfile> lmProfiles() {
+    List<LMProfile> out = new ArrayList<>();
+    for (String n : profileNames()) out.add(new LMProfile(n));
+    return out;
   }
 
   /**
@@ -87,7 +125,7 @@ public final class GhEngine implements Closeable {
     cfg.putObject("import.osm.ignored_highways", IGNORED_HIGHWAYS);
     cfg.putObject("graph.dataaccess.default_type", mmap ? "MMAP" : "RAM_STORE");
     cfg.setProfiles(profiles());
-    cfg.setLMProfiles(Arrays.asList(new LMProfile(PROFILE_TRUCK), new LMProfile(PROFILE_CAR)));
+    cfg.setLMProfiles(lmProfiles());
     GraphHopper gh = new GraphHopper() {
       @Override
       protected WeightingFactory createWeightingFactory() {
@@ -278,7 +316,7 @@ public final class GhEngine implements Closeable {
   private static GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     List<GHPoint> pts = new ArrayList<>();
     for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
-    GHRequest req = new GHRequest(pts).setProfile(spec.hgv ? PROFILE_TRUCK : PROFILE_CAR).setLocale(Locale.ITALIAN);
+    GHRequest req = new GHRequest(pts).setProfile(profileFor(spec)).setLocale(Locale.ITALIAN);
     if (headings != null && headings.size() == pts.size()) {
       boolean any = false;
       for (Double h : headings) if (h != null && !h.isNaN()) any = true;

@@ -25,7 +25,7 @@ public class GhSame {
     cfg.putObject("import.osm.ignored_highways", GhEngine.IGNORED_HIGHWAYS);
     cfg.putObject("graph.dataaccess.default_type", "MMAP");
     cfg.setProfiles(GhEngine.profiles());
-    cfg.setLMProfiles(Arrays.asList(new LMProfile(GhEngine.PROFILE_TRUCK), new LMProfile(GhEngine.PROFILE_CAR)));
+    cfg.setLMProfiles(GhEngine.lmProfiles());
     GraphHopper std = new GraphHopper();
     std.init(cfg);
     std.setAllowWrites(false);
@@ -38,7 +38,7 @@ public class GhSame {
     for (String trip : a[2].split("\\|")) {
       String[] p = trip.split(";");
       String[] c1 = p[0].split(","), c2 = p[1].split(",");
-      for (String prof : new String[] {GhEngine.PROFILE_TRUCK, GhEngine.PROFILE_CAR}) {
+      for (String prof : GhEngine.profileNames()) {
         double[] w = new double[2];
         for (int k = 0; k < 2; k++) {
           GHRequest r = new GHRequest(new GHPoint(Double.parseDouble(c1[0]), Double.parseDouble(c1[1])),
@@ -47,7 +47,9 @@ public class GhSame {
           if (k == 1) {
             // the default choices, and no limits from the measures (they only close roads)
             TruckSpec s = new TruckSpec();
-            s.hgv = prof.equals(GhEngine.PROFILE_TRUCK);
+            s.hgv = prof.startsWith(GhEngine.PROFILE_TRUCK);
+            s.route = prof.endsWith(GhEngine.SUFFIX_MOTORWAY) ? GhEngine.ROUTE_MOTORWAY
+                : prof.endsWith(GhEngine.SUFFIX_SHORT) ? GhEngine.ROUTE_SHORT : GhEngine.ROUTE_FAST;
             s.preferTruckRoutes = true; s.avoidFerries = true; s.avoidUnpaved = true;
             s.heightM = 0; s.widthM = 0; s.lengthM = 0; s.weightT = 0; s.axleLoadT = 0;
             r.getHints().putObject(NmWeightingFactory.SPEC, s);
