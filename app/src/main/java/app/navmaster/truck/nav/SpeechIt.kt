@@ -189,12 +189,35 @@ object SpeechIt {
   private val ROUNDABOUT = rxi("^(?:entra (?:nella|in) (?:rotonda|rotatoria)(?: ([^,]+?))?|alla (?:rotonda|rotatoria)(?: ([^,]+?))?,?) e prendi la (\\S+) uscita(?: (?:per|verso|su|in) (.+))?$")
   private val TAKE_EXIT = rxi("^prendi l'uscita (?:verso |per )?(.+)$")
   private val TAKE_RAMP = rxi("^prendi (?:lo svincolo|la rampa)(?: (?:a|sulla) (destra|sinistra))?(?: (?:verso|per) (.+))?$")
+  private val VERB = rxi("^(imboccare|prendere|rimanere su(?:lla|l)?|restare su(?:lla|l)?|rimanere in|restare in)\\s+(.+)$")
+
+  /** "A1" → "l'A1", "E35" / "SS16" / "Statale 16" → "la …", a street stays as it is. */
+  private fun withArticle(road: String): String = when {
+    Regex("^A\\d").containsMatchIn(road) -> "l'$road"
+    Regex("^(E|SS|SP|SR|SGC|RA|S[A-Z]?\\d)").containsMatchIn(road) || Regex("^(Statale|Provinciale|Regionale|Tangenziale|Superstrada|Autostrada|Strada)\\b").containsMatchIn(road) -> "la $road"
+    else -> road
+  }
+
+  /** "l'A1" → "sull'A1", "la E35" → "sulla E35", "Via Roma" → "in Via Roma". */
+  private fun onRoad(road: String): String = when {
+    road.startsWith("l'") -> "sull'" + road.removePrefix("l'")
+    road.startsWith("la ") -> "sulla " + road.removePrefix("la ")
+    Regex("^(Via|Viale|Corso|Piazza|Largo|Vicolo|Piazzale)\\b").containsMatchIn(road) -> "in $road"
+    else -> "su $road"
+  }
+
   private val KEEP = rxi("^(?:mantieni|tieni|resta)(?: la| sulla)? (destra|sinistra)(?: al bivio)?(?: (?:verso|per|su) (.+))?$")
   private val TURN_ON = rxi("^(svolta|gira|curva)( leggermente| decisamente| bruscamente)? a (destra|sinistra) (?:su|in) (.+)$")
   private val TURN_TO = rxi("^(svolta|gira|curva)( leggermente| decisamente| bruscamente)? a (destra|sinistra) (?:verso|per) (.+)$")
 
   /** The places or road after "verso": "Ancona" → "in direzione Ancona"; a road stays a road. */
   private fun toward(t: String): String {
+    // Valhalla: "Mantieni la sinistra per imboccare A1", "… per rimanere su E 35"
+    VERB.find(t.trim())?.let { m ->
+      val road = withArticle(normalize(fewPlaces(m.groupValues[2])).replace(Regex("\\b([A-Z]{1,3}) (\\d{1,4})\\b"), "$1$2"))
+      val stay = m.groupValues[1].lowercase().let { it.startsWith("riman") || it.startsWith("rest") }
+      return if (stay) "per restare " + onRoad(road) else "per imboccare $road"
+    }
     val n = normalize(fewPlaces(t))
     return if (Regex("^(Via|Viale|Corso|Piazza|Largo|Vicolo|Piazzale)\\b").containsMatchIn(n)) "in $n"
     else if (Regex("^(A\\d)").containsMatchIn(n)) "verso l'$n"

@@ -55,13 +55,13 @@ object TurnList {
     return out
   }
 
-  /** The main roads in order, by their number (A1, SS16, E45 only when there is nothing else). */
+  /** The main roads in order, by their number (A1, SS16). */
   fun roads(a: RouteAnalysis, max: Int = 8): List<String> {
     val runs = mutableListOf<Pair<String, Double>>()
     for (e in a.edges.sortedBy { it.startM }) {
       if (!e.isMajor && e.roadClass != "secondary") continue
-      val refs = e.refs
-      val ref = refs.firstOrNull { !EURO_REF.matches(it) } ?: refs.firstOrNull() ?: continue
+      // the national number (A1, SS65): the European one (E35) is not what the signs show first
+      val ref = e.refs.firstOrNull { !EURO_REF.matches(it) }?.replace(" ", "") ?: continue
       val len = e.endM - e.startM
       val last = runs.lastOrNull()
       if (last != null && last.first == ref) runs[runs.lastIndex] = ref to last.second + len else runs += ref to len

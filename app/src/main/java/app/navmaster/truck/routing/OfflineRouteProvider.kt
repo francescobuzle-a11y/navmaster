@@ -157,33 +157,62 @@ class OfflineRouteProvider(
     breaks += 0
     breaks += r.lat.size - 1
     for ((k, idx) in r.waypointIndex.withIndex()) if (kinds.getOrNull(k) != "via") breaks += idx
-    val shape = JsonArray(r.lat.indices.map { i ->
-      JsonObject(mapOf(
-          "lat" to JsonPrimitive(r.lat[i]), "lon" to JsonPrimitive(r.lon[i]),
-          "type" to JsonPrimitive(if (i in breaks) "break" else "through"),
-      ))
-    })
     val waypoints = JsonArray(breaks.sorted().map { i ->
       JsonObject(mapOf("location" to JsonArray(listOf(JsonPrimitive(r.lon[i]), JsonPrimitive(r.lat[i]))), "name" to JsonPrimitive("")))
     })
-    // map matching: GraphHopper stores the road shapes slightly simplified, so the exact walk along
-    // Valhalla's edges (edge_walk) never matched; map_snap follows the path in a few milliseconds
-    val match = "map_snap"
     val started = System.currentTimeMillis()
+    // 1. map matching along the path (map_snap: GraphHopper stores the road shapes slightly
+    //    simplified, the exact walk along Valhalla's edges never matched). Valhalla breaks a trace
+    //    where two points are more than 2 km apart (meili breakage_distance, which a request cannot
+    //    change) and GraphHopper has no point along km of straight motorway: points are added
+    //    every 300 m, on the road itself (the shape is the road's)
+    val traced = runCatching { traceAlong(r, breaks, base, vehicle, waypoints, lat, lon) }
+        .onFailure { Log.w(TAG, "Valhalla trace failed: $it") }.getOrNull()
+    if (traced != null) {
+      Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper route guided by Valhalla (map_snap) in %d ms: %.1f km, %d steps",
+          System.currentTimeMillis() - started, traced.distance / 1000, traced.steps.size))
+      return traced
+    }
+    // 2. the two maps differ somewhere on the path (a road changed between the two extracts):
+    //    Valhalla's own route through points of GraphHopper's path, with the direction of travel
+    val through = runCatching { routeThrough(r, breaks, base, vehicle, lat, lon) }
+        .onFailure { Log.w(TAG, "Valhalla route through GraphHopper's path failed: $it") }.getOrNull()
+    if (through != null) {
+      Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper route guided by Valhalla (through points) in %d ms: %.1f km, %d steps",
+          System.currentTimeMillis() - started, through.distance / 1000, through.steps.size))
+    }
+    return through
+  }
+
+  private fun traceAlong(r: GhEngine.Result, breaks: Set<Int>, base: Map<String, JsonElement>, vehicle: VehicleProfile,
+                         waypoints: JsonArray, lat: Double, lon: Double): Route? {
+    val pts = ArrayList<JsonElement>(r.lat.size * 2)
+    fun point(la: Double, lo: Double, type: String) =
+        JsonObject(mapOf("lat" to JsonPrimitive(la), "lon" to JsonPrimitive(lo), "type" to JsonPrimitive(type)))
+    for (i in r.lat.indices) {
+      if (i > 0) {
+        val d = metres(r.lat[i - 1], r.lon[i - 1], r.lat[i], r.lon[i])
+        val n = kotlin.math.ceil(d / DENSE_M).toInt()
+        for (k in 1 until n) {
+          val f = k.toDouble() / n
+          pts += point(r.lat[i - 1] + (r.lat[i] - r.lat[i - 1]) * f, r.lon[i - 1] + (r.lon[i] - r.lon[i - 1]) * f, "through")
+        }
+      }
+      pts += point(r.lat[i], r.lon[i], if (i in breaks) "break" else "through")
+    }
     val trace = JsonObject(base + mapOf(
-        "shape" to shape,
-        "shape_match" to JsonPrimitive(match),
+        "shape" to JsonArray(pts),
+        "shape_match" to JsonPrimitive("map_snap"),
         "trace_options" to JsonObject(mapOf(
             "search_radius" to JsonPrimitive(30), "gps_accuracy" to JsonPrimitive(5),
-            "breakage_distance" to JsonPrimitive(5000), "interpolation_distance" to JsonPrimitive(0),
+            "interpolation_distance" to JsonPrimitive(0),
         )),
     )).toString()
-    val raw = runCatching { engine.use(lat, lon) { it.traceRouteRaw(trace) } }
-        .onFailure { Log.w(TAG, "Valhalla trace ($match) failed: $it") }.getOrNull() ?: return null
+    val raw = engine.use(lat, lon) { it.traceRouteRaw(trace) }
     val res = runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
     val matchings = res["matchings"]?.jsonArray
     if (matchings.isNullOrEmpty()) {
-      Log.w(TAG, "Valhalla trace ($match): ${raw.take(300)}")
+      Log.w(TAG, "Valhalla trace (map_snap, ${pts.size} points): ${raw.take(300)}")
       return null
     }
     // Valhalla's map-matching answer, as an OSRM route answer (the format Ferrostar reads)
@@ -194,16 +223,78 @@ class OfflineRouteProvider(
     })
     val dist = routes.firstOrNull()?.jsonObject?.get("distance")?.jsonPrimitive?.doubleOrNull ?: 0.0
     if (routes.size != 1 || kotlin.math.abs(dist - r.distanceM) > r.distanceM * 0.03 + 200) {
-      Log.w(TAG, String.format(java.util.Locale.US, "Valhalla trace (%s): %d pieces, %.1f km against %.1f km of GraphHopper",
-          match, routes.size, dist / 1000, r.distanceM / 1000))
+      Log.w(TAG, String.format(java.util.Locale.US, "Valhalla trace (map_snap, %d points): %d pieces, %.1f km against %.1f km of GraphHopper",
+          pts.size, routes.size, routes.sumOf { it.jsonObject["distance"]?.jsonPrimitive?.doubleOrNull ?: 0.0 } / 1000, r.distanceM / 1000))
       return null
     }
     val answer = JsonObject(mapOf("code" to JsonPrimitive("Ok"), "routes" to routes, "waypoints" to waypoints)).toString()
     val capped = SpeedCap.apply(answer, vehicle.topSpeedKmh)
-    val parsed = parser.parseResponse(capped.encodeToByteArray()).firstOrNull() ?: return null
-    Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper route guided by Valhalla (%s) in %d ms: %.1f km, %d steps",
-        match, System.currentTimeMillis() - started, dist / 1000, parsed.steps.size))
-    return parsed
+    return parser.parseResponse(capped.encodeToByteArray()).firstOrNull()
+  }
+
+  /**
+   * Valhalla's route through points taken along GraphHopper's path (at most [MAX_THROUGH], evenly,
+   * each with the direction of travel there), keeping the stops: the same roads, unless the maps
+   * differ there. Accepted only when it is as long as GraphHopper's (5%).
+   */
+  private fun routeThrough(r: GhEngine.Result, breaks: Set<Int>, base: Map<String, JsonElement>, vehicle: VehicleProfile, lat: Double, lon: Double): Route? {
+    val n = r.lat.size
+    if (n < 2) return null
+    val cum = DoubleArray(n)
+    for (i in 1 until n) cum[i] = cum[i - 1] + metres(r.lat[i - 1], r.lon[i - 1], r.lat[i], r.lon[i])
+    val total = cum[n - 1]
+    val stops = breaks.sorted()
+    val count = (total / 15_000).toInt().coerceAtLeast(1).coerceAtMost((MAX_THROUGH - stops.size).coerceAtLeast(0))
+    val wanted = (1..count).map { total * it / (count + 1) }
+    val picked = HashSet<Int>()
+    var j = 0
+    for (w in wanted) {
+      while (j < n - 1 && cum[j] < w) j++
+      // not next to a stop (the stop itself is there)
+      if (stops.any { kotlin.math.abs(cum[it] - cum[j]) < 1500 }) continue
+      picked += j
+    }
+    val locs = (stops + picked).sorted().map { i ->
+      if (i in breaks) {
+        JsonObject(mapOf("lat" to JsonPrimitive(r.lat[i]), "lon" to JsonPrimitive(r.lon[i]), "type" to JsonPrimitive("break")))
+      } else {
+        // the direction of travel on the path here (over the next 20-40 m)
+        var k = i + 1
+        while (k < n - 1 && cum[k] - cum[i] < 20) k++
+        val h = bearing(r.lat[i], r.lon[i], r.lat[k], r.lon[k])
+        JsonObject(mapOf(
+            "lat" to JsonPrimitive(r.lat[i]), "lon" to JsonPrimitive(r.lon[i]), "type" to JsonPrimitive("through"),
+            "heading" to JsonPrimitive(h.toInt()), "heading_tolerance" to JsonPrimitive(45), "radius" to JsonPrimitive(0),
+        ))
+      }
+    }
+    val req = JsonObject(base + mapOf("locations" to JsonArray(locs))).toString()
+    val raw = SpeedCap.apply(engine.use(lat, lon) { it.routeRaw(req) }, vehicle.topSpeedKmh)
+    val route = parser.parseResponse(raw.encodeToByteArray()).firstOrNull() ?: return null
+    if (kotlin.math.abs(route.distance - r.distanceM) > r.distanceM * 0.05 + 500) {
+      Log.w(TAG, String.format(java.util.Locale.US, "Valhalla through %d points of GraphHopper: %.1f km against %.1f km",
+          locs.size, route.distance / 1000, r.distanceM / 1000))
+      return null
+    }
+    return route
+  }
+
+  private fun metres(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val p1 = Math.toRadians(lat1)
+    val p2 = Math.toRadians(lat2)
+    val dp = p2 - p1
+    val dl = Math.toRadians(lon2 - lon1)
+    val a = kotlin.math.sin(dp / 2).let { it * it } + kotlin.math.cos(p1) * kotlin.math.cos(p2) * kotlin.math.sin(dl / 2).let { it * it }
+    return 2 * 6_371_000.0 * kotlin.math.asin(kotlin.math.sqrt(a.coerceIn(0.0, 1.0)))
+  }
+
+  private fun bearing(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val p1 = Math.toRadians(lat1)
+    val p2 = Math.toRadians(lat2)
+    val dl = Math.toRadians(lon2 - lon1)
+    val y = kotlin.math.sin(dl) * kotlin.math.cos(p2)
+    val x = kotlin.math.cos(p1) * kotlin.math.sin(p2) - kotlin.math.sin(p1) * kotlin.math.cos(p2) * kotlin.math.cos(dl)
+    return (Math.toDegrees(kotlin.math.atan2(y, x)) + 360) % 360
   }
 
   /** The direction of travel on the pass-through points that have one (see TripOptions.viaHeadings). */
@@ -232,5 +323,11 @@ class OfflineRouteProvider(
 
   companion object {
     private const val TAG = "NavMasterRoute"
+
+    /** At most this far between two points of the shape given to Valhalla's map matching. */
+    private const val DENSE_M = 300.0
+
+    /** Valhalla's limit of locations for a route is 20: stops plus points along the path. */
+    private const val MAX_THROUGH = 20
   }
 }
