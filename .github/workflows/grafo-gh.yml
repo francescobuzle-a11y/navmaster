@@ -96,22 +96,49 @@ jobs:
             graph.location: /mnt/w/gh
             custom_models.directory: $GITHUB_WORKSPACE/app/src/main/assets/gh
             import.osm.ignored_highways: footway,cycleway,path,pedestrian,steps,bridleway,corridor,construction,proposed,platform,raceway
-            graph.encoded_values: car_access, car_average_speed, road_access, road_class, road_environment, max_speed, hgv, max_width, max_height, max_weight, max_weight_except, max_length, max_axle_load, hazmat, hazmat_tunnel, hazmat_water, toll, surface, roundabout
+            graph.encoded_values: car_access, car_average_speed, road_access, road_class, road_class_link, road_environment, max_speed, hgv, max_width, max_height, max_weight, max_weight_except, max_length, max_axle_load, hazmat, hazmat_tunnel, hazmat_water, toll, surface, roundabout, urban_density
+            graph.urban_density.threads: 4
+            # six profiles (GhEngine.profiles): lorry and car, each fastest / more motorway / shorter
             profiles:
               - name: nm_truck
                 turn_costs:
                   vehicle_types: [hgv, motorcar, motor_vehicle]
                   u_turn_costs: 60
                 custom_model_files: [nm_truck.json]
+              - name: nm_truck_mw
+                turn_costs:
+                  vehicle_types: [hgv, motorcar, motor_vehicle]
+                  u_turn_costs: 60
+                custom_model_files: [nm_truck_mw.json]
+              - name: nm_truck_short
+                turn_costs:
+                  vehicle_types: [hgv, motorcar, motor_vehicle]
+                  u_turn_costs: 60
+                custom_model_files: [nm_truck_short.json]
               - name: nm_car
                 turn_costs:
                   vehicle_types: [motorcar, motor_vehicle]
                   u_turn_costs: 60
                 custom_model_files: [nm_car.json]
+              - name: nm_car_mw
+                turn_costs:
+                  vehicle_types: [motorcar, motor_vehicle]
+                  u_turn_costs: 60
+                custom_model_files: [nm_car_mw.json]
+              - name: nm_car_short
+                turn_costs:
+                  vehicle_types: [motorcar, motor_vehicle]
+                  u_turn_costs: 60
+                custom_model_files: [nm_car_short.json]
             profiles_lm:
               - profile: nm_truck
+              - profile: nm_truck_mw
+              - profile: nm_truck_short
               - profile: nm_car
-            prepare.lm.landmarks: 16
+              - profile: nm_car_mw
+              - profile: nm_car_short
+            prepare.lm.landmarks: 8
+            prepare.lm.threads: 3
             graph.dataaccess.default_type: RAM_STORE
           EOF
           cat config.yml
@@ -130,7 +157,7 @@ jobs:
           M=$GITHUB_WORKSPACE/app/src/main/assets/gh
           case "${{ matrix.region }}" in
             test) TRIPS="44.0597,12.5653;43.9360,12.4460" ;;
-            italy) TRIPS="45.4642,9.1900;41.9028,12.4964|46.4983,11.3548;40.8518,14.2681|43.7696,11.2558;43.7228,10.4017|44.0597,12.5653;43.9360,12.4460" ;;
+            italy) TRIPS="43.5530,11.5060;45.3697,10.2167|45.4642,9.1900;41.9028,12.4964|46.4983,11.3548;40.8518,14.2681|43.7696,11.2558;43.7228,10.4017|44.0597,12.5653;43.9360,12.4460" ;;
             *) TRIPS="-" ;;
           esac
           java -Xmx6g -cp nojan.jar:cls GhCheck gh $M "$TRIPS" 2>&1 | grep -v DEBUG | grep GHCHECK
