@@ -186,7 +186,7 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   }
   Card("Calcolo online") {
     ToggleRow("Con internet usa openrouteservice",
-        if (app.navmaster.truck.AppGraph.ors.key.isBlank()) "Non attivo: manca la chiave del servizio nell'app"
+        if (AppGraph.ors.key.isBlank()) "Non attivo: manca la chiave del servizio nell'app"
         else "Percorso calcolato online con le misure del mezzo (scheda ORS); senza rete GraphHopper sul tablet", s.onlineRouting) { v ->
       set { it.copy(onlineRouting = v) }
     }

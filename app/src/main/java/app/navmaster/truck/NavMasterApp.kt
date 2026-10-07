@@ -10,6 +10,7 @@ import app.navmaster.truck.poi.PoiIndex
 import app.navmaster.truck.routing.CriticalityFinder
 import app.navmaster.truck.routing.GhRouting
 import app.navmaster.truck.routing.OfflineRouteProvider
+import app.navmaster.truck.routing.OrsRouting
 import app.navmaster.truck.routing.RoutingEngine
 import app.navmaster.truck.search.AddressIndex
 import app.navmaster.truck.search.RecentStore
@@ -92,7 +93,7 @@ object AppGraph {
       recent.firstOrNull { it.geometry.size == geometry.size && it.geometry.firstOrNull() == geometry.firstOrNull() && it.geometry.lastOrNull() == geometry.lastOrNull() }
 
   /** openrouteservice online (with a key built into the app), see OrsRouting. */
-  val ors by lazy { app.navmaster.truck.routing.OrsRouting(app) { settings.settings.value.onlineRouting } }
+  val ors: OrsRouting by lazy { OrsRouting(app) { settings.settings.value.onlineRouting } }
 
   val routes by lazy { OfflineRouteProvider(engine, gh, { profiles.garage.value }, { trip.value }, ors) { remember(it) } }
 
