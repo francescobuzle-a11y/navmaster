@@ -31,7 +31,7 @@ android {
     ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     // service keys built into the app (GitHub secrets of the repository, when present): the driver
     // never has to ask for or type a key
-    for (k in listOf("TOMTOM_KEY", "HERE_KEY", "TRAFIKVERKET_KEY", "MAPILLARY_TOKEN")) {
+    for (k in listOf("TOMTOM_KEY", "HERE_KEY", "TRAFIKVERKET_KEY", "MAPILLARY_TOKEN", "ORS_KEY")) {
       buildConfigField("String", k, "\"" + (System.getenv(k) ?: "").replace("\"", "") + "\"")
     }
   }

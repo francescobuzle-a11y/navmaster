@@ -159,6 +159,8 @@ public final class NmWeightingFactory implements WeightingFactory {
   static final double CAR_SPEED = 110.0;
   static final double DISTANCE_INFLUENCE = 20.0;
   static final double DISTANCE_INFLUENCE_SHORT = 100.0;
+  /** Signed limits on a motorway that cannot be true (map mistakes), not applied. */
+  static final double IMPLAUSIBLE_MOTORWAY_HEIGHT = 3.8, IMPLAUSIBLE_MOTORWAY_WIDTH = 2.6;
   /** "More motorway": the other roads (not motorway, dual carriageway or their ramps) weigh 1/0.6. */
   static final double MOTORWAY_PREFERENCE = 0.6;
 
@@ -272,7 +274,13 @@ public final class NmWeightingFactory implements WeightingFactory {
     if (!s.avoidFerries && roadEnv != null && edge.get(roadEnv) == RoadEnvironment.FERRY) v = v / 0.02 * 0.5;
     if (!s.avoidUnpaved && surface != null && rough(edge.get(surface))) v = v / 0.02 * 0.3;
     // the measures of the vehicle against the signed limits
-    if (below(edge, maxHeight, s.heightM) || below(edge, maxWidth, s.widthM) || below(edge, maxLength, s.lengthM)
+    // on a motorway a height below 3.8 m or a width below 2.6 m is a mistake of the map (e.g. the
+    // A1 at Casalecchio carried the 3.5 m of the street passing under it): not a limit for lorries
+    boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY
+        && !(roadClassLink != null && edge.get(roadClassLink));
+    if ((below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT))
+        || (below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH))
+        || below(edge, maxLength, s.lengthM)
         || below(edge, maxAxleLoad, s.axleLoadT)) return 0.0;
     if (below(edge, maxWeight, s.weightT)) {
       MaxWeightExcept ex = maxWeightExcept == null ? MaxWeightExcept.MISSING : edge.get(maxWeightExcept);

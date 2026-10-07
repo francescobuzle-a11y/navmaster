@@ -91,7 +91,10 @@ object AppGraph {
   fun findRoute(geometry: List<GeographicCoordinate>): Route? =
       recent.firstOrNull { it.geometry.size == geometry.size && it.geometry.firstOrNull() == geometry.firstOrNull() && it.geometry.lastOrNull() == geometry.lastOrNull() }
 
-  val routes by lazy { OfflineRouteProvider(engine, gh, { profiles.garage.value }, { trip.value }) { remember(it) } }
+  /** openrouteservice online (with a key built into the app), see OrsRouting. */
+  val ors by lazy { app.navmaster.truck.routing.OrsRouting(app) { settings.settings.value.onlineRouting } }
+
+  val routes by lazy { OfflineRouteProvider(engine, gh, { profiles.garage.value }, { trip.value }, ors) { remember(it) } }
 
   /** The simulated drive (its speed can be changed while it runs). */
   val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }

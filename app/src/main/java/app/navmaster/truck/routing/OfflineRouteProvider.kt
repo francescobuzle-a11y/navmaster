@@ -47,6 +47,8 @@ class OfflineRouteProvider(
     private val gh: GhRouting,
     private val garage: () -> Garage,
     private val trip: () -> TripOptions,
+    /** openrouteservice, online (null in tests): the route first, when there is network and a key. */
+    private val ors: OrsRouting? = null,
     private val onRoutes: (List<Route>) -> Unit = {},
 ) : CustomRouteProvider {
 
@@ -91,6 +93,18 @@ class OfflineRouteProvider(
         val c = userLocation.coordinates
         // 1. GraphHopper's routes with the vehicle's measures (the alternatives too), guided by
         //    Valhalla along each of them. Only Valhalla when the driver asked for more routes.
+        // 0. online: openrouteservice's routes with the vehicle's measures (guided by Valhalla as
+        //    GraphHopper's); without network, key or quota the tablet computes them as below
+        if (!options.valhallaOnly && ors != null && ors.available()) {
+          val online = runCatching { orsRoutes(body, vehicle, g.loadT, options, c.lat, c.lng) }
+              .onFailure { Log.w(TAG, "openrouteservice route failed: $it", it) }
+              .getOrNull()?.takeIf { it.isNotEmpty() }
+          if (online != null) {
+            whyValhalla = null
+            mark(online, "ORS")
+            return@withContext online.also(onRoutes)
+          }
+        }
         if (!options.valhallaOnly) {
           ghNote = null
           val ghRoutes = runCatching { ghRoutes(body, vehicle, g.loadT, options, c.lat, c.lng) }
@@ -150,6 +164,37 @@ class OfflineRouteProvider(
     return out
   }
 
+  /** openrouteservice's routes (online), each with Valhalla's guidance along it; null when none. */
+  private fun orsRoutes(body: String, vehicle: VehicleProfile, loadT: Double, options: TripOptions, lat: Double, lon: Double): List<Route>? {
+    val root = Json.parseToJsonElement(body).jsonObject
+    val locs = root["locations"]?.jsonArray ?: return null
+    val points = locs.map { val o = it.jsonObject; doubleArrayOf(o["lat"]!!.jsonPrimitive.double, o["lon"]!!.jsonPrimitive.double) }
+    val kinds = locs.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull ?: "break" }
+    val spec = vehicle.ghSpec(loadT, options)
+    val found = ors?.routes(points, spec, options.alternates.coerceAtLeast(0)) ?: return null
+    val base = root - "locations" - "alternates" - "exclude_polygons"
+    val out = mutableListOf<Route>()
+    for ((n, r) in found.withIndex()) {
+      Log.i(TAG, String.format(java.util.Locale.US, "openrouteservice route %d/%d: %.1f km, %d min, %d points for %s",
+          n + 1, found.size, r.distanceM / 1000, r.timeMs / 60000, r.lat.size, spec))
+      val guided = guide(r, kinds, base, vehicle, lat, lon)
+      if (guided != null) out += guided
+      else if (n == 0) return null // the best one could not be guided: computed on the tablet instead
+    }
+    return out
+  }
+
+  /**
+   * The request without the vehicle's measures, for the map matching only: the path is already
+   * chosen (with the measures), and a wrong limit in Valhalla's map must not break it.
+   */
+  private fun relaxed(base: Map<String, JsonElement>): Map<String, JsonElement> {
+    val co = base["costing_options"] as? JsonObject ?: return base
+    val drop = setOf("height", "width", "length", "weight", "axle_load", "axle_count", "hazmat")
+    val out = JsonObject(co.mapValues { (_, v) -> if (v is JsonObject) JsonObject(v.filterKeys { it !in drop }) else v })
+    return base + ("costing_options" to out)
+  }
+
   /** Valhalla's guidance (manoeuvres, voice, lanes, limits) along GraphHopper's route [r]. */
   private fun guide(r: GhEngine.Result, kinds: List<String>, base: Map<String, JsonElement>, vehicle: VehicleProfile, lat: Double, lon: Double): Route? {
     // the points where a leg ends (the stops); the other pass-through points do not split the route
@@ -200,7 +245,7 @@ class OfflineRouteProvider(
       }
       pts += point(r.lat[i], r.lon[i], if (i in breaks) "break" else "through")
     }
-    val trace = JsonObject(base + mapOf(
+    val trace = JsonObject(relaxed(base) + mapOf(
         "shape" to JsonArray(pts),
         "shape_match" to JsonPrimitive("map_snap"),
         "trace_options" to JsonObject(mapOf(

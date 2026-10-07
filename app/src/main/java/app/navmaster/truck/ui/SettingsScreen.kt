@@ -184,6 +184,13 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       app.navmaster.truck.vehicle.RouteKind.SHORTEST -> "Meno chilometri, sempre su strade adatte al mezzo, anche se ci vuole un po' di più."
     } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 4)
   }
+  Card("Calcolo online") {
+    ToggleRow("Con internet usa openrouteservice",
+        if (app.navmaster.truck.AppGraph.ors.key.isBlank()) "Non attivo: manca la chiave del servizio nell'app"
+        else "Percorso calcolato online con le misure del mezzo (scheda ORS); senza rete GraphHopper sul tablet", s.onlineRouting) { v ->
+      set { it.copy(onlineRouting = v) }
+    }
+  }
   Card("Strade a pagamento") {
     Pills { for (p in TollPolicy.entries) Pill(p.label, s.tollPolicy == p) { set { it.copy(tollPolicy = p) } } }
     if (s.tollPolicy == TollPolicy.ASK) {

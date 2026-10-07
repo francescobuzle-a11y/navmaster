@@ -344,7 +344,7 @@ fun CritRow(c: Criticality, onClick: () -> Unit) {
 private fun SourceTag(source: String) {
   Spacer(Modifier.width(6.dp))
   Text(source, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-      modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(if (source == "GH") Nm.Blue else Color(0xFF6B7682))
+      modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(when (source) { "GH" -> Nm.Blue; "ORS" -> Color(0xFFB0283C); else -> Color(0xFF6B7682) })
           .padding(horizontal = 5.dp, vertical = 1.dp))
 }
 

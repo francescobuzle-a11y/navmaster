@@ -112,6 +112,8 @@ enum class DriveView(val label: String) {
 @Serializable
 data class Settings(
     val tollPolicy: TollPolicy = TollPolicy.ASK,
+    /** Online, the route computed by openrouteservice (offline always GraphHopper / Valhalla). */
+    val onlineRouting: Boolean = true,
     /** The kind of route computed first (the others are offered next to it). */
     val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.FASTEST,
     /** Minutes more the driver accepts to save the toll (below this the app suggests it). */
