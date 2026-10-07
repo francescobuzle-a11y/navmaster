@@ -48,6 +48,9 @@ jobs:
           npx --yes -p @maplibre/maplibre-gl-style-spec gl-style-validate app/src/main/assets/style/style-day.json app/src/main/assets/style/style-night.json
 
       - name: Compila APK
+        # service keys from the repository secrets (empty when not set): openrouteservice online routing
+        env:
+          ORS_KEY: ${{ secrets.ORS_KEY }}
         run: gradle :app:assembleRelease --stacktrace --no-daemon
 
       - name: Pubblica APK (release app-${{ github.run_number }})
