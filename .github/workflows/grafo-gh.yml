@@ -14,7 +14,7 @@ on:
       preview:
         description: "Dopo il grafo di prova, anteprima dell'app sull'emulatore"
         type: boolean
-        default: true
+        default: false
   push:
     branches: [main]
     paths: [".github/workflows/grafo-gh.yml"]
@@ -85,65 +85,19 @@ jobs:
             -o roads.osm.pbf --overwrite
           rm region.osm.pbf
           ls -la
-      - name: Grafo GraphHopper ${{ env.GH_VERSION }}
+      - name: Grafo GraphHopper ${{ env.GH_VERSION }} con le regole di openrouteservice
         working-directory: /mnt/w
         run: |
           curl -fsSL -o gh.jar "https://github.com/graphhopper/graphhopper/releases/download/$GH_VERSION/graphhopper-web-$GH_VERSION.jar"
-          # the same profile and settings as GhEngine on the tablet
-          cat > config.yml <<EOF
-          graphhopper:
-            datareader.file: /mnt/w/roads.osm.pbf
-            graph.location: /mnt/w/gh
-            custom_models.directory: $GITHUB_WORKSPACE/app/src/main/assets/gh
-            import.osm.ignored_highways: footway,cycleway,path,pedestrian,steps,bridleway,corridor,construction,proposed,platform,raceway
-            graph.encoded_values: car_access, car_average_speed, road_access, road_class, road_class_link, road_environment, max_speed, hgv, max_width, max_height, max_weight, max_weight_except, max_length, max_axle_load, hazmat, hazmat_tunnel, hazmat_water, toll, surface, roundabout, urban_density
-            graph.urban_density.threads: 4
-            # six profiles (GhEngine.profiles): lorry and car, each fastest / more motorway / shorter
-            profiles:
-              - name: nm_truck
-                turn_costs:
-                  vehicle_types: [hgv, motorcar, motor_vehicle]
-                  u_turn_costs: 60
-                custom_model_files: [nm_truck.json]
-              - name: nm_truck_mw
-                turn_costs:
-                  vehicle_types: [hgv, motorcar, motor_vehicle]
-                  u_turn_costs: 60
-                custom_model_files: [nm_truck_mw.json]
-              - name: nm_truck_short
-                turn_costs:
-                  vehicle_types: [hgv, motorcar, motor_vehicle]
-                  u_turn_costs: 60
-                custom_model_files: [nm_truck_short.json]
-              - name: nm_car
-                turn_costs:
-                  vehicle_types: [motorcar, motor_vehicle]
-                  u_turn_costs: 60
-                custom_model_files: [nm_car.json]
-              - name: nm_car_mw
-                turn_costs:
-                  vehicle_types: [motorcar, motor_vehicle]
-                  u_turn_costs: 60
-                custom_model_files: [nm_car_mw.json]
-              - name: nm_car_short
-                turn_costs:
-                  vehicle_types: [motorcar, motor_vehicle]
-                  u_turn_costs: 60
-                custom_model_files: [nm_car_short.json]
-            profiles_lm:
-              - profile: nm_truck
-              - profile: nm_truck_mw
-              - profile: nm_truck_short
-              - profile: nm_car
-              - profile: nm_car_mw
-              - profile: nm_car_short
-            prepare.lm.landmarks: 8
-            prepare.lm.threads: 3
-            graph.dataaccess.default_type: RAM_STORE
-          EOF
-          cat config.yml
+          mkdir -p cls
+          javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
+            $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/gh/GhCheck.java $GITHUB_WORKSPACE/tools/gh/GhSame.java
+          # the profiles and settings of GhEngine (as on the tablet), openrouteservice's driving-hgv and
+          # driving-car rules worked out from the OSM tags (tools/gh/NmImport.java)
           MEM=$(( $(free -g | awk '/Mem:/{print $2}') - 2 ))
-          date; java -Xmx${MEM}g -jar gh.jar import config.yml 2>&1 | grep -vE "DEBUG" | tail -40; date
+          DA=RAM_STORE
+          case "${{ matrix.region }}" in germany|france|great-britain|poland|spain|turkey|russia) DA=MMAP; MEM=$(( MEM - 4 )) ;; esac
+          date; java -Xmx${MEM}g -Dnm.dataaccess=$DA -cp gh.jar:cls NmImport roads.osm.pbf gh $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep -vE "DEBUG" | tail -40; date
           test -f gh/properties
           rm -f roads.osm.pbf
           du -sh gh; ls -la gh
@@ -151,15 +105,13 @@ jobs:
         working-directory: /mnt/w
         run: |
           cp gh.jar nojan.jar && zip -q -d nojan.jar 'org/codehaus/*'
-          mkdir -p cls
-          javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
-            $GITHUB_WORKSPACE/tools/gh/GhCheck.java $GITHUB_WORKSPACE/tools/gh/GhSame.java
           M=$GITHUB_WORKSPACE/app/src/main/assets/gh
           case "${{ matrix.region }}" in
             test) TRIPS="44.0597,12.5653;43.9360,12.4460" ;;
             italy) TRIPS="43.5530,11.5060;45.3697,10.2167|45.4642,9.1900;41.9028,12.4964|46.4983,11.3548;40.8518,14.2681|43.7696,11.2558;43.7228,10.4017|44.0597,12.5653;43.9360,12.4460" ;;
-            *) TRIPS="-" ;;
+            *) TRIPS=$(python3 -c "import json; print(json.load(open('$GITHUB_WORKSPACE/tools/gh/trips.json')).get('${{ matrix.region }}', '-'))") ;;
           esac
+          echo "TRIPS=$TRIPS"
           java -Xmx6g -cp nojan.jar:cls GhCheck gh $M "$TRIPS" 2>&1 | grep -v DEBUG | grep GHCHECK
           if [ "$TRIPS" != "-" ]; then java -Xmx6g -cp gh.jar:cls GhSame gh $M "$TRIPS" 2>&1 | grep GHSAME; fi
       - name: Pacchetto gh.tar.gz
