@@ -40,7 +40,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       }
       GhState.OLD -> {
         problem = "${region.label}: il grafo GraphHopper è di una versione vecchia. In «Mappe d'Europa» tocca «Aggiorna»"
-        Log.w(TAG, "GraphHopper: old graph in ${region.id} (no nm_truck/nm_car landmarks)")
+        Log.w(TAG, "GraphHopper: old graph in ${region.id} (made before the openrouteservice rules)")
         return null
       }
       GhState.READY -> {}
@@ -112,9 +112,17 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     fun state(regionDir: File): GhState {
       val dir = File(regionDir, "gh")
       if (!File(dir, "properties").exists()) return GhState.MISSING
-      // every profile of this app (fast / more motorway / shorter, lorry and car) with its landmarks
-      val ok = GhEngine.profileNames().all { File(dir, "landmarks_$it").exists() }
+      // every profile of this app (fast / more motorway / shorter, lorry and car) with its landmarks,
+      // and openrouteservice's values of the roads (graphs from 10/2026, tools/gh/NmImport.java)
+      val ok = GhEngine.profileNames().all { File(dir, "landmarks_$it").exists() } && orsValues(File(dir, "properties"))
       return if (ok) GhState.READY else GhState.OLD
+    }
+
+    /** The graph's description lists openrouteservice's values (ors_hgv_speed…). */
+    private fun orsValues(properties: File): Boolean = try {
+      properties.length() < 4_000_000 && properties.readBytes().toString(Charsets.ISO_8859_1).contains("ors_hgv_speed")
+    } catch (e: Exception) {
+      false
     }
 
     /** The package the graph came from (see SOURCE_FILE), or null. */

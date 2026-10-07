@@ -115,7 +115,7 @@ data class Settings(
     /** Online, the route computed by openrouteservice (offline always GraphHopper / Valhalla). */
     val onlineRouting: Boolean = true,
     /** The kind of route computed first (the others are offered next to it). */
-    val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.FASTEST,
+    val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.MOTORWAY,
     /** Minutes more the driver accepts to save the toll (below this the app suggests it). */
     val tollMaxExtraMin: Int = 5,
     val askTightRamps: Boolean = true,

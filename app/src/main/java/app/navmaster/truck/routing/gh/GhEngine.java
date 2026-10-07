@@ -33,38 +33,37 @@ import java.util.Locale;
  */
 public final class GhEngine implements Closeable {
   /**
-   * The two profiles of the graph, each with its own landmarks: lorries (hgv rules, lorry speeds)
-   * and the other vehicles (campers, vans, buses: car rules and speeds). A vehicle is routed on the
-   * profile of its class, whose base model matches its default choices exactly - a search with
-   * weights far from the landmarks' ones is tens of times slower (Milano - Roma 6 s instead of 0.1).
+   * The profiles of the graph, each with its own landmarks, with openrouteservice's rules (worked
+   * out from the OSM tags when the graph is built, tools/gh/NmImport.java): lorries as its
+   * "driving-hgv" (fastest, recommended = more motorway, shortest) and the other vehicles (campers,
+   * vans, buses) as its "driving-car" (fastest, shortest: openrouteservice's "recommended" for cars
+   * is the fastest). A vehicle is routed on the profile of its class and kind of route, whose base
+   * model matches its default choices exactly - a search with weights far from the landmarks' ones
+   * is tens of times slower.
    */
   public static final String PROFILE_TRUCK = "nm_truck";
   public static final String PROFILE_CAR = "nm_car";
-  /** Base models, as given when the graph was built (part of each profile's identity). */
-  public static final String TRUCK_MODEL_FILE = "nm_truck.json";
-  public static final String CAR_MODEL_FILE = "nm_car.json";
-  /** The profiles "more motorway" and "shorter" of each vehicle: nm_truck_mw, nm_truck_short… */
+  /** The profiles "recommended" (more motorway) and "shortest" of a vehicle: nm_truck_mw, nm_truck_short… */
   public static final String SUFFIX_MOTORWAY = "_mw";
   public static final String SUFFIX_SHORT = "_short";
   /** The kinds of route a driver can ask for (TruckSpec.route). */
   public static final int ROUTE_FAST = 0, ROUTE_MOTORWAY = 1, ROUTE_SHORT = 2;
+  /** openrouteservice's values stored in the graph (NmImport), and GraphHopper's ones used by the trip's choices. */
+  public static final String ENCODED_VALUES = "ors_hgv_access, ors_hgv_speed, ors_hgv_recommended, ors_car_access, ors_car_speed, "
+      + "road_class, road_class_link, road_environment, toll, max_width, max_height, max_weight, max_length, max_axle_load, "
+      + "hazmat, hazmat_tunnel, hazmat_water";
 
-  /** Every profile name of the graph, in order: lorry fast/motorway/short, then car. */
+  /** Every profile name of the graph, in order: lorry fast/recommended/short, car fast/short. */
   public static List<String> profileNames() {
-    List<String> out = new ArrayList<>();
-    for (String base : new String[] {PROFILE_TRUCK, PROFILE_CAR}) {
-      out.add(base);
-      out.add(base + SUFFIX_MOTORWAY);
-      out.add(base + SUFFIX_SHORT);
-    }
-    return out;
+    return Arrays.asList(PROFILE_TRUCK, PROFILE_TRUCK + SUFFIX_MOTORWAY, PROFILE_TRUCK + SUFFIX_SHORT,
+        PROFILE_CAR, PROFILE_CAR + SUFFIX_SHORT);
   }
 
-  /** The profile for a vehicle and the kind of route asked. */
+  /** The profile for a vehicle and the kind of route asked (cars: "more motorway" is the fastest, as in openrouteservice). */
   public static String profileFor(TruckSpec s) {
     String base = s.hgv ? PROFILE_TRUCK : PROFILE_CAR;
-    if (s.route == ROUTE_MOTORWAY) return base + SUFFIX_MOTORWAY;
     if (s.route == ROUTE_SHORT || s.shortest) return base + SUFFIX_SHORT;
+    if (s.route == ROUTE_MOTORWAY && s.hgv) return base + SUFFIX_MOTORWAY;
     return base;
   }
 
@@ -190,21 +189,6 @@ public final class GhEngine implements Closeable {
         GHResponse rsp = hopper.route(request(points, headings, spec, maxPaths));
         List<ResponsePath> paths = rsp.hasErrors() ? new ArrayList<>() : new ArrayList<>(rsp.getAll());
         note = "alternative_route: " + paths.size() + " paths";
-        // the search for alternatives is sensitive to the small preference for lorry roads: when it
-        // finds fewer than asked, they are searched again without it (the best route stays first)
-        if (!paths.isEmpty() && paths.size() < maxPaths && spec.preferTruckRoutes) {
-          TruckSpec plain = spec.copy();
-          plain.preferTruckRoutes = false;
-          GHResponse more = hopper.route(request(points, headings, plain, maxPaths));
-          if (!more.hasErrors()) {
-            for (ResponsePath p : more.getAll()) {
-              boolean dup = false;
-              for (ResponsePath q : paths) if (Math.abs(q.getDistance() - p.getDistance()) < 0.003 * q.getDistance() + 20) dup = true;
-              if (!dup && paths.size() < maxPaths) paths.add(p);
-            }
-          }
-          note += ", " + paths.size() + " with the plain search";
-        }
         for (ResponsePath p : paths) if (!p.hasErrors() && out.size() < maxPaths) out.add(result(p));
       }
       if (out.isEmpty()) {

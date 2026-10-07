@@ -50,7 +50,7 @@ public class GhSame {
             s.hgv = prof.startsWith(GhEngine.PROFILE_TRUCK);
             s.route = prof.endsWith(GhEngine.SUFFIX_MOTORWAY) ? GhEngine.ROUTE_MOTORWAY
                 : prof.endsWith(GhEngine.SUFFIX_SHORT) ? GhEngine.ROUTE_SHORT : GhEngine.ROUTE_FAST;
-            s.preferTruckRoutes = true; s.avoidFerries = true; s.avoidUnpaved = true;
+            s.avoidFerries = false; s.avoidTolls = false; s.topSpeedKmh = 0;
             s.heightM = 0; s.widthM = 0; s.lengthM = 0; s.weightT = 0; s.axleLoadT = 0;
             r.getHints().putObject(NmWeightingFactory.SPEC, s);
           }

@@ -179,9 +179,9 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     Pills { for (k in app.navmaster.truck.vehicle.RouteKind.entries) Pill(k.label, s.routeKind == k) { set { it.copy(routeKind = k) } } }
     Spacer(Modifier.height(6.dp))
     Caption(when (s.routeKind) {
-      app.navmaster.truck.vehicle.RouteKind.FASTEST -> "Il più rapido per il mezzo, con le velocità reali di un camion su ogni strada, nei paesi e nelle rotonde."
-      app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> "Resta in autostrada e superstrada finché ha senso: le altre strade contano quasi il doppio del loro tempo."
-      app.navmaster.truck.vehicle.RouteKind.SHORTEST -> "Meno chilometri, sempre su strade adatte al mezzo, anche se ci vuole un po' di più."
+      app.navmaster.truck.vehicle.RouteKind.FASTEST -> "Il più rapido, con le regole e le velocità di openrouteservice per camion o auto."
+      app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> "Il «consigliato» di openrouteservice: il camion preferisce autostrade e strade principali ed evita le strade piccole. Per camper e auto è il più veloce."
+      app.navmaster.truck.vehicle.RouteKind.SHORTEST -> "Meno chilometri, sempre su strade adatte al mezzo (il «più corto» di openrouteservice)."
     } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 4)
   }
   Card("Calcolo online") {

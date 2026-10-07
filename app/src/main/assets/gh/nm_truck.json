@@ -1,87 +1,15 @@
 {
- "distance_influence": 20,
+ "distance_influence": 0,
  "priority": [
   {
-   "if": "hgv == NO",
+   "if": "!ors_hgv_access",
    "multiply_by": "0"
-  },
-  {
-   "if": "!car_access && hgv != YES && hgv != DESIGNATED && hgv != DESTINATION && hgv != DELIVERY",
-   "multiply_by": "0"
-  },
-  {
-   "if": "road_access == NO",
-   "multiply_by": "0"
-  },
-  {
-   "if": "hgv == DESTINATION || hgv == DELIVERY",
-   "multiply_by": "0.1"
-  },
-  {
-   "if": "hgv == DISCOURAGED || hgv == AGRICULTURAL",
-   "multiply_by": "0.3"
-  },
-  {
-   "if": "hgv != DESIGNATED",
-   "multiply_by": "0.97"
-  },
-  {
-   "if": "road_access == PRIVATE || road_access == DESTINATION || road_access == CUSTOMERS || road_access == DELIVERY || road_access == AGRICULTURAL || road_access == FORESTRY",
-   "multiply_by": "0.1"
-  },
-  {
-   "if": "road_environment == FERRY",
-   "multiply_by": "0.02"
-  },
-  {
-   "if": "surface == UNPAVED || surface == COMPACTED || surface == FINE_GRAVEL || surface == GRAVEL || surface == GROUND || surface == DIRT || surface == GRASS || surface == SAND",
-   "multiply_by": "0.02"
   }
  ],
  "speed": [
   {
    "if": "true",
-   "limit_to": "car_average_speed * 0.9"
-  },
-  {
-   "if": "true",
-   "limit_to": "85"
-  },
-  {
-   "if": "road_class == TRUNK",
-   "limit_to": "75"
-  },
-  {
-   "else_if": "road_class == PRIMARY",
-   "limit_to": "65"
-  },
-  {
-   "else_if": "road_class == SECONDARY",
-   "limit_to": "58"
-  },
-  {
-   "else_if": "road_class == TERTIARY",
-   "limit_to": "50"
-  },
-  {
-   "else_if": "road_class != MOTORWAY",
-   "limit_to": "35"
-  },
-  {
-   "if": "road_class != MOTORWAY && urban_density == CITY",
-   "limit_to": "35"
-  },
-  {
-   "else_if": "road_class != MOTORWAY && urban_density == RESIDENTIAL",
-   "limit_to": "45"
-  },
-  {
-   "if": "road_class != MOTORWAY && max_speed <= 50",
-   "limit_to": "38"
-  },
-  {
-   "if": "roundabout",
-   "limit_to": "20"
+   "limit_to": "ors_hgv_speed"
   }
  ]
 }

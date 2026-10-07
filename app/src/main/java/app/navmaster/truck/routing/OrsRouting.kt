@@ -129,7 +129,11 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
     }
     val o = mutableMapOf<String, JsonElement>(
         "coordinates" to JsonArray(points.map { JsonArray(listOf(JsonPrimitive(it[1]), JsonPrimitive(it[0]))) }),
-        "preference" to JsonPrimitive(if (s.route == GhEngine.ROUTE_SHORT || s.shortest) "shortest" else "fastest"),
+        "preference" to JsonPrimitive(when {
+          s.route == GhEngine.ROUTE_SHORT || s.shortest -> "shortest"
+          s.route == GhEngine.ROUTE_MOTORWAY -> "recommended"
+          else -> "fastest"
+        }),
         "units" to JsonPrimitive("m"),
         "instructions" to JsonPrimitive(false),
         "geometry" to JsonPrimitive(true),

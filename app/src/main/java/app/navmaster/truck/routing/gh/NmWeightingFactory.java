@@ -8,15 +8,10 @@ import com.graphhopper.routing.ev.EnumEncodedValue;
 import com.graphhopper.routing.ev.Hazmat;
 import com.graphhopper.routing.ev.HazmatTunnel;
 import com.graphhopper.routing.ev.HazmatWater;
-import com.graphhopper.routing.ev.Hgv;
-import com.graphhopper.routing.ev.MaxWeightExcept;
-import com.graphhopper.routing.ev.RoadAccess;
 import com.graphhopper.routing.ev.RoadClass;
 import com.graphhopper.routing.ev.RoadEnvironment;
-import com.graphhopper.routing.ev.Surface;
 import com.graphhopper.routing.ev.Toll;
 import com.graphhopper.routing.ev.TurnRestriction;
-import com.graphhopper.routing.ev.UrbanDensity;
 import com.graphhopper.routing.util.EncodingManager;
 import com.graphhopper.routing.weighting.DefaultTurnCostProvider;
 import com.graphhopper.routing.weighting.TurnCostProvider;
@@ -38,16 +33,19 @@ import java.util.List;
  * with the Janino compiler; Android cannot load that bytecode, so here the same rules are written
  * directly in Java and nothing is compiled on the tablet.
  *
- * Six profiles (GhEngine): lorries and the other vehicles, each as the fastest route (with the
- * speeds a lorry really keeps: by class of road, in towns, on roundabouts), the route with more
- * motorway (other roads count 1/0.6 times their time) and the shorter route (each km worth 100 s).
+ * The roads are weighed as openrouteservice does: the graph carries, for every road, its access,
+ * speed and (lorries) preference worked out with openrouteservice's own rules when it was built
+ * (tools/gh/NmImport.java). Five profiles (GhEngine): lorries "fastest" (the time), "recommended"
+ * (the time multiplied by 2^((4 - preference) / 3): motorways and main roads preferred, small
+ * streets avoided) and "shortest" (the distance); cars and campers "fastest" and "shortest".
  * For each one:
  * - the BASE weighting, statement by statement the custom model the graph was built with
- *   (assets/gh/nm_truck.json, nm_car.json): the landmarks (the precomputed data that make long
- *   routes fast) were prepared with it, and a vehicle with the default choices gets exactly it;
+ *   (assets/gh/*.json): the landmarks (the precomputed data that make long routes fast) were
+ *   prepared with it, and a vehicle without limits gets exactly it;
  * - the weighting of the TRIP (request hint {@link #SPEC} with a {@link TruckSpec}): the base one
- *   minus the roads the vehicle may not use (too low, narrow, short, heavy, axle load, dangerous
- *   goods, zones) and with the trip's own choices (tolls, ferries, unpaved roads, lorry roads).
+ *   minus the roads the vehicle may not use, as openrouteservice's restrictions (lower, narrower,
+ *   shorter, lighter than the vehicle, axle load, dangerous goods) and options (no tolls, no
+ *   ferries, zones to avoid, its top speed).
  */
 public final class NmWeightingFactory implements WeightingFactory {
   /** Request hint carrying the {@link TruckSpec}. */
@@ -56,46 +54,36 @@ public final class NmWeightingFactory implements WeightingFactory {
   private final BaseGraph graph;
   private final EncodingManager em;
 
-  private final BooleanEncodedValue carAccess;
-  private final DecimalEncodedValue carSpeed;
-  private final EnumEncodedValue<RoadAccess> roadAccess;
+  private final BooleanEncodedValue hgvAccess, carAccess;
+  private final DecimalEncodedValue hgvSpeed, carSpeed, hgvRecommended;
   private final EnumEncodedValue<RoadEnvironment> roadEnv;
-  private final EnumEncodedValue<Hgv> hgv;
   private final DecimalEncodedValue maxWidth, maxHeight, maxWeight, maxLength, maxAxleLoad;
-  private final EnumEncodedValue<MaxWeightExcept> maxWeightExcept;
   private final EnumEncodedValue<Hazmat> hazmat;
   private final EnumEncodedValue<HazmatTunnel> hazmatTunnel;
   private final EnumEncodedValue<HazmatWater> hazmatWater;
   private final EnumEncodedValue<Toll> toll;
-  private final EnumEncodedValue<Surface> surface;
   private final EnumEncodedValue<RoadClass> roadClass;
-  private final EnumEncodedValue<UrbanDensity> urban;
-  private final DecimalEncodedValue maxSpeedEnc;
-  private final BooleanEncodedValue roundabout, roadClassLink;
+  private final BooleanEncodedValue roadClassLink;
 
   public NmWeightingFactory(BaseGraph graph, EncodingManager em) {
     this.graph = graph;
     this.em = em;
-    carAccess = em.getBooleanEncodedValue("car_access");
-    carSpeed = em.getDecimalEncodedValue("car_average_speed");
-    roadAccess = en(RoadAccess.KEY, RoadAccess.class);
+    hgvAccess = em.getBooleanEncodedValue("ors_hgv_access");
+    carAccess = em.getBooleanEncodedValue("ors_car_access");
+    hgvSpeed = em.getDecimalEncodedValue("ors_hgv_speed");
+    carSpeed = em.getDecimalEncodedValue("ors_car_speed");
+    hgvRecommended = em.getDecimalEncodedValue("ors_hgv_recommended");
     roadEnv = en(RoadEnvironment.KEY, RoadEnvironment.class);
-    hgv = en(Hgv.KEY, Hgv.class);
     maxWidth = dec("max_width");
     maxHeight = dec("max_height");
     maxWeight = dec("max_weight");
     maxLength = dec("max_length");
     maxAxleLoad = dec("max_axle_load");
-    maxWeightExcept = en(MaxWeightExcept.KEY, MaxWeightExcept.class);
     hazmat = en(Hazmat.KEY, Hazmat.class);
     hazmatTunnel = en(HazmatTunnel.KEY, HazmatTunnel.class);
     hazmatWater = en(HazmatWater.KEY, HazmatWater.class);
     toll = en(Toll.KEY, Toll.class);
-    surface = en(Surface.KEY, Surface.class);
     roadClass = en(RoadClass.KEY, RoadClass.class);
-    urban = en(UrbanDensity.KEY, UrbanDensity.class);
-    maxSpeedEnc = dec("max_speed");
-    roundabout = em.hasEncodedValue("roundabout") ? em.getBooleanEncodedValue("roundabout") : null;
     roadClassLink = em.hasEncodedValue("road_class_link") ? em.getBooleanEncodedValue("road_class_link") : null;
   }
 
@@ -127,12 +115,15 @@ public final class NmWeightingFactory implements WeightingFactory {
       TurnCostsConfig tc = new TurnCostsConfig(profile.getTurnCostsConfig());
       turns = new DefaultTurnCostProvider(restriction, graph, tc, null);
     }
-    // the speeds of the class of vehicle (not of the single vehicle: its own top speed only
-    // changes the arrival time, worked out afterwards), exactly as in assets/gh/nm_truck.json and
-    // nm_car.json
-    final double maxCar = carSpeed.getMaxOrMaxStorableDecimal();
-    final double maxSpeed = truck ? Math.min(0.9 * maxCar, TRUCK_SPEED) : Math.min(maxCar, CAR_SPEED);
+    final BooleanEncodedValue access = truck ? hgvAccess : carAccess;
+    final DecimalEncodedValue speedEnc = truck ? hgvSpeed : carSpeed;
+    final boolean recommended = truck && mode == Mode.MOTORWAY;
+    // as GraphHopper works them out from the base model: the highest speed and preference stored
+    final double maxSpeed = speedEnc.getMaxOrMaxStorableDecimal();
+    final double maxPriority = recommended ? hgvRecommended.getMaxOrMaxStorableDecimal() : 1.0;
     final TruckSpec s = spec;
+    // openrouteservice's "maximum_speed": the vehicle's top speed, not below 80 km/h
+    final double top = s != null && s.topSpeedKmh > 0 ? Math.max(s.topSpeedKmh, MIN_TOP_SPEED) : Double.POSITIVE_INFINITY;
     final List<Polygon> zones = new ArrayList<>();
     if (s != null) {
       for (double[][] ring : s.avoidZones) {
@@ -142,116 +133,37 @@ public final class NmWeightingFactory implements WeightingFactory {
       }
     }
     CustomWeighting.Parameters p = new CustomWeighting.Parameters(
-        (edge, reverse) -> speed(truck, edge, reverse),
+        (edge, reverse) -> Math.min(top, reverse ? edge.getReverse(speedEnc) : edge.get(speedEnc)),
         () -> maxSpeed,
-        (edge, reverse) -> s == null ? basePriority(truck, mode, edge, reverse) : priority(truck, mode, s, zones, edge, reverse),
-        () -> 1.0,
+        (edge, reverse) -> {
+          double v = basePriority(access, recommended, edge, reverse);
+          return s == null || v == 0.0 ? v : priority(truck, s, zones, v, edge);
+        },
+        () -> maxPriority,
         null,
-        // seconds of time a kilometre is worth: the fastest route with a small push towards the
-        // shorter one, or mostly the shorter one (its own profile, with its own landmarks)
-        mode == Mode.SHORT ? DISTANCE_INFLUENCE_SHORT : DISTANCE_INFLUENCE,
+        mode == Mode.SHORT ? DISTANCE_INFLUENCE_SHORT : 0.0,
         300.0);
     return new CustomWeighting(turns, p);
   }
 
-  /** As in the base models: lorries 90% of the car speed, at most 85 km/h; others at most 110 km/h. */
-  static final double TRUCK_SPEED = 85.0;
-  static final double CAR_SPEED = 110.0;
-  static final double DISTANCE_INFLUENCE = 20.0;
-  static final double DISTANCE_INFLUENCE_SHORT = 100.0;
+  /** openrouteservice does not accept a lower "maximum_speed". */
+  static final double MIN_TOP_SPEED = 80.0;
+  /**
+   * "Shortest": each km worth 10,000 s, the time is only a tie-breaker (a motorway km takes 42 s:
+   * less than 0.5%), as openrouteservice's weighting by distance alone.
+   */
+  static final double DISTANCE_INFLUENCE_SHORT = 10_000.0;
   /** Signed limits on a motorway that cannot be true (map mistakes), not applied. */
   static final double IMPLAUSIBLE_MOTORWAY_HEIGHT = 3.8, IMPLAUSIBLE_MOTORWAY_WIDTH = 2.6;
-  /** "More motorway": the other roads (not motorway, dual carriageway or their ramps) weigh 1/0.6. */
-  static final double MOTORWAY_PREFERENCE = 0.6;
 
   /**
-   * The speed on the road, statement by statement as in the "speed" part of the base models:
-   * lorries 90% of the car speed (at most 85 km/h), at most 75 on dual carriageways, 65 on main
-   * roads, 58 on secondary, 50 on minor and 35 on the others; in towns 35 (city) / 45 (outskirts),
-   * 38 where the limit is 50 km/h or less; 20 on roundabouts. Cars and campers: the car speed (at
-   * most 110 km/h), 40 / 50 in towns, 25 on roundabouts.
+   * The base model of the profile, statement by statement as in assets/gh/*.json: closed where
+   * openrouteservice closes the road to the class of vehicle; lorries "recommended" multiplied by
+   * the road's preference.
    */
-  private double speed(boolean truck, EdgeIteratorState edge, boolean reverse) {
-    double v = baseSpeed(edge, reverse);
-    RoadClass rc = roadClass == null ? RoadClass.OTHER : edge.get(roadClass);
-    UrbanDensity ud = urban == null ? UrbanDensity.RURAL : edge.get(urban);
-    boolean motorway = rc == RoadClass.MOTORWAY;
-    if (truck) {
-      v = Math.min(v * 0.9, TRUCK_SPEED);
-      if (rc == RoadClass.TRUNK) v = Math.min(v, 75);
-      else if (rc == RoadClass.PRIMARY) v = Math.min(v, 65);
-      else if (rc == RoadClass.SECONDARY) v = Math.min(v, 58);
-      else if (rc == RoadClass.TERTIARY) v = Math.min(v, 50);
-      else if (!motorway) v = Math.min(v, 35);
-      if (!motorway && ud == UrbanDensity.CITY) v = Math.min(v, 35);
-      else if (!motorway && ud == UrbanDensity.RESIDENTIAL) v = Math.min(v, 45);
-      if (!motorway && maxSpeedEnc != null && (reverse ? edge.getReverse(maxSpeedEnc) : edge.get(maxSpeedEnc)) <= 50) v = Math.min(v, 38);
-      if (roundabout != null && edge.get(roundabout)) v = Math.min(v, 20);
-    } else {
-      v = Math.min(v, CAR_SPEED);
-      if (!motorway && ud == UrbanDensity.CITY) v = Math.min(v, 40);
-      else if (!motorway && ud == UrbanDensity.RESIDENTIAL) v = Math.min(v, 50);
-      if (roundabout != null && edge.get(roundabout)) v = Math.min(v, 25);
-    }
-    return v;
-  }
-
-  private double baseSpeed(EdgeIteratorState edge, boolean reverse) {
-    return reverse ? edge.getReverse(carSpeed) : edge.get(carSpeed);
-  }
-
-  private boolean car(EdgeIteratorState edge, boolean reverse) {
-    return reverse ? edge.getReverse(carAccess) : edge.get(carAccess);
-  }
-
-  private Hgv hgvOf(EdgeIteratorState edge) {
-    return hgv == null ? Hgv.MISSING : edge.get(hgv);
-  }
-
-  private static boolean hgvAllowed(Hgv h) {
-    return h == Hgv.YES || h == Hgv.DESIGNATED || h == Hgv.DESTINATION || h == Hgv.DELIVERY;
-  }
-
-  private static boolean rough(Surface su) {
-    return su == Surface.UNPAVED || su == Surface.COMPACTED || su == Surface.FINE_GRAVEL || su == Surface.GRAVEL
-        || su == Surface.GROUND || su == Surface.DIRT || su == Surface.GRASS || su == Surface.SAND;
-  }
-
-  private static boolean restricted(RoadAccess ra) {
-    return ra == RoadAccess.PRIVATE || ra == RoadAccess.DESTINATION || ra == RoadAccess.CUSTOMERS
-        || ra == RoadAccess.DELIVERY || ra == RoadAccess.AGRICULTURAL || ra == RoadAccess.FORESTRY;
-  }
-
-  /**
-   * The base model of the profile, statement by statement as in assets/gh/nm_truck.json /
-   * nm_car.json (the landmarks were prepared with it: the default vehicle gets exactly these
-   * weights, so the search stays as fast as GraphHopper can be).
-   */
-  private double basePriority(boolean truck, Mode mode, EdgeIteratorState edge, boolean reverse) {
-    double v = 1.0;
-    boolean car = car(edge, reverse);
-    RoadAccess ra = roadAccess == null ? RoadAccess.YES : edge.get(roadAccess);
-    if (truck) {
-      Hgv h = hgvOf(edge);
-      if (h == Hgv.NO) return 0.0;
-      if (!car && !hgvAllowed(h)) return 0.0;
-      if (ra == RoadAccess.NO) return 0.0;
-      if (h == Hgv.DESTINATION || h == Hgv.DELIVERY) v *= 0.1;
-      if (h == Hgv.DISCOURAGED || h == Hgv.AGRICULTURAL) v *= 0.3;
-      if (h != Hgv.DESIGNATED) v *= 0.97;
-    } else {
-      if (!car) return 0.0;
-      if (ra == RoadAccess.NO) return 0.0;
-    }
-    if (restricted(ra)) v *= 0.1;
-    if (roadEnv != null && edge.get(roadEnv) == RoadEnvironment.FERRY) v *= 0.02;
-    if (surface != null && rough(edge.get(surface))) v *= 0.02;
-    if (mode == Mode.MOTORWAY) {
-      RoadClass rc = roadClass == null ? RoadClass.OTHER : edge.get(roadClass);
-      boolean link = roadClassLink != null && edge.get(roadClassLink);
-      if (rc != RoadClass.MOTORWAY && rc != RoadClass.TRUNK && !link) v *= MOTORWAY_PREFERENCE;
-    }
-    return v;
+  private double basePriority(BooleanEncodedValue access, boolean recommended, EdgeIteratorState edge, boolean reverse) {
+    if (!(reverse ? edge.getReverse(access) : edge.get(access))) return 0.0;
+    return recommended ? edge.get(hgvRecommended) : 1.0;
   }
 
   private static boolean below(EdgeIteratorState edge, DecimalEncodedValue enc, double value) {
@@ -261,19 +173,12 @@ public final class NmWeightingFactory implements WeightingFactory {
   }
 
   /**
-   * The weight of the road for this vehicle: the base model (the default choices) changed where
-   * the vehicle or the trip differ - roads closed by its measures, dangerous goods, zones; tolls
-   * avoided; ferries, unpaved roads and roads for lorries as chosen.
+   * The weight of the road for this vehicle: as openrouteservice's restrictions and options, a
+   * road whose signed limit is below the vehicle's measure is closed (height, width, length,
+   * weight, axle load), dangerous goods where they are forbidden, tolls and ferries when avoided,
+   * the zones to avoid.
    */
-  private double priority(boolean truck, Mode mode, TruckSpec s, List<Polygon> zones, EdgeIteratorState edge, boolean reverse) {
-    double v = basePriority(truck, mode, edge, reverse);
-    if (v == 0.0) return 0.0;
-    // choices different from the base model (which avoids ferries and unpaved roads and prefers
-    // roads signed for lorries)
-    if (truck && !s.preferTruckRoutes && hgvOf(edge) != Hgv.DESIGNATED) v /= 0.97;
-    if (!s.avoidFerries && roadEnv != null && edge.get(roadEnv) == RoadEnvironment.FERRY) v = v / 0.02 * 0.5;
-    if (!s.avoidUnpaved && surface != null && rough(edge.get(surface))) v = v / 0.02 * 0.3;
-    // the measures of the vehicle against the signed limits
+  private double priority(boolean truck, TruckSpec s, List<Polygon> zones, double v, EdgeIteratorState edge) {
     // on a motorway a height below 3.8 m or a width below 2.6 m is a mistake of the map (e.g. the
     // A1 at Casalecchio carried the 3.5 m of the street passing under it): not a limit for lorries
     boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY
@@ -281,24 +186,22 @@ public final class NmWeightingFactory implements WeightingFactory {
     if ((below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT))
         || (below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH))
         || below(edge, maxLength, s.lengthM)
+        || below(edge, maxWeight, s.weightT)
         || below(edge, maxAxleLoad, s.axleLoadT)) return 0.0;
-    if (below(edge, maxWeight, s.weightT)) {
-      MaxWeightExcept ex = maxWeightExcept == null ? MaxWeightExcept.MISSING : edge.get(maxWeightExcept);
-      if (ex == MaxWeightExcept.MISSING) return 0.0;
-      v *= 0.1; // except for delivery / destination: only to get there
-    }
     if (s.hazmat && hazmat != null && edge.get(hazmat) == Hazmat.NO) return 0.0;
     if (s.tunnelCode >= 'B' && s.tunnelCode <= 'E' && hazmatTunnel != null) {
       // categories A..E are ordinals 0..4: code B (1) is barred from B, C, D and E
       if (edge.get(hazmatTunnel).ordinal() >= s.tunnelCode - 'A') return 0.0;
     }
     if (s.hazmatWater && hazmatWater != null && edge.get(hazmatWater) == HazmatWater.NO) return 0.0;
+    // openrouteservice's avoid_features "tollways" and "ferries": the roads are left out
     if (s.avoidTolls && toll != null) {
       Toll t = edge.get(toll);
-      if (t == Toll.ALL || (truck && t == Toll.HGV)) v *= 0.02;
+      if (t == Toll.ALL || (truck && t == Toll.HGV)) return 0.0;
     }
+    if (s.avoidFerries && roadEnv != null && edge.get(roadEnv) == RoadEnvironment.FERRY) return 0.0;
     for (Polygon z : zones) if (CustomWeightingHelper.in(z, edge)) return 0.0;
     if (s.penalized != null && s.penalized.contains(edge.getEdge())) v *= 0.5;
-    return Math.min(v, 1.0);
+    return v;
   }
 }

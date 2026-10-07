@@ -187,8 +187,9 @@ data class VehicleProfile(
 
 /** Choices that change from trip to trip (and during a trip). */
 /**
- * The kind of route the driver prefers: the fastest (with the speeds a lorry really keeps), the one
- * with more motorway (other roads count more, worth it only when it makes sense), the shorter one.
+ * The kind of route the driver prefers, as openrouteservice's "preference": the fastest, the one
+ * with more motorway ("recommended": lorries prefer motorways and main roads and avoid small
+ * streets; for campers and cars it is the fastest), the shortest.
  */
 @Serializable
 enum class RouteKind(val label: String, val gh: Int) {
