@@ -9,7 +9,7 @@ on:
     inputs:
       areas:
         description: "Aree di tools/guide/trips.json (es. test,bologna)"
-        default: "test,bologna"
+        default: "como,ticino,como+ticino"
 
 permissions:
   contents: write
@@ -34,15 +34,41 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
           mkdir -p w out && cd w
-          curl -fsSL -o italy.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
-          for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
-            bbox=$(python3 -c "import json; print(json.load(open('$GITHUB_WORKSPACE/tools/guide/trips.json'))['areas']['$a'])")
-            osmium extract -b "$bbox" italy.osm.pbf -o $a.osm.pbf --overwrite
+          T=$GITHUB_WORKSPACE/tools/guide/trips.json
+          AREAS="$(echo "${{ inputs.areas }}" | tr ',' ' ')"
+          # an area is a box of a country's extract ("como"), or more of them merged ("como+ticino")
+          for a in $AREAS; do
+            case "$a" in *+*) continue;; esac
+            read bbox country < <(python3 -c "import json; x=json.load(open('$T'))['areas']['$a']; print(x if isinstance(x, str) else x['bbox'], 'italy' if isinstance(x, str) else x.get('country', 'italy'))")
+            [ -f "src-$country.osm.pbf" ] || curl -fsSL -o "src-$country.osm.pbf" "$GEOFABRIK/$country-latest.osm.pbf"
+            osmium extract -b "$bbox" "src-$country.osm.pbf" -o $a.osm.pbf --overwrite
+            echo "$country" > $a.country
+          done
+          for a in $AREAS; do
+            case "$a" in *+*) osmium merge $(for p in $(echo $a | tr '+' ' '); do echo $p.osm.pbf; done) -o $a.osm.pbf --overwrite;; esac
+          done
+          for a in $AREAS; do
             osmium tags-filter $a.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry r/type=restriction -o $a-roads.osm.pbf --overwrite
             cp $a-roads.osm.pbf ../out/
           done
-          rm italy.osm.pbf
+          rm -f src-*.osm.pbf
           ls -la . ../out
+      - name: Valichi (strade che passano il confine, tools/gh/build_crossings.py)
+        run: |
+          python3 -m pip install --quiet --break-system-packages shapely 2>/dev/null || python3 -m pip install --quiet shapely
+          cd w
+          mkdir -p poly
+          for c in $(python3 -c "import json; print(' '.join(x['id'] for x in json.load(open('$GITHUB_WORKSPACE/data/countries.json'))))"); do
+            curl -fsSL -o poly/$c.poly "$GEOFABRIK/$c.poly" || rm -f poly/$c.poly
+          done
+          ls poly | wc -l
+          echo '{"attributes": {"type": false, "id": true}, "include_tags": ["highway", "name", "ref", "oneway", "junction"]}' > cfg.json
+          for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
+            [ -f $a.country ] || continue
+            osmium export $a-roads.osm.pbf -c cfg.json -f geojsonseq --geometry-types=linestring \
+              --format-option print_record_separator=false -o $a-roads.geojsonseq --overwrite
+            python3 $GITHUB_WORKSPACE/tools/gh/build_crossings.py $a-roads.geojsonseq ../out/valichi-$a.json $(cat $a.country) poly
+          done
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: "21"}
       - name: Grafo e guida di GraphHopper (GhGuide) sulle aree
@@ -61,6 +87,7 @@ jobs:
           docker pull -q "$VALHALLA_IMAGE"
           cd w
           for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
+            python3 -c "import json,sys; sys.exit(0 if any(t['area'] == '$a' for t in json.load(open('$GITHUB_WORKSPACE/tools/guide/trips.json'))['trips']) else 1)" || continue
             mkdir -p v-$a && cp $a.osm.pbf v-$a/region.osm.pbf && cp $a-roads.osm.pbf v-$a/roads.osm.pbf
             docker run --rm -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" bash -c "
               set -e; cd /data
@@ -70,12 +97,12 @@ jobs:
               valhalla_build_tiles -c valhalla.json /data/roads.osm.pbf
               valhalla_build_extract -c valhalla.json -v --overwrite"
             sudo chmod -R a+rwX v-$a
-            docker run -d --name vh-$a -p 8002:8002 -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" valhalla_service /data/valhalla.json 1
+            docker run -d --name vh-${a//+/_} -p 8002:8002 -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" valhalla_service /data/valhalla.json 1
             sleep 8
             python3 $GITHUB_WORKSPACE/tools/guide/vhref.py $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/vh
             # Valhalla's guidance along GraphHopper's own paths: the manoeuvres compared one by one
             python3 $GITHUB_WORKSPACE/tools/guide/vhref.py --trace ../out/gh $a $GITHUB_WORKSPACE/tools/guide/trips.json ../out/vhtrace
-            docker rm -f vh-$a
+            docker rm -f vh-${a//+/_}
           done
           cd ../out && zip -qr vh-ref.zip vh gh vhtrace && ls -la
       - name: Nella release «sviluppo»
@@ -85,4 +112,4 @@ jobs:
           R="${{ github.repository }}"
           gh release view sviluppo -R "$R" >/dev/null 2>&1 || gh release create sviluppo -R "$R" --prerelease \
             --title "Sviluppo (file di prova)" --notes "Estratti OSM e risposte di riferimento per lo sviluppo. Dati © OpenStreetMap contributors (ODbL)."
-          gh release upload sviluppo out/*.osm.pbf out/vh-ref.zip -R "$R" --clobber
+          gh release upload sviluppo out/*.osm.pbf out/vh-ref.zip out/valichi-*.json -R "$R" --clobber
