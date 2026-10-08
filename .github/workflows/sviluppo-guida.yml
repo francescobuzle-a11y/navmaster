@@ -1,0 +1,73 @@
+# Development of the guidance computed by GraphHopper alone (no Valhalla on the tablet):
+# small OSM extracts for the tests on the computer, and Valhalla's answers on the same trips
+# (route in OSRM format with Italian voice and banners, trace_attributes) as the reference the
+# GraphHopper guidance is compared with. Everything goes to the release "sviluppo".
+name: Sviluppo guida GraphHopper
+
+on:
+  workflow_dispatch:
+    inputs:
+      areas:
+        description: "Aree di tools/guide/trips.json (es. test,bologna)"
+        default: "test,bologna"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GEOFABRIK: https://download.geofabrik.de/europe
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:3.6.3
+  GH_VERSION: "11.0"
+  VEHICLE_ROADS: motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway
+
+jobs:
+  ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Estratti OSM delle aree
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          mkdir -p w out && cd w
+          curl -fsSL -o italy.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+          for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
+            bbox=$(python3 -c "import json; print(json.load(open('$GITHUB_WORKSPACE/tools/guide/trips.json'))['areas']['$a'])")
+            osmium extract -b "$bbox" italy.osm.pbf -o $a.osm.pbf --overwrite
+            osmium tags-filter $a.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry r/type=restriction -o $a-roads.osm.pbf --overwrite
+            cp $a-roads.osm.pbf ../out/
+          done
+          rm italy.osm.pbf
+          ls -la . ../out
+      - name: Risposte di Valhalla sui viaggi di prova
+        run: |
+          docker pull -q "$VALHALLA_IMAGE"
+          cd w
+          for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
+            mkdir -p v-$a && cp $a.osm.pbf v-$a/region.osm.pbf && cp $a-roads.osm.pbf v-$a/roads.osm.pbf
+            docker run --rm -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" bash -c "
+              set -e; cd /data
+              valhalla_build_config --mjolnir-tile-dir /data/tiles --mjolnir-tile-extract /data/valhalla_tiles.tar \
+                --mjolnir-admin /data/admins.sqlite > valhalla.json
+              valhalla_build_admins -c valhalla.json /data/region.osm.pbf
+              valhalla_build_tiles -c valhalla.json /data/roads.osm.pbf
+              valhalla_build_extract -c valhalla.json -v --overwrite"
+            sudo chmod -R a+rwX v-$a
+            docker run -d --name vh-$a -p 8002:8002 -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" valhalla_service /data/valhalla.json 1
+            sleep 8
+            python3 $GITHUB_WORKSPACE/tools/guide/vhref.py $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/vh
+            docker rm -f vh-$a
+          done
+          cd ../out && zip -qr vh-ref.zip vh && ls -la
+      - name: Nella release «sviluppo»
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="${{ github.repository }}"
+          gh release view sviluppo -R "$R" >/dev/null 2>&1 || gh release create sviluppo -R "$R" --prerelease \
+            --title "Sviluppo (file di prova)" --notes "Estratti OSM e risposte di riferimento per lo sviluppo. Dati © OpenStreetMap contributors (ODbL)."
+          gh release upload sviluppo out/*.osm.pbf out/vh-ref.zip -R "$R" --clobber
