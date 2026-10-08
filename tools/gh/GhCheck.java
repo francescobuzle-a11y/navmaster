@@ -9,10 +9,10 @@ import java.util.List;
  * run on GitHub right after the graph is built: the graph loads with the app's profiles, and for
  * each trip a lorry (4 m, 40 t) and a camper (3.2 m, 3.5 t) get a route, with its alternatives,
  * and the time it took (marked "slow" over 3 s on the runner: on a tablet it is several times
- * slower). A trip for which no vehicle gets a route fails the check (the graph is broken); a lorry
- * without a route where the camper has one is only reported, with the reason (its measures, or
- * roads closed to lorries around the point: e.g. a city centre with hgv=no), since openrouteservice
- * would refuse it as well.
+ * slower). A trip for which no vehicle gets a route, even without its measures, fails the check
+ * (the graph is broken); a vehicle without a route is otherwise only reported, with the reason (its
+ * measures against signed limits, or roads closed to lorries around a point: e.g. a city centre with
+ * hgv=no), since openrouteservice would refuse it as well.
  *
  * usage: java -cp gh.jar:classes GhCheck GRAPH_DIR MODELS_DIR "lat,lon;lat,lon|lat,lon;lat,lon"  ("-": load only)
  */
@@ -49,14 +49,16 @@ public class GhCheck {
               + (r.ok() ? String.format("%.1f km, %d min, %d paths%s, %d ms", r.distanceM / 1000, r.timeMs / 60000, rs.size(), alt, r.computeMs)
                   : "ERROR " + r.error) + (r.note != null ? " (" + r.note + ")" : ""));
           if (r.ok()) found++;
-          if (!r.ok() && run == 0 && v < 3) {
-            // why: the same lorry without its measures (only the roads closed to lorries)
+          if (!r.ok() && run == 0) {
+            // why: the same vehicle without its measures (only the roads closed to it); with a route
+            // the graph is sound: a signed limit around one of the points closes the way
             TruckSpec free = s.copy();
             free.heightM = 0; free.widthM = 0; free.lengthM = 0; free.weightT = 0; free.axleLoadT = 0;
             GhEngine.Result f = e.route(pts, null, free);
             System.out.println("GHCHECK " + trip + " " + kind + " without measures: "
                 + (f.ok() ? String.format("%.1f km (the measures close the way: signed limits)", f.distanceM / 1000)
                     : "ERROR " + f.error + " (roads closed to lorries around a point)"));
+            if (f.ok()) found++;
           }
           if (run == 1 && r.computeMs > 3000) System.out.println("GHCHECK slow: " + r.computeMs + " ms");
         }
