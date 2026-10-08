@@ -92,6 +92,8 @@ public final class GhGuide {
 
   /** One road (graph edge) of the route, in the direction driven. */
   static final class Seg {
+    /** The graph the road is in (a route between countries joins the graphs of the countries). */
+    GhGuide src;
     EdgeIteratorState e;
     int edge, baseNode, adjNode;
     int p0, p1;
@@ -203,17 +205,22 @@ public final class GhGuide {
     return o == null ? "" : String.valueOf(o).trim();
   }
 
-  private void read(List<PathDetail> keys, List<PathDetail> times) {
-    segs = new ArrayList<>();
+  /**
+   * The roads of a path of this graph, added to [segs]; [offset]: where the path's first point
+   * is in the whole route's points.
+   */
+  private void read(List<Seg> segs, List<PathDetail> keys, List<PathDetail> times, int offset) {
+    int first = segs.size();
     for (PathDetail d : keys) {
       Seg s = new Seg();
+      s.src = this;
       int key = ((Number) d.getValue()).intValue();
       s.e = g.getEdgeIteratorStateForKey(key);
       s.edge = s.e.getEdge();
       s.baseNode = s.e.getBaseNode();
       s.adjNode = s.e.getAdjNode();
-      s.p0 = d.getFirst();
-      s.p1 = d.getLast();
+      s.p0 = d.getFirst() + offset;
+      s.p1 = d.getLast() + offset;
       s.rc = s.e.get(roadClass);
       s.link = s.e.get(link);
       s.roundabout = s.e.get(roundabout);
@@ -247,10 +254,10 @@ public final class GhGuide {
       segs.add(s);
     }
     // the times of GraphHopper's own pieces (two virtual edges where a stop splits an edge)
-    if (times != null) {
-      int k = 0;
+    if (times != null && segs.size() > first) {
+      int k = first;
       for (PathDetail t : times) {
-        while (k < segs.size() - 1 && segs.get(k).p1 <= t.getFirst()) k++;
+        while (k < segs.size() - 1 && segs.get(k).p1 <= t.getFirst() + offset) k++;
         segs.get(k).timeS += ((Number) t.getValue()).doubleValue() / 1000.0;
       }
     }
@@ -314,7 +321,10 @@ public final class GhGuide {
 
   /** The roads at the node between seg [a] and seg [b] (where the route goes from a to b). */
   private List<Branch> branches(Seg a, Seg b) {
+    if (a.src != this) return a.src.branchesHere(a, b);
     List<Branch> out = new ArrayList<>();
+    // where two countries' graphs join (a border crossing, in the middle of a road): no other road
+    if (b.src != a.src) return out;
     int node = a.adjNode;
     EdgeIterator it = explorer.setBaseNode(node);
     while (it.next()) {
@@ -348,6 +358,11 @@ public final class GhGuide {
     return out;
   }
 
+  /** [branches] in this seg's own graph. */
+  private List<Branch> branchesHere(Seg a, Seg b) {
+    return branches(a, b);
+  }
+
   private static boolean isServiceLike(RoadClass rc) {
     return rc == RoadClass.SERVICE || rc == RoadClass.TRACK || rc == RoadClass.FOOTWAY || rc == RoadClass.PATH
         || rc == RoadClass.CYCLEWAY || rc == RoadClass.PEDESTRIAN || rc == RoadClass.STEPS || rc == RoadClass.BRIDLEWAY;
@@ -376,18 +391,40 @@ public final class GhGuide {
    * arrival); [hgv]: lorry.
    */
   public Output guide(ResponsePath path, int[] breaks, List<double[]> requested) {
-    PointList pl = path.getPoints();
-    int n = pl.size();
+    return guide(java.util.Collections.singletonList(this), java.util.Collections.singletonList(path), breaks, requested);
+  }
+
+  /**
+   * The guidance of a route made of [paths] computed in different graphs ([guides], one per path:
+   * the countries of a trip abroad), each path starting where the one before ends (a border
+   * crossing). [breaks]: the stops in the points of the whole route (the paths one after the other,
+   * the point where two join counted once).
+   */
+  public static Output guide(List<GhGuide> guides, List<ResponsePath> paths, int[] breaks, List<double[]> requested) {
+    return guides.get(0).guideAll(guides, paths, breaks, requested);
+  }
+
+  private Output guideAll(List<GhGuide> guides, List<ResponsePath> paths, int[] breaks, List<double[]> requested) {
+    int n = 0;
+    for (int k = 0; k < paths.size(); k++) n += paths.get(k).getPoints().size() - (k > 0 ? 1 : 0);
     lat = new double[n];
     lon = new double[n];
     cum = new double[n];
-    for (int i = 0; i < n; i++) {
-      lat[i] = pl.getLat(i);
-      lon[i] = pl.getLon(i);
-      if (i > 0) cum[i] = cum[i - 1] + dist(lat[i - 1], lon[i - 1], lat[i], lon[i]);
+    segs = new ArrayList<>();
+    int at = 0;
+    for (int k = 0; k < paths.size(); k++) {
+      PointList pl = paths.get(k).getPoints();
+      int offset = k == 0 ? 0 : at - 1;
+      for (int i = k == 0 ? 0 : 1; i < pl.size(); i++) {
+        int j = offset + i;
+        lat[j] = pl.getLat(i);
+        lon[j] = pl.getLon(i);
+        if (j > 0) cum[j] = cum[j - 1] + dist(lat[j - 1], lon[j - 1], lat[j], lon[j]);
+      }
+      at = offset + pl.size();
+      Map<String, List<PathDetail>> det = paths.get(k).getPathDetails();
+      guides.get(k).read(segs, det.get("edge_key"), det.get("time"), offset);
     }
-    Map<String, List<PathDetail>> det = path.getPathDetails();
-    read(det.get("edge_key"), det.get("time"));
     // time per point segment, from the time of each road
     double[] segTime = new double[Math.max(0, n - 1)];
     double[] segMax = new double[Math.max(0, n - 1)];

@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Log
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.data.Tar
+import app.navmaster.truck.routing.gh.GhCross
 import app.navmaster.truck.routing.gh.GhEngine
 import app.navmaster.truck.routing.gh.GhGuide
 import uniffi.ferrostar.Route
@@ -21,6 +22,15 @@ import java.util.zip.GZIPInputStream
 class GhRouting(private val context: Context, private val regions: RegionManager) {
   private var engine: GhEngine? = null
   private var loadedKey: String? = null
+
+  /** The graphs of the other countries of a trip abroad (country → (key, engine)), the last used last. */
+  private val others = LinkedHashMap<String, Pair<String, GhEngine>>()
+
+  /** The border crossings of each country (valichi.json), read once. */
+  private val crossingCache = HashMap<String, List<GhCross.Crossing>>()
+
+  /** The trips abroad of the last routes (their pieces in each country's graph), for the guidance. */
+  private val trips = java.util.WeakHashMap<GhEngine.Result, GhCross.Trip>()
 
   /** Why the last route could not use GraphHopper (shown under the routes), null when it could. */
   @Volatile var problem: String? = null
@@ -85,7 +95,77 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       Log.w(TAG, "GraphHopper: no landmarks for ${GhEngine.profileFor(spec)}")
       return null
     }
+    // a trip abroad: the graphs of the countries joined at the border crossings
+    val ids = points.map { regions.regionAt(it[0], it[1])?.id }
+    if (ids.distinct().size > 1) return across(points, headings, ids, spec)
     return e.routes(points, headings, spec, maxPaths)
+  }
+
+  /** The route of a trip through more countries (GhCross): one result, the whole route. */
+  private fun across(points: List<DoubleArray>, headings: List<Double>, ids: List<String?>, spec: TruckSpec): List<GhEngine.Result>? {
+    if (ids.any { it == null }) {
+      problem = "manca la mappa di uno dei Paesi del viaggio: scaricala in «Mappe d'Europa»"
+      return null
+    }
+    val graphs = object : GhCross.Graphs {
+      override fun has(country: String): Boolean {
+        val region = regions.installed.value.firstOrNull { it.id == country } ?: return false
+        return state(region.dir, emptyList()).let { it == GhState.READY || it == GhState.PARTIAL } &&
+            GhEngine.hasLandmarks(File(region.dir, "gh"), GhEngine.profileFor(spec))
+      }
+
+      override fun engine(country: String): GhEngine? =
+          runCatching { engineFor(country) }.onFailure { Log.w(TAG, "GraphHopper of $country not open: $it") }.getOrNull()
+
+      override fun crossings(country: String): List<GhCross.Crossing> = crossingsOf(country)
+    }
+    val trip = GhCross.route(graphs, points, ids.map { it!! }, headings.firstOrNull() ?: Double.NaN, spec)
+    if (trip.error != null || trip.whole == null) {
+      problem = "percorso tra Paesi: ${trip.error}"
+      Log.w(TAG, "GraphHopper across countries: ${trip.error} (${trip.note})")
+      return null
+    }
+    Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper across countries: %.1f km, %d min, %s, %d ms",
+        trip.whole.distanceM / 1000, trip.whole.timeMs / 60000, trip.note, trip.whole.computeMs))
+    synchronized(trips) { trips[trip.whole] = trip }
+    return listOf(trip.whole)
+  }
+
+  /** The graph of the country [id] (installed), opened once and kept with the others of the trip. */
+  @Synchronized
+  private fun engineFor(id: String): GhEngine? {
+    val region = regions.installed.value.firstOrNull { it.id == id } ?: return null
+    ready(region.dir)
+    val dir = File(region.dir, "gh")
+    val key = dir.absolutePath + ":" + regions.version.value
+    if (key == loadedKey) return engine
+    others[id]?.let { (k, e) ->
+      if (k == key) {
+        others.remove(id)
+        others[id] = k to e
+        return e
+      }
+      e.close()
+      others.remove(id)
+    }
+    if (state(region.dir, emptyList()).let { it != GhState.READY && it != GhState.PARTIAL }) return null
+    val e = GhEngine.open(dir, modelsDir(), true)
+    others[id] = key to e
+    // at most three other countries' graphs open
+    while (others.size > 3) {
+      val eldest = others.keys.first()
+      others.remove(eldest)?.second?.close()
+    }
+    return e
+  }
+
+  /** The border crossings of the country [id] (valichi.json in its package), empty when not there. */
+  private fun crossingsOf(id: String): List<GhCross.Crossing> = synchronized(crossingCache) {
+    crossingCache.getOrPut(id) {
+      val region = regions.installed.value.firstOrNull { it.id == id }
+      val f = region?.let { File(it.dir, "valichi.json") }
+      if (f != null && f.exists()) GhCross.read(f) else emptyList()
+    }
   }
 
   /**
@@ -95,6 +175,10 @@ class GhRouting(private val context: Context, private val regions: RegionManager
    */
   @Synchronized
   fun guide(r: GhEngine.Result, spec: TruckSpec, breaks: IntArray, requested: List<DoubleArray>): GhGuide.Output? {
+    synchronized(trips) { trips[r] }?.let { trip ->
+      if (!trip.engines.all { it.canGuide() }) return null
+      return GhEngine.guide(trip, spec, breaks, requested)
+    }
     val e = engine ?: return null
     if (!e.canGuide()) return null
     return e.guide(r, spec, breaks, requested)
@@ -133,6 +217,9 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     engine?.close()
     engine = null
     loadedKey = null
+    for ((_, e) in others.values) e.close()
+    others.clear()
+    synchronized(crossingCache) { crossingCache.clear() }
   }
 
   /** The base models, from the app's assets, where GraphHopper reads them (same files as on GitHub). */

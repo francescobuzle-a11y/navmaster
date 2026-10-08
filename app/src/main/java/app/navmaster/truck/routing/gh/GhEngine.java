@@ -529,6 +529,20 @@ public final class GhEngine implements Closeable {
     return new GhGuide(hopper, spec.hgv).guide(r.path, breaks, requested);
   }
 
+  /**
+   * The guidance of a route between countries ([trip]: a piece in each country's graph), as one
+   * route: [breaks] the stops in the whole route's points.
+   */
+  public static GhGuide.Output guide(GhCross.Trip trip, TruckSpec spec, int[] breaks, List<double[]> requested) {
+    List<GhGuide> guides = new ArrayList<>();
+    List<ResponsePath> paths = new ArrayList<>();
+    for (int k = 0; k < trip.pieces.size(); k++) {
+      guides.add(new GhGuide(trip.engines.get(k).hopper, spec.hgv));
+      paths.add(trip.pieces.get(k).path);
+    }
+    return GhGuide.guide(guides, paths, breaks, requested);
+  }
+
   @Override
   public void close() {
     hopper.close();
