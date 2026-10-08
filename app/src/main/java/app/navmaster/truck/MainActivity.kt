@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     if (savedInstanceState == null) handleShared(intent)
     // a map download cut off (app closed, tablet restarted) goes on by itself
     AppGraph.regions.resumePending()
+    Thread { runCatching { AppGraph.regions.dropValhallaAll() } }.start()
   }
 
   override fun onNewIntent(intent: android.content.Intent) {

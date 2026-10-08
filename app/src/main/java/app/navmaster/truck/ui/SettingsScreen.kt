@@ -118,8 +118,7 @@ private fun summary(p: SettingsPage, s: Settings): String =
       SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
-      SettingsPage.OFFLINE -> (if (s.downloadWifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con i dati mobili") +
-          if (s.useEuropeGraph) " · grafo Europa" else ""
+      SettingsPage.OFFLINE -> (if (s.downloadWifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con i dati mobili")
       SettingsPage.PHOTOS -> if (app.navmaster.truck.live.ApiKeys.mapillary(s).isBlank()) "Panoramax e KartaView" else "Panoramax, KartaView e Mapillary"
       SettingsPage.ABOUT -> "OpenStreetMap, Esri, divieti di circolazione"
     }
@@ -405,9 +404,8 @@ private fun OfflinePage(s: Settings, set: ((Settings) -> Settings) -> Unit, onRe
     BigButton("Gestisci i Paesi scaricati", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), style = BtnStyle.SECONDARY, onClick = onRegions)
   }
   Card("Percorsi") {
-    ToggleRow("Percorsi tra Paesi (grafo Europa)", "Usa il grafo unico europeo quando disponibile, per calcolare oltre i confini", s.useEuropeGraph) { v ->
-      set { it.copy(useEuropeGraph = v) }
-    }
+    Text("I percorsi tra Paesi uniscono i grafi GraphHopper dei Paesi scaricati ai valichi di confine: " +
+        "scarica i Paesi che attraversi.", color = Nm.Muted, fontSize = 13.sp)
   }
 }
 

@@ -210,7 +210,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
                 ghUpdate -> " · manca il grafo GraphHopper"
                 else -> ""
               }
-              c.available -> "${gb(size)} · dati del ${c.built}" + if (c.europeTiles != null && useEurope) " · con percorsi europei" else ""
+              c.available -> "${gb(size)} · dati del ${c.built}"
               else -> "In preparazione"
             },
             color = if (installed) Nm.Accent else Nm.Muted,

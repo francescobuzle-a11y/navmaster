@@ -41,9 +41,10 @@ data class CountryInfo(
   }
 
   /** What the download costs on the tablet (with the Europe graph instead of the country graph). */
-  fun downloadSize(useEurope: Boolean): Long {
-    val tiles = europeTiles
-    return if (useEurope && tiles != null) size - (files["percorsi.tar"] ?: 0) + tiles.size else size
+  fun downloadSize(@Suppress("UNUSED_PARAMETER") useEurope: Boolean): Long {
+    // routes and guidance come from GraphHopper alone: Valhalla's graph (percorsi.tar, or the
+    // Europe tiles) is not downloaded any more
+    return size - (files["percorsi.tar"] ?: 0)
   }
 
   val flag: String

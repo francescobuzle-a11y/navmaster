@@ -149,7 +149,8 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
             try {
               val m = json.decodeFromString(Manifest.serializer(), mf.readText())
               val region = InstalledRegion(dir.name, m, dir)
-              if (region.map.exists() && (region.routingTar.exists() || region.hasEuropeTiles)) region else null
+              val gh = File(dir, "gh/properties").exists() || File(dir, GhRouting.PACKAGE).exists()
+              if (region.map.exists() && (gh || region.routingTar.exists() || region.hasEuropeTiles)) region else null
             } catch (e: Exception) {
               Log.w(TAG, "bad manifest in $dir: $e")
               null
@@ -274,12 +275,13 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     }
     // the landmarks of the vehicles not chosen are not downloaded
     fun skipped(f: PackageFile) = (f.file == GhRouting.PACKAGE_TRUCK || f.file == GhRouting.PACKAGE_CAR) && f.file !in ghWanted
-    val europe = if (job.useEurope) catalog.country(id)?.europeTiles?.takeIf { it.parts.isNotEmpty() } else null
+    // Valhalla's graphs are not downloaded any more (GraphHopper computes and guides the routes)
+    val europe: EuropeTiles? = null
     // the Europe tiles already installed for this country stay as they are in an update
     val tiles = europe?.takeUnless { prev != null && File(dir, "europa-tiles.txt").exists() }
 
     // with the Europe graph the country graph is not needed
-    val files = manifest.files.filter { (europe == null || it.file != "percorsi.tar") && !skipped(it) && !unchanged(it) }
+    val files = manifest.files.filter { it.file != "percorsi.tar" && !skipped(it) && !unchanged(it) }
     if (prev != null) Log.i(TAG, "update $id: ${files.joinToString { it.file }.ifEmpty { "nothing changed" }}")
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } } +
         (tiles?.parts?.map { "$RELEASES/grafo-europa/${it.name}" to it } ?: emptyList())
@@ -365,6 +367,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       // a package unpacked is removed: its source is noted, to know when it changes
       if (gh != null) for (f in ghFiles) if (!File(dir, f.file).exists()) File(gh, GhRouting.sourceFile(f.file)).writeText(sums(f))
     }
+    dropValhalla(id)
     File(dir, "manifest.json").writeText(manifestText)
     tmp.deleteRecursively()
     refresh()
@@ -382,6 +385,38 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       for (p in parts) p.inputStream().buffered(1 shl 20).use { it.copyTo(o, 1 shl 20) }
     }
     parts.forEach { it.delete() }
+  }
+
+  /**
+   * Valhalla's graph of a country (percorsi.tar, its Europe tiles) is removed once the country's
+   * GraphHopper graph guides the routes by itself: space given back on the tablet.
+   */
+  fun dropValhalla(id: String) {
+    val dir = File(root, id)
+    if (!GhRouting.guides(dir)) return
+    val tar = File(dir, "percorsi.tar")
+    if (tar.exists()) {
+      runCatching { app.navmaster.truck.AppGraph.engine.reset() }
+      Log.i(TAG, "$id: Valhalla's graph removed (${tar.length() / 1_000_000} MB), GraphHopper guides the routes")
+      tar.delete()
+    }
+    val list = File(dir, "europa-tiles.txt")
+    if (list.exists()) {
+      runCatching { app.navmaster.truck.AppGraph.engine.reset() }
+      val mine = list.readLines().toSet()
+      val others = _installed.value.filter { it.id != id && !GhRouting.guides(it.dir) }.flatMap { r ->
+        File(r.dir, "europa-tiles.txt").takeIf { it.exists() }?.readLines() ?: emptyList()
+      }.toSet()
+      for (rel in mine - others) File(europeTiles, rel).delete()
+      list.delete()
+      Log.i(TAG, "$id: Valhalla's Europe tiles removed")
+    }
+  }
+
+  /** At the start: Valhalla's graphs no longer needed are removed (see [dropValhalla]). */
+  fun dropValhallaAll() {
+    for (r in _installed.value) runCatching { dropValhalla(r.id) }
+    refresh()
   }
 
   fun delete(id: String) {

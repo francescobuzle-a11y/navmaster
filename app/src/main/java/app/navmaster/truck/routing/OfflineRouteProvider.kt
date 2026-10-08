@@ -123,6 +123,9 @@ class OfflineRouteProvider(
         }
         // 2. Valhalla's own routes: the "more routes" asked by the driver, or the routes when
         //    GraphHopper has no graph here or found nothing
+        // Valhalla's graph is no longer downloaded: without it, GraphHopper's reason is the answer
+        if (runCatching { engine.get(c.lat, c.lng) }.getOrNull() == null)
+          throw IllegalStateException("Nessun percorso: ${whyValhalla ?: gh.problem ?: "GraphHopper non ha trovato un percorso"}")
         val raw = SpeedCap.apply(engine.use(c.lat, c.lng) { it.routeRaw(body) }, vehicle.topSpeedKmh)
         Log.i(TAG, "route computed in ${System.currentTimeMillis() - started} ms, ${raw.length} bytes (Valhalla)")
         parser.parseResponse(raw.encodeToByteArray()).also { mark(it, "VH") }.also(onRoutes)

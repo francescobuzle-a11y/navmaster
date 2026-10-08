@@ -286,7 +286,19 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       val dir = File(regionDir, "gh")
       if (!File(dir, "properties").exists()) return GhState.MISSING
       if (!orsValues(File(dir, "properties"))) return GhState.OLD
+      // made before the guidance came from GraphHopper itself: it needs Valhalla, not kept any more
+      if (!guides(regionDir)) return GhState.OLD
       return if (wanted.all { hasPackage(regionDir, it) }) GhState.READY else GhState.PARTIAL
+    }
+
+    /** The country's graph guides the routes by itself (made with the guidance data, 10/2026). */
+    fun guides(regionDir: File): Boolean {
+      val p = File(File(regionDir, "gh"), "properties")
+      return try {
+        p.exists() && p.length() < 4_000_000 && p.readBytes().toString(Charsets.ISO_8859_1).contains("osm_way_id")
+      } catch (e: Exception) {
+        false
+      }
     }
 
     /** The graph's description lists openrouteservice's values (ors_hgv_speed…). */
