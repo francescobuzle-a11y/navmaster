@@ -262,6 +262,115 @@ public final class GhEngine implements Closeable {
     return out;
   }
 
+  /** Distance between the points of a followed line (the line of a route computed elsewhere). */
+  static final double FOLLOW_STEP_M = 3_000;
+  /** At most so many points along a followed line (a long trip gets them farther apart). */
+  static final int FOLLOW_MAX_POINTS = 150;
+
+  /**
+   * The route along a line computed elsewhere ([lat], [lon]: openrouteservice's route, which goes
+   * through the stops at the indexes [stops], the first and the last included): GraphHopper's path
+   * through points taken along the line every few km, each with the direction of travel there, so
+   * that GraphHopper drives the same roads and the guidance comes from its own graph. The
+   * vehicle's measures are left out (the roads were chosen with them already, a wrong limit in
+   * the map must not move the route). The result's waypoints are the stops. An error when the
+   * path is not the same as the line (more than 3% + 300 m longer or shorter).
+   */
+  public Result follow(double[] lat, double[] lon, int[] stops, double lineM, TruckSpec spec) {
+    long t0 = System.currentTimeMillis();
+    Result r = follow(lat, lon, stops, lineM, spec, FOLLOW_STEP_M, FOLLOW_MAX_POINTS);
+    // the line takes roads GraphHopper would not take between the points: points nearer together
+    if (r.error != null && r.error.startsWith("not the same")) {
+      Result dense = follow(lat, lon, stops, lineM, spec, 800, 500);
+      if (dense.error == null || !dense.error.startsWith("not the same") || Math.abs(dense.distanceM - lineM) < Math.abs(r.distanceM - lineM)) r = dense;
+    }
+    r.computeMs = System.currentTimeMillis() - t0;
+    return r;
+  }
+
+  private Result follow(double[] lat, double[] lon, int[] stops, double lineM, TruckSpec spec, double minStep, int maxPoints) {
+    int n = lat.length;
+    double[] cum = new double[n];
+    for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + metres(lat[i - 1], lon[i - 1], lat[i], lon[i]);
+    double total = cum[n - 1];
+    double step = Math.max(minStep, total / maxPoints);
+    java.util.TreeMap<Double, double[]> pts = new java.util.TreeMap<>();
+    java.util.Map<Double, Double> heading = new java.util.HashMap<>();
+    java.util.Set<Double> stopAt = new java.util.HashSet<>();
+    for (int s : stops) {
+      int i = Math.max(0, Math.min(n - 1, s));
+      pts.put(cum[i], new double[] {lat[i], lon[i]});
+      stopAt.add(cum[i]);
+    }
+    // a point every [step] metres, in the middle of a stretch of the line (not on a junction), at
+    // least 500 m from a stop
+    int i = 1;
+    for (double want = step; want < total - 500; want += step) {
+      while (i < n - 1 && cum[i] < want) i++;
+      // the first stretch of at least 40 m from here
+      int j = i;
+      while (j < n - 1 && cum[j] - cum[j - 1] < 40 && cum[j] - want < step / 2) j++;
+      if (cum[j] - cum[j - 1] < 40) continue;
+      double mid = (cum[j - 1] + cum[j]) / 2;
+      boolean nearStop = false;
+      for (double s : stopAt) if (Math.abs(s - mid) < 500) nearStop = true;
+      if (nearStop) continue;
+      double f = 0.5;
+      pts.put(mid, new double[] {lat[j - 1] + (lat[j] - lat[j - 1]) * f, lon[j - 1] + (lon[j] - lon[j - 1]) * f});
+      heading.put(mid, bearing(lat[j - 1], lon[j - 1], lat[j], lon[j]));
+    }
+    List<double[]> points = new ArrayList<>(pts.values());
+    List<Double> hs = new ArrayList<>();
+    List<Integer> stopIndex = new ArrayList<>();
+    int k = 0;
+    for (java.util.Map.Entry<Double, double[]> en : pts.entrySet()) {
+      Double h = heading.get(en.getKey());
+      hs.add(h == null ? Double.NaN : h);
+      if (stopAt.contains(en.getKey())) stopIndex.add(k);
+      k++;
+    }
+    TruckSpec relaxed = spec.copy();
+    relaxed.heightM = 0; relaxed.widthM = 0; relaxed.lengthM = 0; relaxed.weightT = 0; relaxed.axleLoadT = 0;
+    relaxed.hazmat = false; relaxed.tunnelCode = 0; relaxed.hazmatWater = false;
+    relaxed.avoidZones.clear();
+    relaxed.penalized = null;
+    Result r;
+    try {
+      GHRequest req = request(points, hs, relaxed, 1);
+      // the points only keep the route on the line: no stopping or turning back there
+      req.getHints().putObject("pass_through", true);
+      GHResponse rsp = hopper.route(req);
+      if (rsp.hasErrors()) {
+        r = new Result();
+        r.error = String.valueOf(rsp.getErrors().get(0).getMessage());
+      } else {
+        r = result(rsp.getBest());
+        int[] wp = new int[stopIndex.size()];
+        for (int q = 0; q < wp.length; q++) wp[q] = r.waypointIndex[Math.min(stopIndex.get(q), r.waypointIndex.length - 1)];
+        r.waypointIndex = wp;
+        if (Math.abs(r.distanceM - lineM) > lineM * 0.03 + 300)
+          r.error = String.format(Locale.ROOT, "not the same roads: %.1f km against %.1f km", r.distanceM / 1000, lineM / 1000);
+      }
+    } catch (Exception e) {
+      r = new Result();
+      r.error = e.toString();
+    }
+    r.note = "follow: " + points.size() + " points";
+    return r;
+  }
+
+  static double metres(double lat1, double lon1, double lat2, double lon2) {
+    double k = Math.cos(Math.toRadians((lat1 + lat2) / 2));
+    double dy = (lat2 - lat1) * 111_195, dx = (lon2 - lon1) * 111_195 * k;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  static double bearing(double lat1, double lon1, double lat2, double lon2) {
+    double k = Math.cos(Math.toRadians((lat1 + lat2) / 2));
+    double b = Math.toDegrees(Math.atan2((lon2 - lon1) * k, lat2 - lat1));
+    return (b + 360) % 360;
+  }
+
   /**
    * The alternatives of a long trip: the route through a point to one side of the best route's
    * middle (left and right, nearer and farther), kept when not much slower and really different.

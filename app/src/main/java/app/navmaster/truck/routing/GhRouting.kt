@@ -116,6 +116,18 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return "${g.size}:${g.firstOrNull()}:${g.lastOrNull()}:${route.distance.toLong()}"
   }
 
+  /**
+   * GraphHopper's path along the line of a route computed elsewhere ([r], openrouteservice's), in
+   * the graph of the country where it starts; null without a graph that can guide it.
+   */
+  @Synchronized
+  fun follow(r: GhEngine.Result, spec: TruckSpec): GhEngine.Result? {
+    if (r.lat.size < 2) return null
+    val e = runCatching { engineAt(r.lat[0], r.lon[0]) }.getOrNull() ?: return null
+    if (!e.canGuide() || !e.canRoute(spec)) return null
+    return e.follow(r.lat, r.lon, r.waypointIndex, r.distanceM, spec)
+  }
+
   @Synchronized
   fun reset() {
     engine?.close()

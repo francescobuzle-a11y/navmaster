@@ -191,7 +191,23 @@ class OfflineRouteProvider(
     return route
   }
 
-  /** openrouteservice's routes (online), each with Valhalla's guidance along it; null when none. */
+  /**
+   * openrouteservice's route [r] driven by GraphHopper (through points of its line, GhEngine.follow)
+   * and guided from GraphHopper's graph; null when GraphHopper cannot follow it.
+   */
+  private fun ghFollow(r: GhEngine.Result, kinds: List<String>, points: List<DoubleArray>, spec: app.navmaster.truck.routing.gh.TruckSpec): Route? {
+    val f = runCatching { gh.follow(r, spec) }
+        .onFailure { Log.w(TAG, "GraphHopper could not follow openrouteservice: $it") }.getOrNull() ?: return null
+    if (!f.ok() || f.error != null) {
+      Log.w(TAG, "GraphHopper does not follow openrouteservice's route: ${f.error} (${f.note})")
+      return null
+    }
+    Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper follows openrouteservice: %.1f km against %.1f km, %s, %d ms",
+        f.distanceM / 1000, r.distanceM / 1000, f.note, f.computeMs))
+    return ghGuide(f, kinds, points, spec)
+  }
+
+  /** openrouteservice's routes (online), each with GraphHopper's (or Valhalla's) guidance along it; null when none. */
   private fun orsRoutes(body: String, vehicle: VehicleProfile, loadT: Double, options: TripOptions, lat: Double, lon: Double): List<Route>? {
     val root = Json.parseToJsonElement(body).jsonObject
     val locs = root["locations"]?.jsonArray ?: return null
@@ -204,7 +220,9 @@ class OfflineRouteProvider(
     for ((n, r) in found.withIndex()) {
       Log.i(TAG, String.format(java.util.Locale.US, "openrouteservice route %d/%d: %.1f km, %d min, %d points for %s",
           n + 1, found.size, r.distanceM / 1000, r.timeMs / 60000, r.lat.size, spec))
-      val guided = guide(r, kinds, base, vehicle, lat, lon)
+      // GraphHopper drives the same roads and guides them from its own graph; Valhalla only
+      // where GraphHopper cannot (a graph without guidance data, another country)
+      val guided = ghFollow(r, kinds, points, spec) ?: guide(r, kinds, base, vehicle, lat, lon)
       if (guided != null) out += guided
       else if (n == 0) return null // the best one could not be guided: computed on the tablet instead
     }

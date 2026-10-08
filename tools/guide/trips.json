@@ -1,16 +1,27 @@
 {
  "areas": {
   "test": "12.30,43.85,12.72,44.12",
-  "bologna": "11.15,44.40,11.50,44.60"
+  "bologna": "11.15,44.40,11.50,44.60",
+  "como": {
+   "bbox": "8.85,45.74,9.15,46.06",
+   "country": "italy"
+  },
+  "ticino": {
+   "bbox": "8.85,45.74,9.15,46.06",
+   "country": "switzerland"
+  }
  },
  "trips": [
-  {"name": "rimini_sanmarino", "area": "test", "points": [[44.0597, 12.5653], [43.9360, 12.4460]]},
-  {"name": "a14_riccione", "area": "test", "points": [[44.0870, 12.5040], [43.9990, 12.6560]]},
-  {"name": "riccione_rimini", "area": "test", "points": [[43.9990, 12.6560], [44.0640, 12.5690]]},
-  {"name": "cattolica_santarcangelo", "area": "test", "points": [[43.9640, 12.7100], [44.0630, 12.4460]]},
-  {"name": "casalecchio_sanlazzaro", "area": "bologna", "points": [[44.4760, 11.2750], [44.4720, 11.4050]]},
-  {"name": "aeroporto_centro", "area": "bologna", "points": [[44.5300, 11.2900], [44.4940, 11.3430]]},
-  {"name": "a1_a14", "area": "bologna", "points": [[44.4100, 11.2500], [44.5700, 11.4800]]},
-  {"name": "citta", "area": "bologna", "points": [[44.4990, 11.3270], [44.5050, 11.3600]]}
+  {"name": "rimini_sanmarino", "area": "test", "points": [[44.0597, 12.5653], [43.936, 12.446]]},
+  {"name": "a14_riccione", "area": "test", "points": [[44.087, 12.504], [43.999, 12.656]]},
+  {"name": "riccione_rimini", "area": "test", "points": [[43.999, 12.656], [44.064, 12.569]]},
+  {"name": "cattolica_santarcangelo", "area": "test", "points": [[43.964, 12.71], [44.063, 12.446]]},
+  {"name": "casalecchio_sanlazzaro", "area": "bologna", "points": [[44.476, 11.275], [44.472, 11.405]]},
+  {"name": "aeroporto_centro", "area": "bologna", "points": [[44.53, 11.29], [44.494, 11.343]]},
+  {"name": "a1_a14", "area": "bologna", "points": [[44.41, 11.25], [44.57, 11.48]]},
+  {"name": "citta", "area": "bologna", "points": [[44.499, 11.327], [44.505, 11.36]]},
+  {"name": "como_lugano", "area": "como+ticino", "points": [[45.8081, 9.0852], [46.0037, 8.9511]]},
+  {"name": "cernobbio_mendrisio", "area": "como+ticino", "points": [[45.842, 9.074], [45.87, 8.982]]},
+  {"name": "lugano_como", "area": "como+ticino", "points": [[46.005, 8.948], [45.795, 9.09]]}
  ]
 }
