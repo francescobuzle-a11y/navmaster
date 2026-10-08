@@ -222,7 +222,11 @@ jobs:
           path: pkg
       - name: Manifesto del pacchetto
         id: man
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # the GraphHopper data of the country (made by grafo-gh.yml) stay in the package
+          gh release download "dati-${{ matrix.region }}" -R "${{ github.repository }}" -p manifest.json -D old 2>/dev/null || true
           # a package is published only when map, graph and limits are all there
           have() { ls pkg/$1* >/dev/null 2>&1; }
           if ! have mappa.pmtiles || ! have percorsi.tar || ! have limiti.sqlite; then echo "none=1" >> $GITHUB_OUTPUT; ls -la pkg || true; exit 0; fi
@@ -246,8 +250,16 @@ jobs:
                   total += size
                   plist.append({"name": p, "size": size, "sha256": h.hexdigest()})
               items.append({"file": base, "size": total, "parts": plist})
+          gh_keep, gh_version = [], ""
+          if os.path.exists("old/manifest.json"):
+              old = json.load(open("old/manifest.json"))
+              gh_keep = [f for f in old.get("files", []) if f["file"] in ("gh.tar.gz", "gh-camion.tar.gz", "gh-auto.tar.gz")]
+              gh_version = old.get("graphhopper", "")
+          items += gh_keep
           manifest = {"region": region, "label": names.get(region, "Prova Rimini / San Marino"),
                       "built": time.strftime("%Y-%m-%d"), "valhalla": "3.6.3", "format": 2, "files": items}
+          if gh_keep:
+              manifest["graphhopper"] = gh_version
           json.dump(manifest, open("pkg/manifest.json", "w"), indent=1)
           print(json.dumps(manifest, indent=1))
           PY
@@ -257,10 +269,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="dati-${{ matrix.region }}"
-          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" pkg/* --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)" \
-            --notes "Mappa (PMTiles), grafo Valhalla 3.6.3, limiti, POI, indirizzi e criticità per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
-            --latest=false
+          R="${{ github.repository }}"
+          if gh release view "$TAG" -R "$R" >/dev/null 2>&1; then
+            # the release stays: the GraphHopper files (grafo-gh.yml) are kept, the other old files go
+            for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name'); do
+              case "$a" in gh.tar.gz*|gh-camion.tar.gz*|gh-auto.tar.gz*) continue ;; esac
+              [ -f "pkg/$a" ] || gh release delete-asset "$TAG" "$a" -R "$R" --yes
+            done
+            gh release upload "$TAG" pkg/* -R "$R" --clobber
+            gh release edit "$TAG" -R "$R" --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)"
+          else
+            gh release create "$TAG" pkg/* -R "$R" --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)" \
+              --notes "Mappa (PMTiles), grafo Valhalla 3.6.3, limiti, POI, indirizzi e criticità per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
+              --latest=false
+          fi
 
   catalog:
     needs: publish
