@@ -1,0 +1,16 @@
+{
+ "areas": {
+  "test": "12.30,43.85,12.72,44.12",
+  "bologna": "11.15,44.40,11.50,44.60"
+ },
+ "trips": [
+  {"name": "rimini_sanmarino", "area": "test", "points": [[44.0597, 12.5653], [43.9360, 12.4460]]},
+  {"name": "a14_riccione", "area": "test", "points": [[44.0870, 12.5040], [43.9990, 12.6560]]},
+  {"name": "riccione_rimini", "area": "test", "points": [[43.9990, 12.6560], [44.0640, 12.5690]]},
+  {"name": "cattolica_santarcangelo", "area": "test", "points": [[43.9640, 12.7100], [44.0630, 12.4460]]},
+  {"name": "casalecchio_sanlazzaro", "area": "bologna", "points": [[44.4760, 11.2750], [44.4720, 11.4050]]},
+  {"name": "aeroporto_centro", "area": "bologna", "points": [[44.5300, 11.2900], [44.4940, 11.3430]]},
+  {"name": "a1_a14", "area": "bologna", "points": [[44.4100, 11.2500], [44.5700, 11.4800]]},
+  {"name": "citta", "area": "bologna", "points": [[44.4990, 11.3270], [44.5050, 11.3600]]}
+ ]
+}
