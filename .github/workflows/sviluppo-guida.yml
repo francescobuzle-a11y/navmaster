@@ -43,6 +43,19 @@ jobs:
           done
           rm italy.osm.pbf
           ls -la . ../out
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "21"}
+      - name: Grafo e guida di GraphHopper (GhGuide) sulle aree
+        run: |
+          cd w
+          curl -fsSL -o gh.jar "https://github.com/graphhopper/graphhopper/releases/download/$GH_VERSION/graphhopper-web-$GH_VERSION.jar"
+          mkdir -p cls
+          javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
+            $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/guide/GuideRun.java
+          for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
+            java -Xmx6g -cp gh.jar:cls NmImport $a-roads.osm.pbf g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep NMIMPORT
+            java -Xmx6g -cp gh.jar:cls GuideRun g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/gh 2>&1 | grep -vE "INFO|DEBUG"
+          done
       - name: Risposte di Valhalla sui viaggi di prova
         run: |
           docker pull -q "$VALHALLA_IMAGE"
@@ -60,9 +73,11 @@ jobs:
             docker run -d --name vh-$a -p 8002:8002 -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" valhalla_service /data/valhalla.json 1
             sleep 8
             python3 $GITHUB_WORKSPACE/tools/guide/vhref.py $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/vh
+            # Valhalla's guidance along GraphHopper's own paths: the manoeuvres compared one by one
+            python3 $GITHUB_WORKSPACE/tools/guide/vhref.py --trace ../out/gh $a $GITHUB_WORKSPACE/tools/guide/trips.json ../out/vhtrace
             docker rm -f vh-$a
           done
-          cd ../out && zip -qr vh-ref.zip vh && ls -la
+          cd ../out && zip -qr vh-ref.zip vh gh vhtrace && ls -la
       - name: Nella release «sviluppo»
         env:
           GH_TOKEN: ${{ github.token }}
