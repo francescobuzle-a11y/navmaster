@@ -21,7 +21,6 @@ permissions:
   actions: write
 
 env:
-  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:3.6.3   # must match valhalla-mobile 0.6.3 on the tablet
   PLANETILER: https://github.com/onthegomap/planetiler/releases/download/v0.10.2/planetiler.jar
   GO_PMTILES: https://github.com/protomaps/go-pmtiles/releases/download/v1.28.0/go-pmtiles_1.28.0_Linux_x86_64.tar.gz
   GEOFABRIK: https://download.geofabrik.de/europe
@@ -144,6 +143,18 @@ jobs:
       - name: Criticità fisiche (strade strette, dissestate, ripide, curve e svincoli stretti)
         if: matrix.part == 'dati'
         run: python3 data/build_critical.py roads.geojsonseq out/criticita.sqlite "${{ matrix.region }}"
+      - name: Valichi (strade che passano il confine, per unire i grafi GraphHopper dei Paesi)
+        if: matrix.part == 'dati' && matrix.region != 'test'
+        run: |
+          python3 -m pip install --quiet --break-system-packages shapely 2>/dev/null || python3 -m pip install --quiet shapely
+          mkdir -p poly
+          for c in $(python3 -c "import json; print(' '.join(x['id'] for x in json.load(open('data/countries.json'))))"); do
+            curl -fsSL -o poly/$c.poly "$GEOFABRIK/$c.poly" || rm -f poly/$c.poly
+          done
+          ls poly | wc -l
+          python3 tools/gh/build_crossings.py roads.geojsonseq out/valichi.json "${{ matrix.region }}" poly \
+            || echo "valichi non calcolati per ${{ matrix.region }}"
+          rm -rf poly
       - name: Indirizzi (Paese → città → via → civico)
         if: matrix.part == 'dati'
         run: |
@@ -160,33 +171,6 @@ jobs:
           osmium export admin.osm.pbf -f geojsonseq --geometry-types=polygon --format-option print_record_separator=false -o admin.geojsonseq --overwrite
           python3 data/build_addresses.py places.geojsonseq roads.geojsonseq addr.geojsonseq admin.geojsonseq out/indirizzi.sqlite "${{ matrix.region }}"
           rm -f places.* addr.* admin.* roads.geojsonseq
-      - name: Grafo di calcolo del Paese (Valhalla truck / bus)
-        if: matrix.part == 'dati'
-        run: |
-          mkdir -p v && mv region.osm.pbf v/
-          # the graph only needs what a lorry, a bus or a camper can drive on (a much smaller download)
-          osmium tags-filter v/region.osm.pbf w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway \
-            w/route=ferry r/type=restriction r/route=road,ferry -o v/all.osm.pbf --overwrite
-          osmium tags-filter -i v/all.osm.pbf w/service=driveway,drive-through,emergency_access w/tracktype=grade3,grade4,grade5 \
-            -o v/roads.osm.pbf --overwrite
-          # "maxheight=default" and the like would read as a zero limit and close roads to lorries
-          python3 data/clean_dims.py v/roads.osm.pbf
-          rm v/all.osm.pbf; ls -la v
-          docker pull -q "$VALHALLA_IMAGE"
-          docker run --rm -v "$PWD/v:/data" "$VALHALLA_IMAGE" bash -c "
-            set -e
-            cd /data
-            valhalla_build_config --mjolnir-tile-dir /data/tiles --mjolnir-tile-extract /data/valhalla_tiles.tar \
-              --mjolnir-timezone /data/tz.sqlite --mjolnir-admin /data/admins.sqlite > valhalla.json
-            valhalla_build_timezones > /data/tz.sqlite || echo 'timezones not available, continuing'
-            valhalla_build_admins -c valhalla.json /data/region.osm.pbf
-            valhalla_build_tiles -c valhalla.json /data/roads.osm.pbf
-            valhalla_build_extract -c valhalla.json -v --overwrite
-          "
-          sudo mv v/valhalla_tiles.tar out/percorsi.tar
-          sudo rm -rf v
-          ls -la out
-
       - name: Dividi i file oltre 1,9 GB
         run: |
           cd out
@@ -227,9 +211,9 @@ jobs:
         run: |
           # the GraphHopper data of the country (made by grafo-gh.yml) stay in the package
           gh release download "dati-${{ matrix.region }}" -R "${{ github.repository }}" -p manifest.json -D old 2>/dev/null || true
-          # a package is published only when map, graph and limits are all there
+          # a package is published only when map and limits are there (the routing graph is GraphHopper)
           have() { ls pkg/$1* >/dev/null 2>&1; }
-          if ! have mappa.pmtiles || ! have percorsi.tar || ! have limiti.sqlite; then echo "none=1" >> $GITHUB_OUTPUT; ls -la pkg || true; exit 0; fi
+          if ! have mappa.pmtiles || ! have limiti.sqlite; then echo "none=1" >> $GITHUB_OUTPUT; ls -la pkg || true; exit 0; fi
           python3 - <<'PY'
           import hashlib, json, os, re, time
           region = "${{ matrix.region }}"
@@ -280,7 +264,7 @@ jobs:
             gh release edit "$TAG" -R "$R" --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)"
           else
             gh release create "$TAG" pkg/* -R "$R" --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)" \
-              --notes "Mappa (PMTiles), grafo Valhalla 3.6.3, limiti, POI, indirizzi e criticità per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
+              --notes "Mappa (PMTiles), valichi, limiti, POI, indirizzi e criticità per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
               --latest=false
           fi
 
