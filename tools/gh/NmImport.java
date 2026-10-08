@@ -66,6 +66,9 @@ public class NmImport {
     cfg.putObject("graph.encoded_values", GhEngine.ENCODED_VALUES);
     cfg.putObject("prepare.lm.landmarks", 8);
     cfg.putObject("prepare.lm.threads", 3);
+    // landmarks also for the islands (GraphHopper's default leaves without them every part smaller
+    // than half the graph: Jersey in Guernsey-Jersey, where no route could be found)
+    cfg.putObject("prepare.lm.min_network_size", 2000);
     // the big countries on the runner: on disk (memory mapped), not all in RAM
     cfg.putObject("graph.dataaccess.default_type", System.getProperty("nm.dataaccess", "RAM_STORE"));
     cfg.setProfiles(GhEngine.profiles());
