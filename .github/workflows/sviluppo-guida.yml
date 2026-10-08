@@ -79,8 +79,8 @@ jobs:
           javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
             $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/guide/GuideRun.java
           for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
-            java -Xmx6g -cp gh.jar:cls NmImport $a-roads.osm.pbf g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep NMIMPORT
-            java -Xmx6g -cp gh.jar:cls GuideRun g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/gh 2>&1 | grep -vE "INFO|DEBUG"
+            java -Xmx6g -cp gh.jar:cls NmImport $a-roads.osm.pbf g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep NMIMPORT || true
+            java -Xmx6g -cp gh.jar:cls GuideRun g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/gh 2>&1 | grep -vE "INFO|DEBUG" || true
           done
       - name: Risposte di Valhalla sui viaggi di prova
         run: |
