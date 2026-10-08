@@ -49,6 +49,13 @@ public class GhCheck {
               + (r.ok() ? String.format("%.1f km, %d min, %d paths%s, %d ms", r.distanceM / 1000, r.timeMs / 60000, rs.size(), alt, r.computeMs)
                   : "ERROR " + r.error) + (r.note != null ? " (" + r.note + ")" : ""));
           if (r.ok()) found++;
+          if (r.ok() && run == 0 && v % 3 == 0 && e.canGuide()) {
+            // the guidance from the graph (GhGuide), as on the tablet
+            long tg = System.currentTimeMillis();
+            app.navmaster.truck.routing.gh.GhGuide.Output o = e.guide(r, s, r.waypointIndex, pts);
+            System.out.println("GHCHECK " + trip + " " + kind + " guidance: " + o.steps + " manoeuvres, " + o.osrm.length() / 1024
+                + " KB, " + (System.currentTimeMillis() - tg) + " ms");
+          }
           if (!r.ok() && run == 0) {
             // why: the same vehicle without its measures (only the roads closed to it); with a route
             // the graph is sound: a signed limit around one of the points closes the way

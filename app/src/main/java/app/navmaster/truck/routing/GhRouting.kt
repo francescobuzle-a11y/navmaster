@@ -6,6 +6,8 @@ import android.util.Log
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.data.Tar
 import app.navmaster.truck.routing.gh.GhEngine
+import app.navmaster.truck.routing.gh.GhGuide
+import uniffi.ferrostar.Route
 import app.navmaster.truck.routing.gh.TruckSpec
 import java.io.File
 import java.util.zip.GZIPInputStream
@@ -84,6 +86,34 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       return null
     }
     return e.routes(points, headings, spec, maxPaths)
+  }
+
+  /**
+   * The guidance along [r] worked out from the graph that computed it (GhGuide): an OSRM answer
+   * for Ferrostar and the roads of the route for the analysis. Null when the graph was built
+   * without the guidance data (older packages: Valhalla guides then).
+   */
+  @Synchronized
+  fun guide(r: GhEngine.Result, spec: TruckSpec, breaks: IntArray, requested: List<DoubleArray>): GhGuide.Output? {
+    val e = engine ?: return null
+    if (!e.canGuide()) return null
+    return e.guide(r, spec, breaks, requested)
+  }
+
+  // the roads of the routes guided by GraphHopper (trace_attributes form), for RouteAnalysis
+  private val attributes = object : LinkedHashMap<String, String>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 24
+  }
+
+  /** Keeps the roads of [route] (computed and guided by GraphHopper) for its analysis. */
+  fun remember(route: Route, json: String) = synchronized(attributes) { attributes[keyOf(route)] = json }
+
+  /** The roads of [route] when GraphHopper guided it, else null. */
+  fun attributesFor(route: Route): String? = synchronized(attributes) { attributes[keyOf(route)] }
+
+  private fun keyOf(route: Route): String {
+    val g = route.geometry
+    return "${g.size}:${g.firstOrNull()}:${g.lastOrNull()}:${route.distance.toLong()}"
   }
 
   @Synchronized

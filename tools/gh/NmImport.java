@@ -15,6 +15,7 @@ import com.graphhopper.routing.ev.SimpleBooleanEncodedValue;
 import com.graphhopper.routing.util.parsers.AbstractAccessParser;
 import com.graphhopper.routing.util.parsers.TagParser;
 import com.graphhopper.storage.IntsRef;
+import com.graphhopper.search.KVStorage;
 import com.graphhopper.reader.osm.OSMReader;
 import com.graphhopper.reader.osm.WaySegmentParser;
 import com.graphhopper.routing.OSMReaderConfig;
@@ -65,8 +66,9 @@ public class NmImport {
     cfg.putObject("import.osm.ignored_highways", GhEngine.IGNORED_HIGHWAYS);
     cfg.putObject("graph.encoded_values", GhEngine.ENCODED_VALUES);
     cfg.putObject("prepare.lm.landmarks", GhEngine.LANDMARKS);
-    // no street names: the guidance (and the names) come from Valhalla
-    cfg.putObject("datareader.instructions", false);
+    // street names, refs, destinations and junction names: the guidance is worked out on the
+    // tablet from the graph itself (GhGuide)
+    cfg.putObject("datareader.instructions", true);
     cfg.putObject("prepare.lm.threads", 3);
     // landmarks also for the islands (GraphHopper's default leaves without them every part smaller
     // than half the graph: Jersey in Guernsey-Jersey, where no route could be found)
@@ -115,6 +117,7 @@ public class NmImport {
     @Override
     protected void preprocessWay(ReaderWay way, WaySegmentParser.CoordinateSupplier coords, WaySegmentParser.NodeTagSupplier nodeTags) {
       super.preprocessWay(way, coords, nodeTags);
+      guideValues(way, nodeTags);
       int n = way.getNodes().size();
       if (n < 2) return;
       long first = way.getNodes().get(0), last = way.getNodes().get(n - 1);
@@ -123,7 +126,100 @@ public class NmImport {
       if (a == null || b == null || Double.isNaN(a.lat) || Double.isNaN(b.lat)) return;
       way.setTag(Ors.ESTIMATED_DISTANCE, DistanceCalcEarth.DIST_EARTH.calcDist(a.lat, a.lon, b.lat, b.lon));
     }
+
+    /**
+     * What the guidance on the tablet needs besides GraphHopper's own names, refs, destinations
+     * and junction names (GhGuide): the lane arrows (turn:lanes) and lanes per direction, the
+     * number of a motorway exit (ref of the motorway_junction node where a link starts).
+     */
+    private static void guideValues(ReaderWay way, WaySegmentParser.NodeTagSupplier nodeTags) {
+      Map<String, KVStorage.KValue> map = new java.util.LinkedHashMap<>(way.getTag("key_values", Collections.emptyMap()));
+      int before = map.size();
+      boolean oneway = way.hasTag("oneway", "yes", "1", "true") || way.hasTag("junction", "roundabout", "circular")
+          || (way.hasTag("highway", "motorway", "motorway_link", "trunk_link") && !way.hasTag("oneway", "no"));
+      boolean reverse = way.hasTag("oneway", "-1", "reverse");
+      String fwd = clean(way.getTag("turn:lanes:forward")), bwd = clean(way.getTag("turn:lanes:backward"));
+      String both = clean(way.getTag("turn:lanes"));
+      if (both != null && fwd == null && bwd == null) {
+        if (reverse) bwd = both;
+        else if (oneway) fwd = both;
+      }
+      if (fwd != null || bwd != null) map.put(GUIDE_TURN_LANES, kv(fwd, bwd));
+      String lf = clean(way.getTag("lanes:forward")), lb = clean(way.getTag("lanes:backward"));
+      if (lf != null || lb != null) map.put(GUIDE_LANES_DIR, kv(lf, lb));
+      // what kind of service road (driveways and parking aisles are not counted as roundabout exits)
+      if (way.hasTag("highway", "service")) {
+        String sv = clean(way.getTag("service"));
+        if (sv != null) map.put(GhEngine.KV_SERVICE, new KVStorage.KValue(sv));
+      }
+      if (way.getNodes().size() > 1 && way.hasTag("highway", "motorway", "motorway_link", "trunk", "trunk_link")) {
+        Map<String, Object> first = nodeTags.getTags(way.getNodes().get(0));
+        if (first != null && "motorway_junction".equals(first.get("highway"))) {
+          Object ref = first.get("ref");
+          if (ref instanceof String && !((String) ref).trim().isEmpty()) map.put(GUIDE_JUNCTION_REF, new KVStorage.KValue(KVStorage.cutString(((String) ref).trim())));
+        }
+      }
+      if (map.size() != before) way.setTag("key_values", map);
+    }
+
+    private static KVStorage.KValue kv(String fwd, String bwd) {
+      return fwd != null && fwd.equals(bwd) ? new KVStorage.KValue(fwd) : new KVStorage.KValue(fwd, bwd);
+    }
+
+    private static String clean(String s) {
+      if (s == null) return null;
+      s = s.trim();
+      return s.isEmpty() ? null : KVStorage.cutString(s);
+    }
+
+    /**
+     * Toll booths, toll gantries and border controls on the edge, as "type@fraction" (fraction of
+     * the edge's length where the node is): the tablet shows and announces them.
+     */
+    @Override
+    protected void addEdge(int fromIndex, int toIndex, com.graphhopper.util.PointList pointList, ReaderWay way, List<Map<String, Object>> nodeTags) {
+      StringBuilder found = null;
+      double total = 0;
+      double[] at = new double[pointList.size()];
+      for (int i = 1; i < pointList.size(); i++) {
+        total += DistanceCalcEarth.DIST_EARTH.calcDist(pointList.getLat(i - 1), pointList.getLon(i - 1), pointList.getLat(i), pointList.getLon(i));
+        at[i] = total;
+      }
+      for (int i = 0; i < nodeTags.size(); i++) {
+        String type = nodeType(nodeTags.get(i));
+        if (type == null) continue;
+        if (found == null) found = new StringBuilder();
+        else found.append(';');
+        found.append(type).append('@').append(String.format(java.util.Locale.ROOT, "%.3f", total > 0 ? at[i] / total : 0));
+      }
+      if (found == null) {
+        super.addEdge(fromIndex, toIndex, pointList, way, nodeTags);
+        return;
+      }
+      Map<String, KVStorage.KValue> old = way.getTag("key_values", Collections.emptyMap());
+      Map<String, KVStorage.KValue> map = new java.util.LinkedHashMap<>(old);
+      map.put(GUIDE_NODES, new KVStorage.KValue(found.toString()));
+      way.setTag("key_values", map);
+      try {
+        super.addEdge(fromIndex, toIndex, pointList, way, nodeTags);
+      } finally {
+        way.setTag("key_values", old);
+      }
+    }
+
+    private static String nodeType(Map<String, Object> tags) {
+      if (tags == null || tags.isEmpty()) return null;
+      Object b = tags.get("barrier"), h = tags.get("highway");
+      if ("toll_booth".equals(b)) return "toll_booth";
+      if ("toll_gantry".equals(h)) return "toll_gantry";
+      if ("border_control".equals(b)) return "border_control";
+      return null;
+    }
   }
+
+  /** Keys of the guidance values (read on the tablet by GhGuide). */
+  static final String GUIDE_TURN_LANES = GhEngine.KV_TURN_LANES, GUIDE_LANES_DIR = GhEngine.KV_LANES_DIR,
+      GUIDE_JUNCTION_REF = GhEngine.KV_JUNCTION_REF, GUIDE_NODES = GhEngine.KV_NODES;
 
   /** GraphHopper's encoded values, plus openrouteservice's. */
   static final class OrsRegistry implements ImportRegistry {

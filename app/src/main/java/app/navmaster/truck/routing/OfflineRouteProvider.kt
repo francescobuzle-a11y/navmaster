@@ -153,7 +153,8 @@ class OfflineRouteProvider(
     for ((n, r) in ok.withIndex()) {
       Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper route %d/%d: %.1f km, %d min, %d points in %d ms for %s",
           n + 1, ok.size, r.distanceM / 1000, r.timeMs / 60000, r.lat.size, r.computeMs, spec))
-      val guided = guide(r, kinds, base, vehicle, lat, lon)
+      // the guidance from GraphHopper's own graph; Valhalla only for a graph without guidance data
+      val guided = ghGuide(r, kinds, points, spec) ?: guide(r, kinds, base, vehicle, lat, lon)
       if (guided != null) out += guided
       else if (n == 0) {
         // the best route could not be guided: Valhalla's routes instead
@@ -162,6 +163,32 @@ class OfflineRouteProvider(
       }
     }
     return out
+  }
+
+  /**
+   * GraphHopper's guidance along its route [r] (GhGuide: manoeuvres, voice, lanes, signs, limits
+   * from the graph itself), read by Ferrostar as Valhalla's was; the roads of the route are kept
+   * for its analysis. Null when the graph has no guidance data.
+   */
+  private fun ghGuide(r: GhEngine.Result, kinds: List<String>, points: List<DoubleArray>, spec: app.navmaster.truck.routing.gh.TruckSpec): Route? {
+    val started = System.currentTimeMillis()
+    // the stops (start and destination included) and the points asked for them
+    val stops = java.util.TreeMap<Int, DoubleArray>()
+    stops[0] = points.first()
+    stops[r.lat.size - 1] = points.last()
+    for ((k, idx) in r.waypointIndex.withIndex()) {
+      if (k == 0 || k == r.waypointIndex.size - 1) continue
+      if (kinds.getOrNull(k) != "via") points.getOrNull(k)?.let { stops[idx] = it }
+    }
+    val out = runCatching { gh.guide(r, spec, stops.keys.toIntArray(), stops.values.toList()) }
+        .onFailure { Log.w(TAG, "GraphHopper guidance failed: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }
+        .getOrNull() ?: return null
+    val route = runCatching { parser.parseResponse(out.osrm.encodeToByteArray()).firstOrNull() }
+        .onFailure { Log.w(TAG, "GraphHopper guidance not readable: $it") }.getOrNull() ?: return null
+    gh.remember(route, out.attributes)
+    Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper route guided by GraphHopper in %d ms: %.1f km, %d steps",
+        System.currentTimeMillis() - started, route.distance / 1000, route.steps.size))
+    return route
   }
 
   /** openrouteservice's routes (online), each with Valhalla's guidance along it; null when none. */

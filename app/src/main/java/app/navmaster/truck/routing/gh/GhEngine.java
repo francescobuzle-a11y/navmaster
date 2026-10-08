@@ -26,8 +26,8 @@ import java.util.Locale;
  * model, see .github/workflows/grafo-gh.yml) from a folder, memory-mapped so it does not have to
  * fit in RAM, and computes the route of the vehicle with its measures ({@link TruckSpec}).
  *
- * It gives the path (points on the roads); the guidance along it (manoeuvres, voice, lanes) is
- * worked out by Valhalla matching that path on its own map (OfflineRouteProvider).
+ * It gives the path (points on the roads) and, from the graph itself, the guidance along it
+ * (manoeuvres, voice, lanes, signs, speed limits: GhGuide).
  *
  * Plain Java, no Android: the same class runs in the routing test on the computer.
  */
@@ -51,7 +51,14 @@ public final class GhEngine implements Closeable {
   /** openrouteservice's values stored in the graph (NmImport), and GraphHopper's ones used by the trip's choices. */
   public static final String ENCODED_VALUES = "ors_hgv_access, ors_hgv_speed, ors_hgv_recommended, ors_car_access, ors_car_speed, "
       + "road_class, road_class_link, road_environment, toll, max_width, max_height, max_weight, max_length, max_axle_load, "
-      + "hazmat, hazmat_tunnel, hazmat_water";
+      + "hazmat, hazmat_tunnel, hazmat_water, "
+      // for the guidance (GhGuide): the OSM way (limits and difficulties of the tablet's data are
+      // matched by way), lanes, surface, country, speed limit, roundabouts
+      + "osm_way_id, lanes, surface, country, max_speed, roundabout";
+
+  /** Values of the graph's key-value store added for the guidance (tools/gh/NmImport.java). */
+  public static final String KV_TURN_LANES = "nm_turn_lanes", KV_LANES_DIR = "nm_lanes_dir",
+      KV_JUNCTION_REF = "nm_junction_ref", KV_NODES = "nm_nodes", KV_SERVICE = "nm_service";
 
   /** Every profile name of the graph, in order: lorry fast/recommended/short, car fast/short. */
   public static List<String> profileNames() {
@@ -189,6 +196,8 @@ public final class GhEngine implements Closeable {
     public String error;
     /** Why GraphHopper gave no alternatives (when asked and it could not), for the log. */
     public String note;
+    /** GraphHopper's own answer (with the roads of the path), for the guidance (GhGuide). */
+    public transient ResponsePath path;
 
     public boolean ok() {
       return error == null && lat.length >= 2;
@@ -230,7 +239,6 @@ public final class GhEngine implements Closeable {
       }
       if (out.isEmpty()) {
         GHRequest req = request(points, headings, spec, 1);
-        if (alt) req.setPathDetails(Collections.singletonList("edge_id"));
         GHResponse rsp = hopper.route(req);
         if (rsp.hasErrors()) {
           Result r = new Result();
@@ -291,7 +299,6 @@ public final class GhEngine implements Closeable {
       List<Double> hs = null;
       if (headings != null && !headings.isEmpty()) hs = Arrays.asList(headings.get(0), Double.NaN, Double.NaN);
       GHRequest req = request(via, hs, spec, 1);
-      req.setPathDetails(Collections.singletonList("edge_id"));
       // no turning back at the point: it is only there to pull the route to that side
       req.getHints().putObject("pass_through", true);
       long t = System.currentTimeMillis();
@@ -348,6 +355,8 @@ public final class GhEngine implements Closeable {
       }
     }
     req.getHints().putObject(NmWeightingFactory.SPEC, spec);
+    // the roads of the path (alternatives, guidance) and the time on each one
+    req.setPathDetails(Arrays.asList("edge_id", "edge_key", "time"));
     req.getHints().putObject("instructions", false);
     req.getHints().putObject("calc_points", true);
     // every point of the roads, not simplified: Valhalla follows the path closely
@@ -393,7 +402,22 @@ public final class GhEngine implements Closeable {
     }
     r.distanceM = best.getDistance();
     r.timeMs = best.getTime();
+    r.path = best;
     return r;
+  }
+
+  /** The graph has the values the guidance needs (graphs built since 10/2026). */
+  public boolean canGuide() {
+    return GhGuide.supported(hopper);
+  }
+
+  /**
+   * The guidance along [r] (GhGuide): an OSRM answer for Ferrostar and the roads of the route for
+   * the analysis. [breaks]: indices in r's points of the stops (start and end included);
+   * [requested]: the points asked for the stops (same order), for the side of arrival.
+   */
+  public GhGuide.Output guide(Result r, TruckSpec spec, int[] breaks, List<double[]> requested) {
+    return new GhGuide(hopper, spec.hgv).guide(r.path, breaks, requested);
   }
 
   @Override

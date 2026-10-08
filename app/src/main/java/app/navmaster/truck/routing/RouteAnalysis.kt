@@ -334,10 +334,25 @@ class RouteAnalysis(
           "${t?.get("truck_speed")}/${t?.get("speed_limit")}; " + parts.joinToString(" ")
     }
 
-    /** trace_attributes on the route shape; an analysis without edges when the graph refuses it. */
+    /**
+     * The roads of the route: GraphHopper's own when it guided the route (GhGuide, the same form as
+     * Valhalla's trace_attributes), else trace_attributes on the route shape; an analysis without
+     * edges when the graph refuses it.
+     */
     fun analyse(engine: RoutingEngine, route: Route, vehicle: VehicleProfile, loadT: Double): RouteAnalysis {
       if (route.geometry.size < 2) return RouteAnalysis(route, emptyList())
       val started = System.currentTimeMillis()
+      app.navmaster.truck.AppGraph.gh.attributesFor(route)?.let { raw ->
+        val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "GraphHopper roads: $it") }.getOrNull()
+        if (p != null && p.edges.isNotEmpty()) {
+          val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
+          a.junctionShapes = p.shapes
+          Log.i(TAG, "GraphHopper roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
+              "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
+              "junctions ${p.junctions.size}, shapes ${p.shapes.size}")
+          return a
+        }
+      }
       val options = vehicle.valhallaOptions(loadT)
       val first = route.geometry.first()
       for (match in listOf("edge_walk", "map_snap")) {
