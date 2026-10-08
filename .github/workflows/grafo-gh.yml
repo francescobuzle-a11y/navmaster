@@ -114,17 +114,23 @@ jobs:
           echo "TRIPS=$TRIPS"
           java -Xmx6g -cp nojan.jar:cls GhCheck gh $M "$TRIPS" 2>&1 | grep -v DEBUG | grep GHCHECK
           if [ "$TRIPS" != "-" ]; then java -Xmx6g -cp gh.jar:cls GhSame gh $M "$TRIPS" 2>&1 | grep GHSAME; fi
-      - name: Pacchetto gh.tar.gz
+      - name: Pacchetti (grafo gh.tar.gz, landmark dei camion gh-camion.tar.gz e degli altri mezzi gh-auto.tar.gz)
         working-directory: /mnt/w
         run: |
           rm -f gh/*.lock
-          tar -C gh -cf - . | gzip -6 > gh.tar.gz
-          ls -la gh.tar.gz
-          SIZE=$(stat -c%s gh.tar.gz)
-          if [ $SIZE -gt 1900000000 ]; then
-            split -b 1900000000 -d -a 1 gh.tar.gz gh.tar.gz.part && rm gh.tar.gz
-          fi
-          mkdir -p pub && mv gh.tar.gz* pub/ && ls -la pub
+          mkdir -p pub
+          # the tablet downloads the graph and only the landmarks of the vehicles the driver chose
+          pack() {
+            local n=$1; shift
+            tar -C gh -cf - "$@" | gzip -6 > pub/$n
+            if [ $(stat -c%s pub/$n) -gt 1900000000 ]; then
+              split -b 1900000000 -d -a 1 pub/$n pub/$n.part && rm pub/$n
+            fi
+          }
+          pack gh.tar.gz $(ls -A gh | grep -v '^landmarks')
+          pack gh-camion.tar.gz $(ls gh | grep -E '^landmarks.*_nm_truck')
+          pack gh-auto.tar.gz $(ls gh | grep -E '^landmarks.*_nm_car')
+          ls -la pub
       - name: Nel pacchetto del Paese (release dati-${{ matrix.region }})
         working-directory: /mnt/w
         env:
@@ -136,21 +142,25 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os
           m = json.load(open("old/manifest.json"))
-          parts = []
-          for p in sorted(os.listdir("pub")):
-              h = hashlib.sha256()
-              with open(os.path.join("pub", p), "rb") as fh:
-                  for chunk in iter(lambda: fh.read(1 << 20), b""):
-                      h.update(chunk)
-              parts.append({"name": p, "size": os.path.getsize(os.path.join("pub", p)), "sha256": h.hexdigest()})
-          m["files"] = [f for f in m["files"] if f["file"] != "gh.tar.gz"]
-          m["files"].append({"file": "gh.tar.gz", "size": sum(p["size"] for p in parts), "parts": parts})
+          names = ["gh.tar.gz", "gh-camion.tar.gz", "gh-auto.tar.gz"]
+          m["files"] = [f for f in m["files"] if f["file"] not in names]
+          for n in names:
+              parts = []
+              for p in sorted(os.listdir("pub")):
+                  if p != n and not p.startswith(n + ".part"):
+                      continue
+                  h = hashlib.sha256()
+                  with open(os.path.join("pub", p), "rb") as fh:
+                      for chunk in iter(lambda: fh.read(1 << 20), b""):
+                          h.update(chunk)
+                  parts.append({"name": p, "size": os.path.getsize(os.path.join("pub", p)), "sha256": h.hexdigest()})
+              m["files"].append({"file": n, "size": sum(p["size"] for p in parts), "parts": parts})
           m["graphhopper"] = os.environ["GH_VERSION"]
           json.dump(m, open("pub/manifest.json", "w"), indent=1)
           print(json.dumps(m, indent=1))
           PY
           # old pieces of a previous graph that are not in the new one
-          for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name' | grep -E '^gh\.tar\.gz(\.part[0-9]+)?$' || true); do
+          for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name' | grep -E '^gh(-camion|-auto)?\.tar\.gz(\.part[0-9]+)?$' || true); do
             [ -f "pub/$a" ] || gh release delete-asset "$TAG" "$a" -R "$R" --yes
           done
           gh release upload "$TAG" pub/* -R "$R" --clobber
