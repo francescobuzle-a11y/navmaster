@@ -12,7 +12,8 @@ import java.util.zip.GZIPInputStream
 
 /**
  * GraphHopper on the tablet: the graph of the country where the route starts (gh.tar.gz in the
- * country's package, unpacked once into its "gh" folder), opened memory-mapped and kept open.
+ * country's package, unpacked once into its "gh" folder, plus the landmarks of the vehicles the
+ * driver chose: gh-camion.tar.gz, gh-auto.tar.gz), opened memory-mapped and kept open.
  * Null when the country has no GraphHopper graph yet: the route is then Valhalla's alone.
  */
 class GhRouting(private val context: Context, private val regions: RegionManager) {
@@ -32,7 +33,8 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       return null
     }
     ready(region.dir)
-    when (state(region.dir)) {
+    // the graph itself (the landmarks of the vehicle are checked for each route)
+    when (state(region.dir, emptyList())) {
       GhState.MISSING -> {
         problem = "${region.label}: manca il grafo GraphHopper. In «Mappe d'Europa» tocca «Aggiorna» (scarica solo il grafo)"
         Log.w(TAG, "GraphHopper: no graph in ${region.id}")
@@ -43,7 +45,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
         Log.w(TAG, "GraphHopper: old graph in ${region.id} (made before the openrouteservice rules)")
         return null
       }
-      GhState.READY -> {}
+      GhState.READY, GhState.PARTIAL -> {}
     }
     val dir = File(region.dir, "gh")
     val key = dir.absolutePath + ":" + regions.version.value
@@ -74,6 +76,13 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     val first = points.firstOrNull() ?: return null
     val e = runCatching { engineAt(first[0], first[1]) }.onFailure { Log.w(TAG, "GraphHopper not available: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }.getOrNull()
         ?: return null
+    if (!e.canRoute(spec)) {
+      // the data of this kind of vehicle were not downloaded (only lorries, or only the others)
+      problem = "manca il calcolo GraphHopper per ${if (spec.hgv) "i camion" else "camper, bus e auto"}: in «Mappe d'Europa» " +
+          "scegli per quali mezzi e tocca «Aggiorna»"
+      Log.w(TAG, "GraphHopper: no landmarks for ${GhEngine.profileFor(spec)}")
+      return null
+    }
     return e.routes(points, headings, spec, maxPaths)
   }
 
@@ -95,27 +104,60 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return d
   }
 
-  /** The GraphHopper graph of a country: not there, made for an older version of the app, ready. */
-  enum class GhState { MISSING, OLD, READY }
+  /**
+   * The GraphHopper graph of a country: not there, made for an older version of the app, without
+   * the data of a kind of vehicle the driver wants, ready.
+   */
+  enum class GhState { MISSING, OLD, PARTIAL, READY }
 
   companion object {
     private const val TAG = "NavMasterRoute"
+    /** The graph without the landmarks. */
     const val PACKAGE = "gh.tar.gz"
+    /** The landmarks of the lorry profiles and of the other vehicles' ones. */
+    const val PACKAGE_TRUCK = "gh-camion.tar.gz"
+    const val PACKAGE_CAR = "gh-auto.tar.gz"
+    val PACKAGES = listOf(PACKAGE, PACKAGE_TRUCK, PACKAGE_CAR)
 
     /** Which package the graph was unpacked from (the SHA-256 of its parts), to know when it changed. */
     const val SOURCE_FILE = ".package"
 
+    fun sourceFile(pkg: String) = if (pkg == PACKAGE) SOURCE_FILE else ".package-$pkg"
+
+    /** The landmark packages for the vehicles chosen in the settings ([hgvInUse]: the vehicle in use is a lorry). */
+    fun wanted(choice: app.navmaster.truck.settings.OfflineVehicles, hgvInUse: Boolean): List<String> = when (choice) {
+      app.navmaster.truck.settings.OfflineVehicles.AUTO -> listOf(if (hgvInUse) PACKAGE_TRUCK else PACKAGE_CAR)
+      app.navmaster.truck.settings.OfflineVehicles.TRUCK -> listOf(PACKAGE_TRUCK)
+      app.navmaster.truck.settings.OfflineVehicles.CAR -> listOf(PACKAGE_CAR)
+      app.navmaster.truck.settings.OfflineVehicles.BOTH -> listOf(PACKAGE_TRUCK, PACKAGE_CAR)
+    }
+
+    /** The landmark packages wanted now, from the settings and the vehicle in use. */
+    fun wantedNow(): List<String> = wanted(
+        app.navmaster.truck.AppGraph.settings.settings.value.offlineVehicles,
+        app.navmaster.truck.AppGraph.profiles.garage.value.active.isHgv,
+    )
+
+    /** The landmarks of a package are in the graph folder. */
+    fun hasPackage(regionDir: File, pkg: String): Boolean {
+      val dir = File(regionDir, "gh")
+      return when (pkg) {
+        PACKAGE_TRUCK -> GhEngine.profilesOf(true).all { GhEngine.hasLandmarks(dir, it) }
+        PACKAGE_CAR -> GhEngine.profilesOf(false).all { GhEngine.hasLandmarks(dir, it) }
+        else -> File(dir, "properties").exists()
+      }
+    }
+
     /**
-     * The state of the graph in [regionDir]: the graphs made for this app have the landmarks of
-     * both profiles (camion: nm_truck, camper/auto: nm_car); the first graph had one profile only.
+     * The state of the graph in [regionDir] for the landmark packages [wanted]: the graph made
+     * with openrouteservice's rules (graphs from 10/2026, tools/gh/NmImport.java) and the
+     * landmarks of those vehicles.
      */
-    fun state(regionDir: File): GhState {
+    fun state(regionDir: File, wanted: List<String> = wantedNow()): GhState {
       val dir = File(regionDir, "gh")
       if (!File(dir, "properties").exists()) return GhState.MISSING
-      // every profile of this app (fast / more motorway / shorter, lorry and car) with its landmarks,
-      // and openrouteservice's values of the roads (graphs from 10/2026, tools/gh/NmImport.java)
-      val ok = GhEngine.profileNames().all { File(dir, "landmarks_$it").exists() } && orsValues(File(dir, "properties"))
-      return if (ok) GhState.READY else GhState.OLD
+      if (!orsValues(File(dir, "properties"))) return GhState.OLD
+      return if (wanted.all { hasPackage(regionDir, it) }) GhState.READY else GhState.PARTIAL
     }
 
     /** The graph's description lists openrouteservice's values (ors_hgv_speed…). */
@@ -125,12 +167,14 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       false
     }
 
-    /** The package the graph came from (see SOURCE_FILE), or null. */
-    fun source(regionDir: File): String? = File(File(regionDir, "gh"), SOURCE_FILE).takeIf { it.exists() }?.readText()?.trim()
+    /** The package the graph (or its landmarks [pkg]) came from (see SOURCE_FILE), or null. */
+    fun source(regionDir: File, pkg: String = PACKAGE): String? =
+        File(File(regionDir, "gh"), sourceFile(pkg)).takeIf { it.exists() }?.readText()?.trim()
 
     /**
-     * The "gh" folder of a country, unpacked from [PACKAGE] when a new one arrived (the package is
-     * then removed, it is not needed any more). Null when the country has no graph.
+     * The "gh" folder of a country, unpacked from [PACKAGE] when a new one arrived, then the
+     * landmark packages that arrived unpacked into it (the packages are then removed, they are not
+     * needed any more). Null when the country has no graph.
      */
     @Synchronized
     fun ready(regionDir: File): File? {
@@ -151,6 +195,19 @@ class GhRouting(private val context: Context, private val regions: RegionManager
         } catch (e: Exception) {
           Log.e(TAG, "GraphHopper graph of ${regionDir.name} not unpacked", e)
           tmp.deleteRecursively()
+        }
+      }
+      if (File(dir, "properties").exists()) {
+        for (pkg in listOf(PACKAGE_TRUCK, PACKAGE_CAR)) {
+          val lm = File(regionDir, pkg)
+          if (!lm.exists() || lm.length() == 0L) continue
+          try {
+            GZIPInputStream(lm.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, dir) }
+            lm.delete()
+            Log.i(TAG, "GraphHopper landmarks $pkg unpacked in ${regionDir.name}")
+          } catch (e: Exception) {
+            Log.e(TAG, "GraphHopper landmarks $pkg of ${regionDir.name} not unpacked", e)
+          }
         }
       }
       return dir.takeIf { File(it, "properties").exists() }

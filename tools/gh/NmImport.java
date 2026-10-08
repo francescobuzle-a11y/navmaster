@@ -64,7 +64,9 @@ public class NmImport {
     cfg.putObject("custom_models.directory", new File(a[2]).getAbsolutePath());
     cfg.putObject("import.osm.ignored_highways", GhEngine.IGNORED_HIGHWAYS);
     cfg.putObject("graph.encoded_values", GhEngine.ENCODED_VALUES);
-    cfg.putObject("prepare.lm.landmarks", 8);
+    cfg.putObject("prepare.lm.landmarks", GhEngine.LANDMARKS);
+    // no street names: the guidance (and the names) come from Valhalla
+    cfg.putObject("datareader.instructions", false);
     cfg.putObject("prepare.lm.threads", 3);
     // landmarks also for the islands (GraphHopper's default leaves without them every part smaller
     // than half the graph: Jersey in Guernsey-Jersey, where no route could be found)

@@ -102,6 +102,19 @@ enum class VoiceLevel(val label: String, val detail: String) {
   FULL("Completa", "Come Normale: le manovre arrivano sempre una alla volta, al momento giusto"),
 }
 
+/**
+ * For which vehicles the offline route calculation (GraphHopper) is downloaded: each kind of
+ * vehicle has its own data (about 0.4 GB for Italy), the driver keeps only what he drives.
+ */
+@Serializable
+enum class OfflineVehicles(val label: String) {
+  /** The kind of the vehicle in use. */
+  AUTO("Il mezzo in uso"),
+  TRUCK("Camion"),
+  CAR("Camper, bus, auto"),
+  BOTH("Tutti"),
+}
+
 /** How the map looks while driving. */
 @Serializable
 enum class DriveView(val label: String) {
@@ -142,6 +155,8 @@ data class Settings(
     val poiRailSide: PoiSide = PoiSide.AUTO,
     val driveTimeReminder: Boolean = true,
     val useEuropeGraph: Boolean = true,
+    /** The vehicles the offline route calculation is downloaded for. */
+    val offlineVehicles: OfflineVehicles = OfflineVehicles.AUTO,
     /** Maps only on Wi-Fi (off: also with mobile data, the driver often has no Wi-Fi). */
     val downloadWifiOnly: Boolean = false,
     /** The data in the bottom bar while driving, left to right (see ui.TripField); each one can be changed by touching it. */

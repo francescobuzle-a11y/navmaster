@@ -75,6 +75,7 @@ private val AREAS = linkedMapOf(
     "Nord Europa e Baltici" to setOf("DK", "NO", "SE", "FI", "IS", "FO", "EE", "LV", "LT"),
 )
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
   val catalog by AppGraph.catalog.catalog.collectAsState()
@@ -90,6 +91,16 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
     ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v ->
       AppGraph.settings.update { it.copy(downloadWifiOnly = v) }
     }
+    // the offline route calculation of each kind of vehicle has its own data: only what is driven
+    Text("Calcolo percorsi offline per", color = Nm.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      for (k in app.navmaster.truck.settings.OfflineVehicles.entries) {
+        Pill(k.label, settings.offlineVehicles == k) { AppGraph.settings.update { it.copy(offlineVehicles = k) } }
+      }
+    }
+    Caption("Ogni tipo di mezzo ha i suoi dati (circa 0,3 GB per l'Italia): scarica solo quelli dei mezzi che guidi. " +
+        "Se cambi scelta, tocca «Aggiorna» sul Paese.")
     if (here != null) {
       SectionHeader("Ti trovi qui")
       CountryRow(here, installed.any { it.id == here.id }, states[here.id], settings.useEuropeGraph, settings.downloadWifiOnly, highlight = true)
@@ -164,12 +175,19 @@ private fun InstalledRow(label: String, size: Long, built: String, onDelete: () 
 
 @Composable
 fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEurope: Boolean, wifiOnly: Boolean, highlight: Boolean = false) {
-  val size = c.downloadSize(useEurope && c.europeTiles != null)
+  // without the landmarks of the vehicles not chosen
+  val ghWanted = GhRouting.wantedNow()
+  val ghSkipped = listOf(GhRouting.PACKAGE_TRUCK, GhRouting.PACKAGE_CAR).filter { it !in ghWanted }.sumOf { c.files[it] ?: 0L }
+  val size = c.downloadSize(useEurope && c.europeTiles != null) - ghSkipped
   // an update for a country already on the tablet: its GraphHopper graph (missing or made for an
   // older version), or newer data; only what changed is downloaded
   val inst = if (installed) AppGraph.regions.get(c.id) else null
-  val ghSize = c.files[GhRouting.PACKAGE]
-  val ghState = inst?.let { GhRouting.state(it.dir) }
+  val ghSize = c.files[GhRouting.PACKAGE]?.let { base ->
+    // what an update brings down: the graph if it changed, the landmarks missing
+    val graph = if (inst != null && GhRouting.state(inst.dir, emptyList()) == GhRouting.GhState.READY) 0L else base
+    graph + ghWanted.filter { inst == null || graph > 0 || !GhRouting.hasPackage(inst.dir, it) }.sumOf { c.files[it] ?: 0L }
+  }
+  val ghState = inst?.let { GhRouting.state(it.dir, ghWanted) }
   val ghUpdate = inst != null && ghSize != null && ghState != GhRouting.GhState.READY
   val newer = inst != null && c.built != null && c.built > inst.manifest.built
   val busy = state is DownloadState.Running || state is DownloadState.Queued
@@ -188,6 +206,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
               installed -> "Scaricato · dati del ${inst?.manifest?.built ?: c.built ?: "?"}" + when {
                 ghState == GhRouting.GhState.READY -> " · calcolo GraphHopper ✓"
                 ghUpdate && ghState == GhRouting.GhState.OLD -> " · grafo GraphHopper vecchio"
+                ghUpdate && ghState == GhRouting.GhState.PARTIAL -> " · manca il calcolo per i mezzi scelti"
                 ghUpdate -> " · manca il grafo GraphHopper"
                 else -> ""
               }

@@ -67,6 +67,24 @@ public final class GhEngine implements Closeable {
     return base;
   }
 
+  /**
+   * Landmarks per profile (the precomputed data that make long searches fast): 4, half the
+   * GraphHopper default, so the data of each profile take half the room on the tablet.
+   */
+  public static final int LANDMARKS = 4;
+
+  /** The profiles of lorries ("camion" package) or of the other vehicles ("auto" package). */
+  public static List<String> profilesOf(boolean hgv) {
+    List<String> out = new ArrayList<>();
+    for (String n : profileNames()) if (n.startsWith(PROFILE_TRUCK) == hgv) out.add(n);
+    return out;
+  }
+
+  /** The landmarks of [profile] are in the graph folder [dir]. */
+  public static boolean hasLandmarks(File dir, String profile) {
+    return new File(dir, "landmarks_" + profile).exists();
+  }
+
   /** The models folder files: one per profile, named after it. */
   public static List<String> modelFiles() {
     List<String> out = new ArrayList<>();
@@ -82,9 +100,17 @@ public final class GhEngine implements Closeable {
       "footway,cycleway,path,pedestrian,steps,bridleway,corridor,construction,proposed,platform,raceway";
 
   private final GraphHopper hopper;
+  /** The profiles whose landmarks are on the tablet (the others are not used). */
+  private final java.util.Set<String> ready;
 
-  private GhEngine(GraphHopper hopper) {
+  private GhEngine(GraphHopper hopper, java.util.Set<String> ready) {
     this.hopper = hopper;
+    this.ready = ready;
+  }
+
+  /** The landmarks of the vehicle's profile are on the tablet (its package was downloaded). */
+  public boolean canRoute(TruckSpec spec) {
+    return ready.contains(profileFor(spec));
   }
 
   /**
@@ -124,7 +150,18 @@ public final class GhEngine implements Closeable {
     cfg.putObject("import.osm.ignored_highways", IGNORED_HIGHWAYS);
     cfg.putObject("graph.dataaccess.default_type", mmap ? "MMAP" : "RAM_STORE");
     cfg.setProfiles(profiles());
-    cfg.setLMProfiles(lmProfiles());
+    // only the profiles whose landmarks were downloaded (lorries, other vehicles or both)
+    List<LMProfile> lm = new ArrayList<>();
+    java.util.Set<String> ready = new java.util.HashSet<>();
+    for (String n : profileNames()) {
+      if (hasLandmarks(dir, n)) {
+        lm.add(new LMProfile(n));
+        ready.add(n);
+      }
+    }
+    cfg.setLMProfiles(lm);
+    cfg.putObject("prepare.lm.landmarks", LANDMARKS);
+    cfg.putObject("routing.lm.active_landmarks", LANDMARKS);
     GraphHopper gh = new GraphHopper() {
       @Override
       protected WeightingFactory createWeightingFactory() {
@@ -137,7 +174,7 @@ public final class GhEngine implements Closeable {
       gh.close();
       throw new IllegalStateException("grafo GraphHopper non trovato in " + dir);
     }
-    return new GhEngine(gh);
+    return new GhEngine(gh, ready);
   }
 
   /** The route found: its points, where each point given is on it, distance and time. */
@@ -297,7 +334,7 @@ public final class GhEngine implements Closeable {
     return Math.sqrt(dx * dx + dy * dy);
   }
 
-  private static GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
+  private GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     List<GHPoint> pts = new ArrayList<>();
     for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
     GHRequest req = new GHRequest(pts).setProfile(profileFor(spec)).setLocale(Locale.ITALIAN);

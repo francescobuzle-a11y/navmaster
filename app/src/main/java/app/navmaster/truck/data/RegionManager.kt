@@ -260,18 +260,26 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     val prev = File(dir, "manifest.json").takeIf { it.exists() }
         ?.let { runCatching { json.decodeFromString(Manifest.serializer(), it.readText()) }.getOrNull() }
     fun sums(f: PackageFile) = f.parts.joinToString(",") { it.sha256 }
+    // the GraphHopper data: the graph and the landmarks of the vehicles chosen in the settings
+    val ghWanted = GhRouting.wantedNow()
     fun unchanged(f: PackageFile): Boolean {
-      val old = prev?.files?.firstOrNull { it.file == f.file } ?: return f.file == GhRouting.PACKAGE && GhRouting.source(dir) == sums(f)
+      if (f.file in GhRouting.PACKAGES) {
+        // installed from this same package (the graph unpacked, the landmarks in it)
+        if (GhRouting.source(dir, f.file) != sums(f) || !GhRouting.hasPackage(dir, f.file)) return false
+        return f.file != GhRouting.PACKAGE || GhRouting.state(dir, emptyList()) == GhRouting.GhState.READY
+      }
+      val old = prev?.files?.firstOrNull { it.file == f.file } ?: return false
       if (sums(old) != sums(f)) return false
-      return if (f.file == GhRouting.PACKAGE) GhRouting.state(dir) == GhRouting.GhState.READY && GhRouting.source(dir) == sums(f)
-          else File(dir, f.file).length() == f.size
+      return File(dir, f.file).length() == f.size
     }
+    // the landmarks of the vehicles not chosen are not downloaded
+    fun skipped(f: PackageFile) = (f.file == GhRouting.PACKAGE_TRUCK || f.file == GhRouting.PACKAGE_CAR) && f.file !in ghWanted
     val europe = if (job.useEurope) catalog.country(id)?.europeTiles?.takeIf { it.parts.isNotEmpty() } else null
     // the Europe tiles already installed for this country stay as they are in an update
     val tiles = europe?.takeUnless { prev != null && File(dir, "europa-tiles.txt").exists() }
 
     // with the Europe graph the country graph is not needed
-    val files = manifest.files.filter { (europe == null || it.file != "percorsi.tar") && !unchanged(it) }
+    val files = manifest.files.filter { (europe == null || it.file != "percorsi.tar") && !skipped(it) && !unchanged(it) }
     if (prev != null) Log.i(TAG, "update $id: ${files.joinToString { it.file }.ifEmpty { "nothing changed" }}")
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } } +
         (tiles?.parts?.map { "$RELEASES/grafo-europa/${it.name}" to it } ?: emptyList())
@@ -309,9 +317,9 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       }
     }
     // the files are written in place; only the files in several parts and the Europe tiles need room twice
-    // (the GraphHopper graph is unpacked on the tablet: about 3.3 times its package)
+    // (the GraphHopper data are unpacked on the tablet: about 2.5 times their packages)
     val need = total - have + (tiles?.size ?: 0) + files.filter { it.parts.size > 1 }.sumOf { it.size } + 200_000_000 +
-        (files.firstOrNull { it.file == GhRouting.PACKAGE }?.size ?: 0L) * 7 / 2
+        files.filter { it.file in GhRouting.PACKAGES }.sumOf { it.size } * 7 / 2
     if (freeBytes() < need) {
       throw IllegalStateException(String.format(Locale.ITALIAN, "Spazio insufficiente: servono %.1f GB liberi", need / 1e9))
     }
@@ -347,14 +355,15 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       tar.delete()
       File(dir, "percorsi.tar").delete()
     }
-    // the GraphHopper graph comes packed: unpacked now, once, not at the first route
-    if (File(dir, GhRouting.PACKAGE).exists()) {
-      setState(id, DownloadState.Running(total, total, "Installazione grafo GraphHopper"))
+    // the GraphHopper data come packed: unpacked now, once, not at the first route
+    val ghFiles = files.filter { it.file in GhRouting.PACKAGES }
+    if (ghFiles.isNotEmpty()) {
+      setState(id, DownloadState.Running(total, total, "Installazione calcolo percorsi GraphHopper"))
       // the graph in use is closed before it is replaced
       runCatching { app.navmaster.truck.AppGraph.gh.reset() }
       val gh = GhRouting.ready(dir)
-      val f = manifest.files.firstOrNull { it.file == GhRouting.PACKAGE }
-      if (gh != null && f != null) File(gh, GhRouting.SOURCE_FILE).writeText(sums(f))
+      // a package unpacked is removed: its source is noted, to know when it changes
+      if (gh != null) for (f in ghFiles) if (!File(dir, f.file).exists()) File(gh, GhRouting.sourceFile(f.file)).writeText(sums(f))
     }
     File(dir, "manifest.json").writeText(manifestText)
     tmp.deleteRecursively()

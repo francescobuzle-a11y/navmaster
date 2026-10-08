@@ -72,10 +72,37 @@ class RouteMatcher(val route: List<GeographicCoordinate>, reachCells: Int = 1) {
 
   companion object {
     fun parsePts(s: String): List<GeographicCoordinate> =
-        s.split(';').mapNotNull { pair ->
+        if (s.indexOf(',') < 0) decodePolyline(s)
+        else s.split(';').mapNotNull { pair ->
           val k = pair.indexOf(',')
           if (k <= 0) null else GeographicCoordinate(pair.substring(0, k).toDouble(), pair.substring(k + 1).toDouble())
         }
+
+    /** Google's encoded polyline with 5 decimals (the criticalities from 10/2026, data/build_critical.py). */
+    fun decodePolyline(s: String): List<GeographicCoordinate> {
+      val out = ArrayList<GeographicCoordinate>()
+      var i = 0
+      var lat = 0
+      var lon = 0
+      while (i < s.length) {
+        val d = IntArray(2)
+        for (k in 0..1) {
+          var shift = 0
+          var result = 0
+          while (i < s.length) {
+            val b = s[i++].code - 63
+            result = result or ((b and 0x1F) shl shift)
+            shift += 5
+            if (b < 0x20) break
+          }
+          d[k] = if (result and 1 != 0) (result shr 1).inv() else result shr 1
+        }
+        lat += d[0]
+        lon += d[1]
+        out += GeographicCoordinate(lat / 1e5, lon / 1e5)
+      }
+      return out
+    }
   }
 }
 

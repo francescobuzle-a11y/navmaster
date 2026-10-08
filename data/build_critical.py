@@ -95,8 +95,20 @@ def clip_around(coords, at, radius_m=70.0):
 
 
 def pts_text(coords):
-    # 5 decimals = 1.1 m: plenty to match a route, and a third smaller than 6
-    return ";".join(f"{c[1]:.5f},{c[0]:.5f}" for c in coords)
+    """The points as an encoded polyline (Google's format, 5 decimals = 1.1 m: plenty to match a
+    route): about a third of "lat,lon;lat,lon" (RouteMatcher.parsePts reads both)."""
+    out = []
+    plat = plon = 0
+    for c in coords:
+        lat, lon = int(round(c[1] * 1e5)), int(round(c[0] * 1e5))
+        for d in (lat - plat, lon - plon):
+            v = ~(d << 1) if d < 0 else d << 1
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1F)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        plat, plon = lat, lon
+    return "".join(out)
 
 
 def main():

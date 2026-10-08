@@ -26,6 +26,8 @@ public class GhSame {
     cfg.putObject("graph.dataaccess.default_type", "MMAP");
     cfg.setProfiles(GhEngine.profiles());
     cfg.setLMProfiles(GhEngine.lmProfiles());
+    cfg.putObject("prepare.lm.landmarks", GhEngine.LANDMARKS);
+    cfg.putObject("routing.lm.active_landmarks", GhEngine.LANDMARKS);
     GraphHopper std = new GraphHopper();
     std.init(cfg);
     std.setAllowWrites(false);
