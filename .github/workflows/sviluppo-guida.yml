@@ -1,15 +1,19 @@
-# Development of the guidance computed by GraphHopper alone (no Valhalla on the tablet):
-# small OSM extracts for the tests on the computer, and Valhalla's answers on the same trips
-# (route in OSRM format with Italian voice and banners, trace_attributes) as the reference the
-# GraphHopper guidance is compared with. Everything goes to the release "sviluppo".
-name: Sviluppo guida GraphHopper
+# Development of the routing and guidance computed by GraphHopper on the tablet: small OSM extracts
+# for the tests on the computer, the guidance of the test trips (GuideRun), the border crossings,
+# and the check against openrouteservice itself: its official Docker image is built with the same
+# extract and both answer the same trips as the app asks them (tools/gh/OrsCompare.java).
+# Everything goes to the release "sviluppo".
+name: Sviluppo e confronto con openrouteservice
 
 on:
   workflow_dispatch:
     inputs:
       areas:
         description: "Aree di tools/guide/trips.json (es. test,bologna)"
-        default: "como,ticino,como+ticino"
+        default: "test,bologna"
+      trips:
+        description: "Viaggi di confronto con openrouteservice per area (0 = nessun confronto)"
+        default: "60"
 
 permissions:
   contents: write
@@ -20,14 +24,15 @@ defaults:
 
 env:
   GEOFABRIK: https://download.geofabrik.de/europe
-  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:3.6.3
   GH_VERSION: "11.0"
+  ORS_IMAGE: openrouteservice/openrouteservice:v10.0.1
+  MAVEN: https://repo1.maven.org/maven2
   VEHICLE_ROADS: motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway
 
 jobs:
-  ref:
+  dev:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@v4
       - name: Estratti OSM delle aree
@@ -48,7 +53,7 @@ jobs:
             case "$a" in *+*) osmium merge $(for p in $(echo $a | tr '+' ' '); do echo $p.osm.pbf; done) -o $a.osm.pbf --overwrite;; esac
           done
           for a in $AREAS; do
-            osmium tags-filter $a.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry r/type=restriction -o $a-roads.osm.pbf --overwrite
+            osmium tags-filter $a.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry,shuttle_train r/type=restriction -o $a-roads.osm.pbf --overwrite
             cp $a-roads.osm.pbf ../out/
           done
           rm -f src-*.osm.pbf
@@ -67,44 +72,57 @@ jobs:
             [ -f $a.country ] || continue
             osmium export $a-roads.osm.pbf -c cfg.json -f geojsonseq --geometry-types=linestring \
               --format-option print_record_separator=false -o $a-roads.geojsonseq --overwrite
-            python3 $GITHUB_WORKSPACE/tools/gh/build_crossings.py $a-roads.geojsonseq ../out/valichi-$a.json $(cat $a.country) poly
+            python3 $GITHUB_WORKSPACE/tools/gh/build_crossings.py $a-roads.geojsonseq ../out/valichi-$a.json $(cat $a.country) poly || true
           done
       - uses: actions/setup-java@v4
         with: {distribution: temurin, java-version: "21"}
-      - name: Grafo e guida di GraphHopper (GhGuide) sulle aree
+      - name: Grafo di GraphHopper con le regole di openrouteservice e guida dei viaggi di prova
         run: |
           cd w
           curl -fsSL -o gh.jar "https://github.com/graphhopper/graphhopper/releases/download/$GH_VERSION/graphhopper-web-$GH_VERSION.jar"
+          # the parsers of the conditional restrictions openrouteservice uses (its GraphHopper 4.16 fork)
+          curl -fsSL -o crp.jar "$MAVEN/ch/poole/ConditionalRestrictionParser/0.3.4/ConditionalRestrictionParser-0.3.4.jar"
+          curl -fsSL -o ohp.jar "$MAVEN/ch/poole/OpeningHoursParser/0.28.1/OpeningHoursParser-0.28.1.jar"
+          CP=gh.jar:crp.jar:ohp.jar
           mkdir -p cls
-          javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
-            $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/guide/GuideRun.java
+          javac -nowarn -d cls -cp $CP $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
+            $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/gh/OrsRules.java $GITHUB_WORKSPACE/tools/gh/nmors/*.java \
+            $GITHUB_WORKSPACE/tools/gh/OrsCompare.java $GITHUB_WORKSPACE/tools/guide/GuideRun.java
           for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
-            java -Xmx6g -cp gh.jar:cls NmImport $a-roads.osm.pbf g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep NMIMPORT || true
-            java -Xmx6g -cp gh.jar:cls GuideRun g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/gh 2>&1 | grep -vE "INFO|DEBUG" || true
+            java -Xmx6g -cp $CP:cls NmImport $a-roads.osm.pbf g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep NMIMPORT || true
+            java -Xmx6g -cp $CP:cls GuideRun g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/gh 2>&1 | grep -vE "INFO|DEBUG" || true
           done
-      - name: Risposte di Valhalla sui viaggi di prova
+          if [ -d ../out/gh ]; then (cd ../out && zip -qr gh-guida.zip gh && rm -rf gh); fi
+      - name: Confronto con openrouteservice (stesso estratto, stessi viaggi)
+        if: inputs.trips != '0'
         run: |
-          docker pull -q "$VALHALLA_IMAGE"
           cd w
+          docker pull -q "$ORS_IMAGE"
+          CP=gh.jar:crp.jar:ohp.jar
           for a in $(echo "${{ inputs.areas }}" | tr ',' ' '); do
-            python3 -c "import json,sys; sys.exit(0 if any(t['area'] == '$a' for t in json.load(open('$GITHUB_WORKSPACE/tools/guide/trips.json'))['trips']) else 1)" || continue
-            mkdir -p v-$a && cp $a.osm.pbf v-$a/region.osm.pbf && cp $a-roads.osm.pbf v-$a/roads.osm.pbf
-            docker run --rm -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" bash -c "
-              set -e; cd /data
-              valhalla_build_config --mjolnir-tile-dir /data/tiles --mjolnir-tile-extract /data/valhalla_tiles.tar \
-                --mjolnir-admin /data/admins.sqlite > valhalla.json
-              valhalla_build_admins -c valhalla.json /data/region.osm.pbf
-              valhalla_build_tiles -c valhalla.json /data/roads.osm.pbf
-              valhalla_build_extract -c valhalla.json -v --overwrite"
-            sudo chmod -R a+rwX v-$a
-            docker run -d --name vh-${a//+/_} -p 8002:8002 -v "$PWD/v-$a:/data" "$VALHALLA_IMAGE" valhalla_service /data/valhalla.json 1
-            sleep 8
-            python3 $GITHUB_WORKSPACE/tools/guide/vhref.py $GITHUB_WORKSPACE/tools/guide/trips.json $a ../out/vh
-            # Valhalla's guidance along GraphHopper's own paths: the manoeuvres compared one by one
-            python3 $GITHUB_WORKSPACE/tools/guide/vhref.py --trace ../out/gh $a $GITHUB_WORKSPACE/tools/guide/trips.json ../out/vhtrace
-            docker rm -f vh-${a//+/_}
+            mkdir -p ors-$a/files && cp $a-roads.osm.pbf ors-$a/files/region.osm.pbf && sudo chmod -R a+rwX ors-$a
+            docker run -d --name ors -p 8080:8082 -v "$PWD/ors-$a:/home/ors" \
+              -e XMS=1g -e XMX=8g \
+              -e "ors.engine.profile_default.build.source_file=/home/ors/files/region.osm.pbf" \
+              -e "ors.engine.profile_default.build.elevation=false" \
+              -e "ors.engine.profiles.driving-car.enabled=true" \
+              -e "ors.engine.profiles.driving-hgv.enabled=true" \
+              "$ORS_IMAGE"
+            ready=0
+            for i in $(seq 1 240); do
+              if curl -fsS http://localhost:8080/ors/v2/health 2>/dev/null | grep -q ready; then ready=1; break; fi
+              sleep 10
+            done
+            echo "ORS $a ready=$ready after $((i * 10)) s"
+            if [ $ready = 1 ]; then
+              java -Xmx6g -cp $CP:cls OrsCompare g-$a $GITHUB_WORKSPACE/app/src/main/assets/gh http://localhost:8080 ${{ inputs.trips }} ../out/ors-confronto-$a.tsv 2>&1 | grep ORSCOMPARE || true
+            else
+              docker logs --tail 80 ors
+            fi
+            docker rm -f ors
+            sudo rm -rf ors-$a
           done
-          cd ../out && zip -qr vh-ref.zip vh gh vhtrace && ls -la
+          ls -la ../out
       - name: Nella release «sviluppo»
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,4 +130,4 @@ jobs:
           R="${{ github.repository }}"
           gh release view sviluppo -R "$R" >/dev/null 2>&1 || gh release create sviluppo -R "$R" --prerelease \
             --title "Sviluppo (file di prova)" --notes "Estratti OSM e risposte di riferimento per lo sviluppo. Dati © OpenStreetMap contributors (ODbL)."
-          gh release upload sviluppo out/*.osm.pbf out/vh-ref.zip out/valichi-*.json -R "$R" --clobber
+          gh release upload sviluppo out/* -R "$R" --clobber
