@@ -2,7 +2,8 @@
 """catalog.json: every European country the tablet can download, with its outline (to know in which
 country the driver is), its size and the date of its data.
 
-Usage: make_catalog.py <countries.json> <geofabrik index-v1.json> <manifests dir> <europe graph index or -> <out>
+Usage: make_catalog.py <countries.json> <geofabrik index-v1.json> <manifests dir> [-] <out>
+(the "-" of the old Europe-wide graph index is still accepted and ignored)
 """
 import json
 import os
@@ -34,9 +35,7 @@ def main():
     countries = json.load(open(sys.argv[1], encoding="utf-8"))
     index = json.load(open(sys.argv[2], encoding="utf-8"))
     mdir = sys.argv[3]
-    graph = None
-    if sys.argv[4] != "-" and os.path.exists(sys.argv[4]):
-        graph = json.load(open(sys.argv[4], encoding="utf-8"))
+    out_file = sys.argv[-1]
     geoms = {f["properties"]["id"]: f.get("geometry") for f in index["features"]}
     out = []
     for c in countries:
@@ -49,14 +48,10 @@ def main():
             m = json.load(open(mf, encoding="utf-8"))
             files = {f["file"]: f["size"] for f in m.get("files", [])}
             entry.update(available=True, built=m.get("built"), files=files, size=sum(files.values()))
-        if graph and c["id"] in graph.get("countries", {}):
-            entry["europe_tiles"] = graph["countries"][c["id"]]
         out.append(entry)
-    cat = {"format": 1, "built": time.strftime("%Y-%m-%d"), "countries": out,
-           "europe_graph": {"available": bool(graph), "built": graph.get("built") if graph else None,
-                            "valhalla": graph.get("valhalla") if graph else None}}
-    json.dump(cat, open(sys.argv[5], "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
-    print(f"catalog: {sum(1 for e in out if e['available'])} available of {len(out)}; europe graph: {bool(graph)}")
+    cat = {"format": 1, "built": time.strftime("%Y-%m-%d"), "countries": out}
+    json.dump(cat, open(out_file, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
+    print(f"catalog: {sum(1 for e in out if e['available'])} available of {len(out)}")
 
 
 if __name__ == "__main__":

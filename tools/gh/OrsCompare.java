@@ -27,7 +27,8 @@ import java.util.regex.Pattern;
  * Our GraphHopper against openrouteservice itself, on the same OpenStreetMap data: openrouteservice
  * (its official Docker image) is built on GitHub with the same extract as our graph, then both get
  * the same trips, asked as the app asks them (OrsRouting.kt: lorry 4 m, 2.55 m, 16.5 m, 40 t,
- * 11.5 t per axle, top speed 90; camper 3.2 m, 3.5 t, 110 km/h on driving-car), between points
+ * 11.5 t per axle, top speed 90; car 110 km/h on driving-car, without measures: openrouteservice's
+ * cars have none, the app checks a camper's measures on top of it), between points
  * on the roads (the middle of random roads open to both vehicles, so that both snap to the same
  * place). For each trip: length, time and how much of each route lies on the other (points within
  * 15 m). A route is "the same" when 99% of it lies on the other and the lengths differ by less
@@ -76,6 +77,7 @@ public class OrsCompare {
           TruckSpec s = spec(hgv, pref);
           double[][] orsLine;
           double orsM, orsS;
+          String orsErr = "";
           try {
             String body = body(p, q, hgv, pref, s);
             HttpRequest req = HttpRequest.newBuilder(URI.create(ors + "/ors/v2/directions/" + (hgv ? "driving-hgv" : "driving-car") + "/geojson"))
@@ -83,6 +85,8 @@ public class OrsCompare {
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build();
             HttpResponse<String> rsp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (rsp.statusCode() != 200) {
+              orsErr = rsp.statusCode() + " " + rsp.body().replaceAll("[\"\\\\\\s]+", " ");
+              orsErr = orsErr.substring(0, Math.min(160, orsErr.length()));
               orsLine = null;
               orsM = orsS = Double.NaN;
             } else {
@@ -126,8 +130,8 @@ public class OrsCompare {
           out.flush();
           if (!verdict.equals("same") && !verdict.equals("none_both")) {
             StringBuilder j = new StringBuilder();
-            j.append(String.format(Locale.ROOT, "{\"case\":\"%s-%s\",\"from\":[%.6f,%.6f],\"to\":[%.6f,%.6f],\"verdict\":\"%s\",\"ors\":%s,\"gh\":%s}",
-                CASES[c][0], pref, p[0], p[1], q[0], q[1], verdict, line(orsLine), r.ok() ? line(r.lat, r.lon) : "[]"));
+            j.append(String.format(Locale.ROOT, "{\"case\":\"%s-%s\",\"from\":[%.6f,%.6f],\"to\":[%.6f,%.6f],\"verdict\":\"%s\",\"orserr\":\"%s\",\"ors\":%s,\"gh\":%s}",
+                CASES[c][0], pref, p[0], p[1], q[0], q[1], verdict, orsErr, line(orsLine), r.ok() ? line(r.lat, r.lon) : "[]"));
             diff.println(j);
             diff.flush();
           }
@@ -144,11 +148,13 @@ public class OrsCompare {
     TruckSpec s = new TruckSpec();
     s.hgv = hgv;
     if (!hgv) {
-      s.heightM = 3.2;
-      s.widthM = 2.3;
-      s.lengthM = 7.5;
-      s.weightT = 3.5;
-      s.axleLoadT = 2;
+      // driving-car has no measures: the engine is compared as it is (a camper's measures are the
+      // app's own check on top of it, OrsWeighting)
+      s.heightM = 0;
+      s.widthM = 0;
+      s.lengthM = 0;
+      s.weightT = 0;
+      s.axleLoadT = 0;
       s.topSpeedKmh = 110;
     }
     s.route = pref.equals("shortest") ? GhEngine.ROUTE_SHORT : pref.equals("recommended") ? GhEngine.ROUTE_MOTORWAY : GhEngine.ROUTE_FAST;
