@@ -23,12 +23,10 @@ jobs:
           for id in $(python3 -c "import json;print(' '.join(c['id'] for c in json.load(open('data/countries.json'))))"); do
             gh release download "dati-$id" -p manifest.json -O "manifests/$id.json" 2>/dev/null || true
           done
-          gh release download grafo-europa -p index.json -O graph-index.json 2>/dev/null || echo "grafo Europa non ancora pubblicato"
           ls manifests
       - name: Scrivi catalog.json
         run: |
-          G=$([ -f graph-index.json ] && echo graph-index.json || echo -)
-          python3 data/make_catalog.py data/countries.json index.json manifests "$G" catalog.json
+          python3 data/make_catalog.py data/countries.json index.json manifests - catalog.json
           ls -la catalog.json
       - name: Pubblica (release dati-catalogo)
         env:
