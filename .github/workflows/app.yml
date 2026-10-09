@@ -63,7 +63,7 @@ jobs:
           tag_name: app-${{ github.run_number }}
           name: NavMaster ${{ github.run_number }}
           body: |
-            App NavMaster (MapLibre + Valhalla offline + Ferrostar). Installa l'APK sul tablet.
+            App NavMaster (MapLibre + GraphHopper con le regole di openrouteservice + Ferrostar). Installa l'APK sul tablet.
             Commit: ${{ github.sha }}
           files: out/*.apk
           make_latest: true
