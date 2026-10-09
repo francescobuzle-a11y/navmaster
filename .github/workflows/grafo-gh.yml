@@ -1,8 +1,9 @@
 # GraphHopper graphs for the tablet, one per country (plus the small test area), added to the
 # country's package (release dati-<country>, file gh.tar.gz in the manifest). The app computes the
 # route with them, offline, with the measures of the vehicle (app/src/main/java/.../routing/gh).
-# The graph is built with the same base model and settings the app opens it with (GhEngine), then
-# checked on the runner with the app's own routing code before it is published.
+# The graph is built with openrouteservice's rules (tools/gh/NmImport.java, OrsRules.java) and the
+# same settings the app opens it with (GhEngine), then checked on the runner with the app's own
+# routing code before it is published.
 name: Grafo GraphHopper
 
 on:
@@ -31,7 +32,7 @@ env:
   GEOFABRIK: https://download.geofabrik.de/europe
   TEST_BBOX: "12.30,43.85,12.72,44.12"
   GH_VERSION: "11.0"
-  # the roads a lorry, a bus or a camper can drive on (as for the Valhalla graphs)
+  # the roads a lorry, a bus or a camper can drive on
   VEHICLE_ROADS: motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,service,road,track,busway
 
 jobs:
@@ -81,7 +82,7 @@ jobs:
             mv src.osm.pbf region.osm.pbf
           fi
           rm -f src.osm.pbf
-          osmium tags-filter region.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry r/type=restriction \
+          osmium tags-filter region.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry,shuttle_train r/type=restriction \
             -o roads.osm.pbf --overwrite
           rm region.osm.pbf
           ls -la
@@ -89,19 +90,23 @@ jobs:
         working-directory: /mnt/w
         run: |
           curl -fsSL -o gh.jar "https://github.com/graphhopper/graphhopper/releases/download/$GH_VERSION/graphhopper-web-$GH_VERSION.jar"
+          # the parsers of the conditional restrictions openrouteservice uses (its GraphHopper 4.16 fork)
+          curl -fsSL -o crp.jar "https://repo1.maven.org/maven2/ch/poole/ConditionalRestrictionParser/0.3.4/ConditionalRestrictionParser-0.3.4.jar"
+          curl -fsSL -o ohp.jar "https://repo1.maven.org/maven2/ch/poole/OpeningHoursParser/0.28.1/OpeningHoursParser-0.28.1.jar"
           mkdir -p cls
-          javac -nowarn -d cls -cp gh.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
-            $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/gh/GhCheck.java $GITHUB_WORKSPACE/tools/gh/GhSame.java
+          javac -nowarn -d cls -cp gh.jar:crp.jar:ohp.jar $GITHUB_WORKSPACE/app/src/main/java/app/navmaster/truck/routing/gh/*.java \
+            $GITHUB_WORKSPACE/tools/gh/NmImport.java $GITHUB_WORKSPACE/tools/gh/OrsRules.java $GITHUB_WORKSPACE/tools/gh/nmors/*.java \
+            $GITHUB_WORKSPACE/tools/gh/GhCheck.java
           # the profiles and settings of GhEngine (as on the tablet), openrouteservice's driving-hgv and
           # driving-car rules worked out from the OSM tags (tools/gh/NmImport.java)
           MEM=$(( $(free -g | awk '/Mem:/{print $2}') - 2 ))
           DA=RAM_STORE
           case "${{ matrix.region }}" in germany|france|great-britain|poland|spain|turkey|russia) DA=MMAP; MEM=$(( MEM - 4 )) ;; esac
-          date; java -Xmx${MEM}g -Dnm.dataaccess=$DA -cp gh.jar:cls NmImport roads.osm.pbf gh $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep -vE "DEBUG" | tail -40; date
+          date; java -Xmx${MEM}g -Dnm.dataaccess=$DA -cp gh.jar:crp.jar:ohp.jar:cls NmImport roads.osm.pbf gh $GITHUB_WORKSPACE/app/src/main/assets/gh 2>&1 | grep -vE "DEBUG" | tail -40; date
           test -f gh/properties
           rm -f roads.osm.pbf
           du -sh gh; ls -la gh
-      - name: Prova con il codice dell'app (senza Janino, come sul tablet) e pesi uguali a GraphHopper
+      - name: Prova con il codice dell'app (senza Janino, come sul tablet)
         working-directory: /mnt/w
         run: |
           cp gh.jar nojan.jar && zip -q -d nojan.jar 'org/codehaus/*'
@@ -113,7 +118,6 @@ jobs:
           esac
           echo "TRIPS=$TRIPS"
           java -Xmx6g -cp nojan.jar:cls GhCheck gh $M "$TRIPS" 2>&1 | grep -v DEBUG | grep GHCHECK
-          if [ "$TRIPS" != "-" ]; then java -Xmx6g -cp gh.jar:cls GhSame gh $M "$TRIPS" 2>&1 | grep GHSAME; fi
       - name: Pacchetti (grafo gh.tar.gz, landmark dei camion gh-camion.tar.gz e degli altri mezzi gh-auto.tar.gz)
         working-directory: /mnt/w
         run: |
