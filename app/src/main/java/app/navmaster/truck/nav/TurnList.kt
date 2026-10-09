@@ -22,7 +22,7 @@ data class TurnItem(
  * chain of the main roads it uses ("A4 → A1 → A14"), so the driver sees at once where it goes.
  */
 object TurnList {
-  /** The chained second manoeuvre of Valhalla ("Poi svolta a sinistra"): not part of this one. */
+  /** The chained second manoeuvre of the route's text ("Poi svolta a sinistra"): not part of this one. */
   private val THEN = Regex("^(poi|quindi|subito dopo|then|and then)\\b", RegexOption.IGNORE_CASE)
   private val DISTANCE = Regex("^(tra|fra|in|entro)\\s+[\\d.,]+\\s*(metri|metro|chilometri|chilometro|km|m)\\b[,]?\\s*", RegexOption.IGNORE_CASE)
   private val JUNCTION_TYPES = listOf("RAMP", "FORK", "MERGE")

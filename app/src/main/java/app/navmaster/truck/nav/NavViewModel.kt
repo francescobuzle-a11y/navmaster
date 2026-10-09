@@ -26,7 +26,6 @@ import com.stadiamaps.ferrostar.core.CorrectiveAction
 import com.stadiamaps.ferrostar.core.DefaultNavigationViewModel
 import com.stadiamaps.ferrostar.core.RouteDeviationHandler
 import com.stadiamaps.ferrostar.core.NavigationUiState
-import com.stadiamaps.ferrostar.core.annotation.valhalla.valhallaExtendedOSRMAnnotationPublisher
 import com.stadiamaps.ferrostar.core.location.toUserLocation
 import java.time.LocalDateTime
 import kotlin.math.abs
@@ -82,7 +81,7 @@ data class RouteVariant(
     val criticalities: List<Criticality>,
     val options: TripOptions,
     val recommended: Boolean = false,
-    /** Who computed it: "GH" GraphHopper, "VH" Valhalla. */
+    /** Who computed it: "ORS" openrouteservice (online), "GH" GraphHopper on the tablet. */
     val source: String? = null,
 ) {
   val durationS: Double
@@ -98,7 +97,7 @@ data class RouteVariant(
     get() = criticalities.count { it.severity == Severity.WARN }
 }
 
-/** The routes the driver asked for in addition (Valhalla's): not asked yet, searching, found, none. */
+/** The routes the driver asked for in addition (GraphHopper's alternatives): not asked yet, searching, found, none. */
 enum class MoreRoutes { NONE, LOADING, ADDED, NONE_FOUND }
 
 data class PlanState(
@@ -117,9 +116,9 @@ data class PlanState(
     val avoidAreas: List<GeographicCoordinate> = emptyList(),
     /** A departure chosen by the driver (to try a trip in simulation); null = where the vehicle is. */
     val start: Stop? = null,
-    /** The "more routes" button: Valhalla's own routes added to GraphHopper's. */
+    /** The "more routes" button: GraphHopper's alternatives added to the routes on screen. */
     val more: MoreRoutes = MoreRoutes.NONE,
-    /** Why the routes are Valhalla's and not GraphHopper's (no graph, old graph, nothing found). */
+    /** Something the driver should know about the routes (openrouteservice's refused for a limit). */
     val routeNote: String? = null,
 ) {
   val current: RouteVariant?
@@ -165,7 +164,7 @@ data class NavExtras(
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExtendedOSRMAnnotationPublisher()) {
+class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotationPublisher()) {
 
   private val core = AppGraph.ferrostar
   private val locationProvider = AppGraph.locationProvider
@@ -232,7 +231,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
    * Emulator diagnosis: the route of the active vehicle between consecutive points, in the log
    * (distance, time, toll), to find which stretch a vehicle cannot use. From tools/preview.sh.
    */
-  fun probe(points: List<GeographicCoordinate>, debugCosting: Map<String, Double> = emptyMap()) {
+  fun probe(points: List<GeographicCoordinate>) {
     viewModelScope.launch(Dispatchers.IO) {
       val v = AppGraph.profiles.garage.value.active
       for (i in 0 until points.size - 1) {
@@ -243,53 +242,16 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         }.toUserLocation()
         val msg = try {
           val r = AppGraph.routes.routes(from, listOf(Waypoint(coordinate = b, kind = WaypointKind.BREAK)),
-              TripOptions(debugCosting = debugCosting)).firstOrNull()
+              TripOptions()).firstOrNull()
           if (r == null) "no route" else {
-            val an = RouteAnalysis.analyse(AppGraph.engine, r, v, AppGraph.profiles.garage.value.loadT)
+            val an = RouteAnalysis.analyse(r, v, AppGraph.profiles.garage.value.loadT)
             "${"%.0f".format(r.distance)} m, ${"%.0f".format(r.steps.sumOf { it.duration })} s, toll ${"%.1f".format(an.tollKm)} km, " +
                 "ways ${an.edges.map { it.wayId }.distinct().take(25)}"
           }
         } catch (e: Exception) {
           "error $e"
         }
-        Log.i(TAG, "probe ${v.name} $debugCosting $i ${a.lat},${a.lng} -> ${b.lat},${b.lng}: $msg")
-      }
-    }
-  }
-
-  /**
-   * Emulator diagnosis: the route of [refProfile] between two points, matched again on the graph
-   * with the lorry's rules. Where the lorry's match leaves the reference route is the road the
-   * lorry may not use (logged with its OSM way id).
-   */
-  fun probeCompare(a: GeographicCoordinate, b: GeographicCoordinate, refProfile: String, lorryProfile: String) {
-    viewModelScope.launch(Dispatchers.IO) {
-      try {
-        val from = android.location.Location("probe").apply {
-          latitude = a.lat; longitude = a.lng; accuracy = 5f; time = System.currentTimeMillis()
-        }.toUserLocation()
-        AppGraph.profiles.select(refProfile)
-        val load = AppGraph.profiles.garage.value.loadT
-        val ref = AppGraph.profiles.garage.value.active
-        val r = AppGraph.routes.routes(from, listOf(Waypoint(coordinate = b, kind = WaypointKind.BREAK)), TripOptions()).firstOrNull()
-            ?: run { Log.i(TAG, "probecmp: no reference route"); return@launch }
-        val refWays = RouteAnalysis.analyse(AppGraph.engine, r, ref, load).edges.map { it.wayId }.distinct()
-        AppGraph.profiles.select(lorryProfile)
-        val lorry = AppGraph.profiles.garage.value.active
-        val lorryA = RouteAnalysis.analyse(AppGraph.engine, r, lorry, load)
-        val lorryWays = lorryA.edges.map { it.wayId }.distinct()
-        val firstDiff = refWays.indices.firstOrNull { it >= lorryWays.size || refWays[it] != lorryWays[it] }
-        Log.i(TAG, "probecmp ${ref.name} ${r.distance.toInt()} m ways ${refWays.size}: $refWays")
-        Log.i(TAG, "probecmp ${lorry.name} matched ${lorryA.edges.size} edges ways ${lorryWays.size}: $lorryWays")
-        for (line in listOf(RouteAnalysis.speedsDebug(AppGraph.engine, r, ref, load),
-            runCatching { RouteAnalysis.speedsDebug(AppGraph.engine, r, lorry, load) }.getOrElse { "lorry map_snap: $it" },
-            runCatching { RouteAnalysis.speedsDebug(AppGraph.engine, r, lorry, load, "edge_walk") }.getOrElse { "lorry edge_walk: $it" })) {
-          line.chunked(3000).forEach { Log.i(TAG, "probespeed $it") }
-        }
-        Log.i(TAG, "probecmp first difference at ${firstDiff ?: "none"}: ref ${firstDiff?.let { refWays.subList((it - 2).coerceAtLeast(0), (it + 3).coerceAtMost(refWays.size)) }} " +
-            "lorry ${firstDiff?.let { lorryWays.subList((it - 2).coerceAtLeast(0).coerceAtMost(lorryWays.size), (it + 3).coerceAtMost(lorryWays.size)) }}")
-      } catch (e: Exception) {
-        Log.w(TAG, "probecmp: $e")
+        Log.i(TAG, "probe ${v.name} $i ${a.lat},${a.lng} -> ${b.lat},${b.lng}: $msg")
       }
     }
   }
@@ -428,13 +390,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         val pref = settings.routeKind
         val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions, route = pref)
-        // GraphHopper's routes of the kind the driver prefers (the best one and an alternative)
-        // with the vehicle's measures
+        // the routes of the kind the driver prefers (the best one and an alternative) with the
+        // vehicle's measures: openrouteservice's online, else GraphHopper's
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))
-        val routeNote = if (main.firstOrNull()?.let { AppGraph.routes.sourceOf(it) } == "VH") AppGraph.routes.whyValhalla else null
-        // the other two kinds, one route each, next to it (only when GraphHopper computed the
-        // first: Valhalla alone has no such choice)
-        val others = if (routeNote != null || main.isEmpty()) emptyList() else
+        val routeNote = AppGraph.routes.note
+        // the other two kinds, one route each, next to it
+        val others = if (main.isEmpty()) emptyList() else
           app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }.mapNotNull { k ->
             runCatching { AppGraph.routes.routes(from, waypoints, base.copy(route = k)).firstOrNull() }.getOrNull()?.let { k to it }
           }
@@ -520,7 +481,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   private fun buildVariant(kind: VariantKind, title: String, r: Route, opts: TripOptions, departure: LocalDateTime): RouteVariant {
     val garage = AppGraph.profiles.garage.value
     val v = garage.active
-    val analysis = RouteAnalysis.analyse(AppGraph.engine, r, v, garage.loadT)
+    val analysis = RouteAnalysis.analyse(r, v, garage.loadT)
     val m = RouteMatcher(r.geometry)
     val weight = v.tripWeightT(garage.loadT)
     val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
@@ -529,8 +490,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
   }
 
   /**
-   * "Altri percorsi": Valhalla's own routes for the same trip (with the same measures and choices),
-   * added after GraphHopper's, leaving out those already on screen.
+   * "Altri percorsi": GraphHopper's alternatives for the same trip (with the same measures and
+   * choices), added after the routes on screen, leaving out those already there.
    */
   fun loadMoreRoutes() {
     val req = planRequest ?: return
@@ -541,19 +502,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     moreJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val (from, waypoints, base) = req
-        val routes = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2, valhallaOnly = true))
+        val routes = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2, moreRoutes = true))
         val departure = LocalDateTime.now()
         val cur = _plan.value
         val added = mutableListOf<RouteVariant>()
         var n = cur.variants.count { it.kind == VariantKind.ALTERNATIVE }
         for (r in routes) {
-          // the same road as a route already on screen (Valhalla often finds GraphHopper's again,
-          // with a few metres of difference): not offered twice
+          // the same road as a route already on screen (often openrouteservice's or the best one
+          // again, with a few metres of difference): not offered twice
           if ((cur.variants + added).any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
           n++
           added += buildVariant(VariantKind.ALTERNATIVE, "Alternativa $n", r, base, departure)
         }
-        Log.i(TAG, "more routes (Valhalla): ${routes.size} found, ${added.size} new")
+        Log.i(TAG, "more routes (GraphHopper): ${routes.size} found, ${added.size} new")
         if (planRequest !== req) return@launch
         _plan.update { it.copy(variants = it.variants + added, more = if (added.isEmpty()) MoreRoutes.NONE_FOUND else MoreRoutes.ADDED) }
       } catch (e: kotlinx.coroutines.CancellationException) {
@@ -609,7 +570,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     // the route for the tunnels (the position goes on along it when the satellites are silent)
     AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry)
-    AppGraph.trip.value = v.options.copy(alternates = 0, valhallaOnly = false)
+    AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false)
     asked.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
     _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, pois(v.route), v.analysis.length)
@@ -1545,7 +1506,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, valhallaExte
         if (_nav.value.analysis?.route?.let { geometryKey(it.geometry) } == geometryKey(r.geometry)) return@launch
         val g = AppGraph.profiles.garage.value
         val v = g.active
-        val a = RouteAnalysis.analyse(AppGraph.engine, r, v, g.loadT)
+        val a = RouteAnalysis.analyse(r, v, g.loadT)
         val m = RouteMatcher(r.geometry)
         val limits = AppGraph.limits.scan(m, v, v.tripWeightT(g.loadT), a = a)
         val crit = AppGraph.criticalities.find(a, m, limits, v, g.loadT, LocalDateTime.now())

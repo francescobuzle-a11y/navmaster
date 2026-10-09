@@ -629,7 +629,7 @@ fun junctionSceneOf(
  * - junction view (close to it): a sky, the ground, the road with its concrete barriers, and a
  *   big violet arrow painted on the lane through the manoeuvre, under the direction signs.
  *
- * Everything is drawn here from OpenStreetMap / Valhalla data: no image of anyone else is used.
+ * Everything is drawn here from OpenStreetMap data (GraphHopper's graph): no image of anyone else is used.
  */
 private fun DrawScope.drawGarmin(scene: JunctionScene, a: app.navmaster.truck.routing.RouteAnalysis, pos: Double, night: Boolean,
                                  near: Boolean, signsSpace: Float) {

@@ -12,14 +12,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
-
-@Serializable
-data class EuropeTiles(val tiles: Int = 0, val size: Long = 0, val parts: List<PackagePart> = emptyList())
 
 @Serializable
 data class CountryInfo(
@@ -32,7 +28,6 @@ data class CountryInfo(
     val built: String? = null,
     val size: Long = 0,
     val files: Map<String, Long> = emptyMap(),
-    @SerialName("europe_tiles") val europeTiles: EuropeTiles? = null,
 ) {
   fun contains(lat: Double, lon: Double): Boolean {
     val b = bbox ?: return false
@@ -40,12 +35,8 @@ data class CountryInfo(
     return poly?.let { Geo.inPolygon(lat, lon, it) } ?: true
   }
 
-  /** What the download costs on the tablet (with the Europe graph instead of the country graph). */
-  fun downloadSize(@Suppress("UNUSED_PARAMETER") useEurope: Boolean): Long {
-    // routes and guidance come from GraphHopper alone: Valhalla's graph (percorsi.tar, or the
-    // Europe tiles) is not downloaded any more
-    return size - (files["percorsi.tar"] ?: 0)
-  }
+  /** What the download brings down (packages made before GraphHopper alone still list the old routing graph: not downloaded). */
+  fun downloadSize(): Long = size - (files[RegionManager.OLD_ROUTING_FILE] ?: 0)
 
   val flag: String
     get() =
@@ -55,14 +46,10 @@ data class CountryInfo(
 }
 
 @Serializable
-data class EuropeGraph(val available: Boolean = false, val built: String? = null, val valhalla: String? = null)
-
-@Serializable
 data class Catalog(
     val format: Int = 1,
     val built: String? = null,
     val countries: List<CountryInfo> = emptyList(),
-    @SerialName("europe_graph") val europeGraph: EuropeGraph = EuropeGraph(),
 )
 
 /**
@@ -93,7 +80,7 @@ class CatalogStore(private val context: Context) {
             val c = json.decodeFromString(Catalog.serializer(), text)
             file.writeText(text)
             _catalog.value = c
-            Log.i(TAG, "catalog: ${c.countries.count { x -> x.available }} countries, europe graph ${c.europeGraph.available}")
+            Log.i(TAG, "catalog: ${c.countries.count { x -> x.available }} countries")
             true
           }
         } catch (e: Exception) {

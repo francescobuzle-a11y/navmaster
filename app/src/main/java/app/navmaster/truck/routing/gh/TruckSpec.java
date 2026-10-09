@@ -11,8 +11,13 @@ import java.util.List;
  * Plain Java, no Android: also used by the routing test that runs on the computer.
  */
 public final class TruckSpec {
-  /** A lorry or a bus: roads closed to lorries (hgv=no) are closed to it. False for campers and vans. */
+  /**
+   * Routed as openrouteservice's "driving-hgv" (lorries and buses: its speeds, preferences and
+   * roads), else as its "driving-car" (campers, vans, cars).
+   */
   public boolean hgv = true;
+  /** openrouteservice's vehicle_type on driving-hgv: "hgv" (lorry) or "bus" (roads closed to it). */
+  public String vehicleType = "hgv";
   public double heightM = 4.0;
   public double widthM = 2.55;
   public double lengthM = 16.5;
@@ -47,7 +52,7 @@ public final class TruckSpec {
   /** The same vehicle and choices (the zones are shared, they are not changed). */
   public TruckSpec copy() {
     TruckSpec t = new TruckSpec();
-    t.hgv = hgv; t.heightM = heightM; t.widthM = widthM; t.lengthM = lengthM; t.weightT = weightT;
+    t.hgv = hgv; t.vehicleType = vehicleType; t.heightM = heightM; t.widthM = widthM; t.lengthM = lengthM; t.weightT = weightT;
     t.axleLoadT = axleLoadT; t.hazmat = hazmat; t.tunnelCode = tunnelCode; t.hazmatWater = hazmatWater;
     t.topSpeedKmh = topSpeedKmh; t.avoidTolls = avoidTolls; t.avoidFerries = avoidFerries; t.avoidUnpaved = avoidUnpaved;
     t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest; t.route = route;
@@ -58,7 +63,7 @@ public final class TruckSpec {
 
   @Override
   public String toString() {
-    return "TruckSpec{hgv=" + hgv + ", h=" + heightM + ", w=" + widthM + ", l=" + lengthM + ", t=" + weightT +
+    return "TruckSpec{hgv=" + hgv + (hgv && !"hgv".equals(vehicleType) ? "/" + vehicleType : "") + ", h=" + heightM + ", w=" + widthM + ", l=" + lengthM + ", t=" + weightT +
         ", axle=" + axleLoadT + ", hazmat=" + hazmat + (tunnelCode != 0 ? "/" + tunnelCode : "") + (hazmatWater ? "/water" : "") + ", v=" + topSpeedKmh + ", route=" + route + ", tolls=" + !avoidTolls +
         ", ferries=" + !avoidFerries + ", unpaved=" + !avoidUnpaved + ", zones=" + avoidZones.size() + "}";
   }

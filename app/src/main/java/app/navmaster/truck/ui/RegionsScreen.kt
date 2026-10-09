@@ -103,15 +103,15 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
         "Se cambi scelta, tocca «Aggiorna» sul Paese.")
     if (here != null) {
       SectionHeader("Ti trovi qui")
-      CountryRow(here, installed.any { it.id == here.id }, states[here.id], settings.useEuropeGraph, settings.downloadWifiOnly, highlight = true)
+      CountryRow(here, installed.any { it.id == here.id }, states[here.id], settings.downloadWifiOnly, highlight = true)
     }
     val inst = installed.filter { r -> r.id != here?.id }
     if (inst.isNotEmpty()) {
       SectionHeader("Scaricati")
       for (r in inst) {
         val c = catalog?.countries?.firstOrNull { it.id == r.id }
-        if (c != null) CountryRow(c, true, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
-        else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.engine.reset(); AppGraph.gh.reset() }
+        if (c != null) CountryRow(c, true, states[c.id], settings.downloadWifiOnly)
+        else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.gh.reset() }
       }
     }
     SectionHeader("Tutti i Paesi")
@@ -123,7 +123,7 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
     if (query.isNotBlank()) {
       for (c in list) {
         if (c.id == here?.id) continue
-        CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
+        CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.downloadWifiOnly)
       }
     } else {
       // by area, folded: only the area you are in starts open
@@ -145,19 +145,16 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
         }
         if (open) {
           Column(Modifier.padding(start = 8.dp)) {
-            for (c in inArea) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
+            for (c in inArea) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.downloadWifiOnly)
           }
         }
       }
       // anything the catalog has that no area lists
       val known = AREAS.values.flatten().toSet()
-      for (c in list) if (c.iso !in known && c.id != here?.id) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.useEuropeGraph, settings.downloadWifiOnly)
+      for (c in list) if (c.iso !in known && c.id != here?.id) CountryRow(c, installed.any { it.id == c.id }, states[c.id], settings.downloadWifiOnly)
     }
-    catalog?.europeGraph?.let {
-      Spacer(Modifier.height(10.dp))
-      Caption(if (it.available) "Grafo Europa disponibile (${it.built}): i percorsi attraversano i confini tra i Paesi scaricati."
-          else "Grafo Europa in preparazione: per ora il calcolo resta dentro il Paese di partenza.")
-    }
+    Spacer(Modifier.height(10.dp))
+    Caption("I percorsi tra Paesi diversi uniscono i grafi dei Paesi scaricati ai valichi di confine: scarica tutti i Paesi del viaggio.")
     Spacer(Modifier.height(20.dp))
   }
 }
@@ -174,11 +171,11 @@ private fun InstalledRow(label: String, size: Long, built: String, onDelete: () 
 }
 
 @Composable
-fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEurope: Boolean, wifiOnly: Boolean, highlight: Boolean = false) {
+fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOnly: Boolean, highlight: Boolean = false) {
   // without the landmarks of the vehicles not chosen
   val ghWanted = GhRouting.wantedNow()
   val ghSkipped = listOf(GhRouting.PACKAGE_TRUCK, GhRouting.PACKAGE_CAR).filter { it !in ghWanted }.sumOf { c.files[it] ?: 0L }
-  val size = c.downloadSize(useEurope && c.europeTiles != null) - ghSkipped
+  val size = c.downloadSize() - ghSkipped
   // an update for a country already on the tablet: its GraphHopper graph (missing or made for an
   // older version), or newer data; only what changed is downloaded
   val inst = if (installed) AppGraph.regions.get(c.id) else null
@@ -220,11 +217,10 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         busy -> {}
         installed -> RoundAction(Icons.Rounded.DeleteOutline, "Elimina", size = 52.dp, container = Nm.Raised) {
           AppGraph.regions.delete(c.id)
-          AppGraph.engine.reset()
           AppGraph.gh.reset()
         }
         c.available -> RoundAction(Icons.Rounded.CloudDownload, "Scarica", size = 52.dp, container = Nm.Accent) {
-          AppGraph.regions.download(c.id, c.name, useEurope)
+          AppGraph.regions.download(c.id, c.name)
         }
         else -> {}
       }
@@ -235,7 +231,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, useEur
         else -> "Aggiorna: calcolo percorsi GraphHopper · ${gb(ghSize ?: 0L)}"
       }
       BigButton(what, Modifier.fillMaxWidth().padding(top = 8.dp), Icons.Rounded.CloudDownload) {
-        AppGraph.regions.download(c.id, c.name, useEurope)
+        AppGraph.regions.download(c.id, c.name)
       }
     }
     when (state) {
@@ -279,10 +275,10 @@ fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
         Caption("Scarica la mappa per guidare anche senza rete: percorsi per mezzi pesanti, limiti, indirizzi e punti di interesse.")
         Spacer(Modifier.height(12.dp))
         val st = states[here.id]
-        if (st != null) CountryRow(here, false, st, settings.useEuropeGraph, settings.downloadWifiOnly, highlight = true)
-        else if (here.available) BigButton("Scarica ${here.name} (${gb(here.downloadSize(settings.useEuropeGraph && here.europeTiles != null))})",
+        if (st != null) CountryRow(here, false, st, settings.downloadWifiOnly, highlight = true)
+        else if (here.available) BigButton("Scarica ${here.name} (${gb(here.downloadSize())})",
             Modifier.fillMaxWidth(), Icons.Rounded.CloudDownload) {
-          AppGraph.regions.download(here.id, here.name, settings.useEuropeGraph)
+          AppGraph.regions.download(here.id, here.name)
         }
         else Caption("La mappa di ${here.name} è in preparazione: riprova tra poco o scegline un'altra.", color = Nm.Amber)
       } else {

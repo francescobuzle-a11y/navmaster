@@ -77,7 +77,7 @@ fun PlanPanel(
     onExpand: () -> Unit = {},
     onPickStart: () -> Unit = {},
     onClearStart: () -> Unit = {},
-    /** "Altri percorsi": Valhalla's routes added to GraphHopper's. */
+    /** "Altri percorsi": GraphHopper's alternatives added to the routes on screen. */
     onMore: () -> Unit = {},
 ) {
   // a departure chosen by the driver: the trip can only be simulated
@@ -169,7 +169,7 @@ fun PlanPanel(
           if (!plan.computing) MoreRoutesCard(plan.more, compact = false, onClick = onMore)
         }
         plan.routeNote?.let {
-          Caption("VH = calcolato con Valhalla, non con GraphHopper: $it", color = Nm.Amber, size = 13, lines = 4,
+          Caption(it, color = Nm.Amber, size = 13, lines = 4,
               modifier = Modifier.padding(top = 6.dp))
         }
         plan.advice?.let {
@@ -253,8 +253,8 @@ private fun VariantChip(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
 }
 
 /**
- * After the routes: "Altri percorsi" asks Valhalla for its own routes (other roads, still with the
- * vehicle's measures); a spinner while it looks; a note when it finds nothing new; gone once added.
+ * After the routes: "Altri percorsi" asks GraphHopper for its alternatives (other roads, still with
+ * the vehicle's measures); a spinner while it looks; a note when it finds nothing new; gone once added.
  */
 @Composable
 private fun MoreRoutesCard(state: MoreRoutes, compact: Boolean, onClick: () -> Unit) {
@@ -339,7 +339,7 @@ fun CritRow(c: Criticality, onClick: () -> Unit) {
   }
 }
 
-/** Who computed the route: GH (GraphHopper, with the vehicle's measures) or VH (Valhalla). */
+/** Who computed the route: ORS (openrouteservice, online) or GH (GraphHopper on the tablet), both with the vehicle's measures. */
 @Composable
 private fun SourceTag(source: String) {
   Spacer(Modifier.width(6.dp))

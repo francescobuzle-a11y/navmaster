@@ -27,7 +27,7 @@ android {
     versionCode = buildNumber
     versionName = "0.1.$buildNumber"
     vectorDrawables { useSupportLibrary = true }
-    // MapLibre + Valhalla are native: tablets are arm64, the CI emulator is x86_64
+    // MapLibre is native: tablets are arm64, the CI emulator is x86_64
     ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     // service keys built into the app (GitHub secrets of the repository, when present): the driver
     // never has to ask for or type a key
@@ -108,9 +108,6 @@ dependencies {
   implementation("com.graphhopper:graphhopper-core:11.0") {
     exclude(group = "org.codehaus.janino")
   }
-  implementation(libs.valhalla.mobile)
-  implementation(libs.valhalla.models)
-  implementation(libs.valhalla.models.config)
 
   implementation(platform(libs.okhttp.bom))
   implementation(libs.okhttp)

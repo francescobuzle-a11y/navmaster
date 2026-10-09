@@ -1,12 +1,6 @@
 package app.navmaster.truck.vehicle
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 
 /** Kinds of vehicle, each with the routing profile it uses and its typical geometry. */
 @Serializable
@@ -75,63 +69,11 @@ data class VehicleProfile(
   val isHgv: Boolean
     get() = maxWeightT > 3.5 && type in setOf(VehicleType.AUTOARTICOLATO, VehicleType.AUTOTRENO, VehicleType.MOTRICE)
 
-  /** Valhalla profile: vans and light campers are cars with their height and width. */
-  val costing: String
-    get() =
-        when {
-          type == VehicleType.AUTOBUS -> "bus"
-          type == VehicleType.FURGONE || (type == VehicleType.CAMPER && maxWeightT <= 3.5) -> "auto"
-          else -> "truck"
-        }
-
-  /**
-   * The options object merged into the Valhalla request by Ferrostar's generator: costing options,
-   * instruction language and units, plus the choices of this trip.
-   */
-  fun valhallaOptions(loadT: Double, trip: TripOptions = TripOptions()): JsonObject = buildJsonObject {
-    putJsonObject("costing_options") {
-      putJsonObject(costing) {
-        put("height", heightM)
-        put("width", widthM)
-        if (costing == "truck") {
-          put("length", lengthM)
-          put("weight", tripWeightT(loadT))
-          put("axle_load", axleLoadT)
-          put("axle_count", axleCount)
-          put("hazmat", hazmat)
-          // roads signed for lorries (hgv=designated) as a tie-breaker, never worth a long detour
-          put("use_truck_route", if (preferTruckRoutes) 0.15 else 0.0)
-          put("hgv_no_access_penalty", 43200)
-        }
-        // not the vehicle's own top speed: Valhalla would also avoid every faster road (a lorry at
-        // 80 km/h left the motorway for local roads). The times are capped afterwards (SpeedCap).
-        put("top_speed", ROUTING_TOP_SPEED)
-        put("use_tolls", if (trip.avoidTolls) 0.0 else 0.5)
-        if (trip.avoidTolls) put("exclude_tolls", true)
-        put("use_ferry", if (avoidFerries) 0.0 else 0.5)
-        put("exclude_unpaved", avoidUnpaved)
-        if (trip.shortest || trip.route == RouteKind.SHORTEST) put("shortest", true)
-        // more motorway: Valhalla's own preference for motorways at its highest
-        if (trip.route == RouteKind.MOTORWAY) put("use_highways", 1.0)
-        for ((k, v) in trip.debugCosting) put(k, v)
-      }
-    }
-    if (trip.excludePolygons.isNotEmpty()) {
-      put(
-          "exclude_polygons",
-          JsonArray(trip.excludePolygons.map { ring -> JsonArray(ring.map { p -> JsonArray(p.map { JsonPrimitive(it) }) }) }),
-      )
-    }
-    if (trip.alternates > 0) put("alternates", trip.alternates)
-    put("language", "it-IT")
-    put("units", "kilometers")
-    put("directions_type", "instructions")
-  }
+  /** A bus: routed as openrouteservice routes buses (driving-hgv, vehicle_type "bus"). */
+  val isBus: Boolean
+    get() = type == VehicleType.AUTOBUS
 
   companion object {
-    /** The top speed given to Valhalla: above every road's speed, so no road is avoided for it. */
-    const val ROUTING_TOP_SPEED = 140
-
     /** Typical geometry of each kind of vehicle for its length (used when type or length change). */
     fun withTypicalGeometry(p: VehicleProfile): VehicleProfile = with(p) {
       when (type) {
@@ -185,7 +127,6 @@ data class VehicleProfile(
   }
 }
 
-/** Choices that change from trip to trip (and during a trip). */
 /**
  * The kind of route the driver prefers, as openrouteservice's "preference": the fastest, the one
  * with more motorway ("recommended": lorries prefer motorways and main roads and avoid small
@@ -198,20 +139,22 @@ enum class RouteKind(val label: String, val gh: Int) {
   SHORTEST("Più corto", 2),
 }
 
+/** Choices that change from trip to trip (and during a trip). */
 data class TripOptions(
     val avoidTolls: Boolean = false,
     val shortest: Boolean = false,
     val route: RouteKind = RouteKind.FASTEST,
     val alternates: Int = 0,
-    /** Valhalla's own routes, not GraphHopper's: the "more routes" the driver asks for. */
-    val valhallaOnly: Boolean = false,
+    /**
+     * The "more routes" the driver asks for: GraphHopper's alternatives on the tablet (also when
+     * openrouteservice gave the first ones).
+     */
+    val moreRoutes: Boolean = false,
     /** Rings of [lon, lat] the route must not touch (points the driver chose to avoid). */
     val excludePolygons: List<List<List<Double>>> = emptyList(),
-    /** Diagnosis only: costing options that override the vehicle's ("use_highways" → 1.0 ...). */
-    val debugCosting: Map<String, Double> = emptyMap(),
     /**
      * Direction of travel at some pass-through points, by [pointKey]: points taken from a route
-     * already computed, so that Valhalla takes them on the right carriageway of a motorway.
+     * already computed, so that the route takes them on the right carriageway of a motorway.
      */
     val viaHeadings: Map<String, Double> = emptyMap(),
 ) {

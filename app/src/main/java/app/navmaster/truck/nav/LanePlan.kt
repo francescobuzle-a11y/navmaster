@@ -6,7 +6,7 @@ package app.navmaster.truck.nav
  * a merge, from 400 m before a junction in town where only some lanes go the right way).
  *
  * Where the lanes come from, most precise first:
- *  1. the route's own lanes (OpenStreetMap turn:lanes, read by Valhalla): exactly the lanes of the
+ *  1. the route's own lanes (OpenStreetMap turn:lanes, read by GhGuide): exactly the lanes of the
  *     junction and which ones go the route's way;
  *  2. at motorway exits, forks and merges without turn:lanes: the number of lanes of the road from
  *     the map and the lanes of the road taken, the exit on its own side (as it is built);
@@ -15,7 +15,7 @@ package app.navmaster.truck.nav
  * Pure Kotlin, tested on the computer.
  */
 object LanePlan {
-  /** A lane of the route ([dirs] as Valhalla writes them: "straight", "slight right"…). */
+  /** A lane of the route ([dirs] as the OSRM answer writes them: "straight", "slight right"…). */
   data class In(val dirs: List<String>, val active: Boolean, val activeDir: String?)
 
   /** A lane to draw: its arrow, whether to take it, and whether it is the lane of a merge. */

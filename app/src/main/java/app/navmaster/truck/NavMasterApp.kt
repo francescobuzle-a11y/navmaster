@@ -11,7 +11,6 @@ import app.navmaster.truck.routing.CriticalityFinder
 import app.navmaster.truck.routing.GhRouting
 import app.navmaster.truck.routing.OfflineRouteProvider
 import app.navmaster.truck.routing.OrsRouting
-import app.navmaster.truck.routing.RoutingEngine
 import app.navmaster.truck.search.AddressIndex
 import app.navmaster.truck.search.RecentStore
 import app.navmaster.truck.settings.SettingsStore
@@ -62,7 +61,6 @@ object AppGraph {
   val profiles by lazy { ProfileStore(app) }
   val catalog by lazy { CatalogStore(app) }
   val regions by lazy { RegionManager(app, catalog) }
-  val engine by lazy { RoutingEngine(app, regions) }
   /** GraphHopper: the route itself, with the vehicle's measures (see OfflineRouteProvider). */
   val gh by lazy { GhRouting(app, regions) }
   val limits by lazy { LimitsIndex(regions) }
@@ -95,7 +93,7 @@ object AppGraph {
   /** openrouteservice online (with a key built into the app), see OrsRouting. */
   val ors: OrsRouting by lazy { OrsRouting(app) { settings.settings.value.onlineRouting } }
 
-  val routes by lazy { OfflineRouteProvider(engine, gh, { profiles.garage.value }, { trip.value }, ors) { remember(it) } }
+  val routes by lazy { OfflineRouteProvider(gh, { profiles.garage.value }, { trip.value }, ors) { remember(it) } }
 
   /** The simulated drive (its speed can be changed while it runs). */
   val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }

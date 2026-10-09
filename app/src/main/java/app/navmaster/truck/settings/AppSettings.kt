@@ -125,7 +125,7 @@ enum class DriveView(val label: String) {
 @Serializable
 data class Settings(
     val tollPolicy: TollPolicy = TollPolicy.ASK,
-    /** Online, the route computed by openrouteservice (offline always GraphHopper / Valhalla). */
+    /** Online, the route computed by openrouteservice (offline always GraphHopper). */
     val onlineRouting: Boolean = true,
     /** The kind of route computed first (the others are offered next to it). */
     val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.MOTORWAY,
@@ -154,7 +154,6 @@ data class Settings(
     val poiRailOpacity: Int = 70,
     val poiRailSide: PoiSide = PoiSide.AUTO,
     val driveTimeReminder: Boolean = true,
-    val useEuropeGraph: Boolean = true,
     /** The vehicles the offline route calculation is downloaded for. */
     val offlineVehicles: OfflineVehicles = OfflineVehicles.AUTO,
     /** Maps only on Wi-Fi (off: also with mobile data, the driver often has no Wi-Fi). */

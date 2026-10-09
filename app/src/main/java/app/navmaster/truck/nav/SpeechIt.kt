@@ -3,7 +3,7 @@ package app.navmaster.truck.nav
 import kotlin.math.roundToInt
 
 /**
- * Italian as the voice must say it. The route's words (Valhalla) and the warnings are written for
+ * Italian as the voice must say it. The route's words (GhGuide) and the warnings are written for
  * the eye: "2a uscita", "SS 16", "V.le", "3,8 m", "1 km", "su A14, E 55". Read by a synthetic
  * voice they come out wrong ("due a uscita", "esse esse sedici", "uno chilometri"). Here every
  * sentence is turned into what a person would say, before it reaches the voice.
@@ -212,7 +212,7 @@ object SpeechIt {
 
   /** The places or road after "verso": "Ancona" → "in direzione Ancona"; a road stays a road. */
   private fun toward(t: String): String {
-    // Valhalla: "Mantieni la sinistra per imboccare A1", "… per rimanere su E 35"
+    // the route's text: "Mantieni la sinistra per imboccare A1", "… per rimanere su E 35"
     VERB.find(t.trim())?.let { m ->
       val road = withArticle(normalize(fewPlaces(m.groupValues[2])).replace(Regex("\\b([A-Z]{1,3}) (\\d{1,4})\\b"), "$1$2"))
       val stay = m.groupValues[1].lowercase().let { it.startsWith("riman") || it.startsWith("rest") }
@@ -230,8 +230,8 @@ object SpeechIt {
    * goes ([modifier]: "RIGHT", "SLIGHT_LEFT"…). Returns null for what is not said at all (the
    * exit of a roundabout already announced with its entry, "Continua" on the same road).
    */
-  fun maneuver(valhalla: String, type: String? = null, modifier: String? = null): String? {
-    val raw = valhalla.trim().trimEnd('.', ' ')
+  fun maneuver(text: String, type: String? = null, modifier: String? = null): String? {
+    val raw = text.trim().trimEnd('.', ' ')
     if (raw.isEmpty()) return null
     val t = (type ?: "").uppercase()
     val side = when {

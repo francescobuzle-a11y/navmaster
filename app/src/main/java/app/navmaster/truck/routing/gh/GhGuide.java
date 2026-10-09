@@ -26,26 +26,26 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * The guidance of a GraphHopper route worked out on the tablet from the graph itself, without
- * Valhalla: manoeuvres, Italian sentences for the voice and the screen, lanes, exit numbers and
- * signs, speed limits. The result is written as an OSRM route answer with the extensions that
- * Valhalla writes (bannerInstructions, voiceInstructions, annotation with maxspeed), the format
- * Ferrostar reads and that the rest of the app was built on; and, for the analysis of the route
- * (tolls, tunnels, countries, junctions, OSM ways), as the answer of Valhalla's trace_attributes.
+ * The guidance of a route worked out on the tablet from GraphHopper's graph itself: manoeuvres,
+ * Italian sentences for the voice and the screen, lanes, exit numbers and signs, speed limits. The
+ * result is written as an OSRM route answer with the Mapbox extensions (bannerInstructions,
+ * voiceInstructions, annotation with maxspeed), the format Ferrostar reads and that the rest of
+ * the app was built on; and, for the analysis of the route (tolls, tunnels, countries, junctions,
+ * OSM ways), as a list of the roads of the route (shape, admins, edges).
  *
- * The sentences follow the forms Valhalla writes in Italian (its narrative, MIT licence), which
- * the app turns into spoken Italian (SpeechIt): "Svolta a destra su Via Roma.", "Prendi l'uscita 5
- * a destra per RA1 verso Tangenziale.", "Entra nella rotonda e prendi la 2a uscita per X.".
+ * The sentences are the usual Italian navigation forms (first modelled on an open-source Italian
+ * narrative under the MIT licence), which the app turns into spoken Italian (SpeechIt): "Svolta a
+ * destra su Via Roma.", "Prendi l'uscita 5 a destra per RA1 verso Tangenziale.", "Entra nella
+ * rotonda e prendi la 2a uscita per X.".
  *
- * Plain Java, no Android: tested on the computer against Valhalla's answers on the same trips
- * (tools/guide).
+ * Plain Java, no Android: tested on the computer on the test trips (tools/guide/GuideRun.java).
  */
 public final class GhGuide {
   /** The route answers. */
   public static final class Output {
-    /** OSRM route answer (code, routes[1], waypoints), as Valhalla's with format=osrm. */
+    /** OSRM route answer (code, routes[1], waypoints). */
     public String osrm;
-    /** trace_attributes answer (shape, admins, edges) for RouteAnalysis. */
+    /** The roads of the route (shape, admins, edges) for RouteAnalysis. */
     public String attributes;
     public int steps;
   }
@@ -291,7 +291,7 @@ public final class GhGuide {
     }
   }
 
-  /** "A14;E 55" (GraphHopper stores "A14, E 55") → "A14; E 55" (as Valhalla writes the refs). */
+  /** "A14;E 55" (GraphHopper stores "A14, E 55") → "A14; E 55" (as the signs write the refs). */
   private static String refs(String r) {
     if (r.isEmpty()) return r;
     StringBuilder b = new StringBuilder();
@@ -805,7 +805,7 @@ public final class GhGuide {
     return n + "a";
   }
 
-  /** The instruction of a manoeuvre (the step's own, written as Valhalla writes it). */
+  /** The instruction of a manoeuvre (the step's own). */
   private String instruction(Man m, boolean voice) {
     String road = road(m, voice);
     String sd = sideWord(m.modifier);
@@ -920,7 +920,7 @@ public final class GhGuide {
       case "right":
         return osm.trim();
       default:
-        // no arrow painted ("", "none"): the lane goes straight on (as Valhalla shows it)
+        // no arrow painted ("", "none"): the lane goes straight on
         return "straight";
     }
   }
@@ -1007,7 +1007,7 @@ public final class GhGuide {
     return String.format(Locale.ROOT, "%.3f", v);
   }
 
-  /** Google's polyline with 6 decimals (Valhalla's shape, Ferrostar's parser precision). */
+  /** Google's polyline with 6 decimals (Ferrostar's parser precision). */
   static String polyline6(double[] la, double[] lo, int from, int to) {
     StringBuilder b = new StringBuilder();
     long pLat = 0, pLon = 0;
@@ -1171,7 +1171,7 @@ public final class GhGuide {
       b.append(']');
     }
     b.append("}]");
-    // what the step says about the manoeuvre at its end (Mapbox / Valhalla convention)
+    // what the step says about the manoeuvre at its end (Mapbox convention)
     b.append(",\"bannerInstructions\":[");
     if (next != null) {
       next.lanes = lanesAt(next);
@@ -1267,9 +1267,9 @@ public final class GhGuide {
     }
   }
 
-  // ----------------------------------------------------------------------- trace_attributes
+  // ----------------------------------------------------------------------- roads of the route
 
-  /** The roads of the route as Valhalla's trace_attributes gives them (RouteAnalysis.parse). */
+  /** The roads of the route in the form RouteAnalysis.parse reads (shape, admins, edges). */
   private String attributes() {
     StringBuilder b = new StringBuilder(64 * 1024);
     int n = lat.length;
@@ -1356,7 +1356,7 @@ public final class GhGuide {
 
   private void edge(StringBuilder b, Seg s, int from, int to, String nodeType, Seg next, List<String> admins) {
     b.append("{\"way_id\":").append(s.way).append(",\"road_class\":");
-    q(b, valhallaClass(s.rc));
+    q(b, roadClassName(s.rc));
     b.append(",\"use\":");
     q(b, s.ferry ? "ferry" : s.link ? "ramp" : s.rc == RoadClass.SERVICE ? "driveway" : "road");
     b.append(",\"toll\":").append(s.toll).append(",\"surface\":");
@@ -1414,7 +1414,7 @@ public final class GhGuide {
         b.append(",\"use\":");
         q(b, br.link ? "ramp" : br.rc == RoadClass.SERVICE ? "driveway" : isServiceLike(br.rc) ? "footway" : "road");
         b.append(",\"begin_heading\":").append(Math.round(br.bearing) % 360).append(",\"road_class\":");
-        q(b, valhallaClass(br.rc));
+        q(b, roadClassName(br.rc));
         b.append(",\"lane_count\":").append(br.lanes).append('}');
       }
       b.append(']');
@@ -1442,7 +1442,7 @@ public final class GhGuide {
     return false;
   }
 
-  private static String valhallaClass(RoadClass rc) {
+  private static String roadClassName(RoadClass rc) {
     if (rc == null) return "service_other";
     switch (rc) {
       case MOTORWAY:

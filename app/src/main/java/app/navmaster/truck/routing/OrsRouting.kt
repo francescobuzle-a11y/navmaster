@@ -30,9 +30,10 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * The route computed online by openrouteservice (HeiGIT, free "Standard" plan: 2,000 routes a day,
  * 40 a minute), when the tablet is online and the app was built with a key (GitHub secret ORS_KEY):
  * lorries with the profile driving-hgv and the vehicle's measures, campers and cars driving-car.
+ * Buses go on driving-hgv with vehicle_type "bus" (as openrouteservice routes them).
  * Without network, without key, over the quota or on any error: null, and the route is computed on
- * the tablet as before (GraphHopper, then Valhalla). The path found is then guided by Valhalla
- * exactly as GraphHopper's (see OfflineRouteProvider.guide).
+ * the tablet by GraphHopper with openrouteservice's rules. The path found is followed on
+ * GraphHopper's graph, checked against the vehicle's limits and guided from it (OfflineRouteProvider).
  */
 class OrsRouting(private val context: Context, private val enabled: () -> Boolean) {
   private val client = OkHttpClient.Builder()
@@ -108,7 +109,7 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
     if (s.avoidFerries) avoid += JsonPrimitive("ferries")
     if (avoid.isNotEmpty()) options["avoid_features"] = JsonArray(avoid)
     if (s.hgv) {
-      options["vehicle_type"] = JsonPrimitive("hgv")
+      options["vehicle_type"] = JsonPrimitive(s.vehicleType.ifBlank { "hgv" })
       val r = mutableMapOf<String, JsonElement>()
       if (s.heightM > 0) r["height"] = JsonPrimitive(s.heightM)
       if (s.widthM > 0) r["width"] = JsonPrimitive(s.widthM)

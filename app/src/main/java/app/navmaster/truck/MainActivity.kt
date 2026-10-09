@@ -40,7 +40,8 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     if (savedInstanceState == null) handleShared(intent)
     // a map download cut off (app closed, tablet restarted) goes on by itself
     AppGraph.regions.resumePending()
-    Thread { runCatching { AppGraph.regions.dropValhallaAll() } }.start()
+    // the routing data of the old versions (percorsi.tar, grafo-europa), not used any more: space given back
+    Thread { runCatching { AppGraph.regions.removeOldRoutingData() } }.start()
   }
 
   override fun onNewIntent(intent: android.content.Intent) {
@@ -95,17 +96,10 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     }
     intent?.getIntExtra("nm_poicount", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailCount = v) } }
     intent?.getIntExtra("nm_poisec", -1)?.takeIf { it >= 0 }?.let { v -> AppGraph.settings.update { it.copy(poiRailSeconds = v) } }
-    intent?.getStringExtra("nm_probecmp")?.let { pr ->
-      val pts = pr.split('_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } }
-      intent?.getStringExtra("nm_load")?.toDoubleOrNull()?.let { AppGraph.profiles.setLoad(it) }
-      if (pts.size == 2) vm.probeCompare(pts[0], pts[1], "camper", intent?.getStringExtra("nm_profile") ?: "camion")
-    }
     intent?.getStringExtra("nm_probe")?.let { pr ->
       intent?.getStringExtra("nm_profile")?.let { AppGraph.profiles.select(it) }
       intent?.getStringExtra("nm_load")?.toDoubleOrNull()?.let { AppGraph.profiles.setLoad(it) }
-      val dbg = intent?.getStringExtra("nm_costing")?.split(',')?.mapNotNull { kv ->
-        kv.split(':').takeIf { it.size == 2 }?.let { it[0] to (it[1].toDoubleOrNull() ?: return@mapNotNull null) } }?.toMap() ?: emptyMap()
-      vm.probe(debugCosting = dbg, points = pr.split(';', '_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
+      vm.probe(points = pr.split(';', '_').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } })
     }
     intent?.getStringExtra("nm_night")?.let { n ->
       val mode = when (n) { "night" -> app.navmaster.truck.settings.NightMode.NIGHT; "day" -> app.navmaster.truck.settings.NightMode.DAY
@@ -114,7 +108,7 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     }
     if (intent?.getBooleanExtra("nm_simtest", false) == true) vm.simSelfTest()
     // emulator test of the map download (a small country, from the real releases)
-    intent?.getStringExtra("nm_download")?.let { id -> AppGraph.regions.download(id, id, AppGraph.settings.settings.value.useEuropeGraph) }
+    intent?.getStringExtra("nm_download")?.let { id -> AppGraph.regions.download(id, id) }
     intent?.getStringExtra("nm_live_prefix")?.let { app.navmaster.truck.live.SharedReports.prefix = it }
     intent?.getStringExtra("nm_tomtom_key")?.let { k -> AppGraph.settings.update { it.copy(tomtomKey = if (k == "none") "" else k) } }
     // emulator test of the direct mode on a sample file (never the real service from the tests)

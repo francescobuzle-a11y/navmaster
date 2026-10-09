@@ -48,13 +48,26 @@ public final class GhEngine implements Closeable {
   public static final String SUFFIX_SHORT = "_short";
   /** The kinds of route a driver can ask for (TruckSpec.route). */
   public static final int ROUTE_FAST = 0, ROUTE_MOTORWAY = 1, ROUTE_SHORT = 2;
-  /** openrouteservice's values stored in the graph (NmImport), and GraphHopper's ones used by the trip's choices. */
-  public static final String ENCODED_VALUES = "ors_hgv_access, ors_hgv_speed, ors_hgv_recommended, ors_car_access, ors_car_speed, "
-      + "road_class, road_class_link, road_environment, toll, max_width, max_height, max_weight, max_length, max_axle_load, "
-      + "hazmat, hazmat_tunnel, hazmat_water, "
+  /**
+   * openrouteservice's values stored in the graph (tools/gh/NmImport.java, OrsRules.java): access,
+   * speed and (lorries) preference; destination/private access and service roads
+   * (LimitedAccessWeighting); roads closed to lorries or to dangerous goods; signed limits; tolls;
+   * ferries.
+   */
+  public static final String ORS_HGV_ACCESS = "ors_hgv_access", ORS_CAR_ACCESS = "ors_car_access",
+      ORS_HGV_SPEED = "ors_hgv_speed", ORS_CAR_SPEED = "ors_car_speed", ORS_HGV_PRIORITY = "ors_hgv_priority",
+      ORS_ROAD_ACCESS = "ors_road_access", ORS_SERVICE = "ors_service", ORS_TOLL = "ors_toll", ORS_FERRY = "ors_ferry",
+      ORS_HGV_TYPE_NO = "ors_hgv_type_no", ORS_BUS_TYPE_NO = "ors_bus_type_no", ORS_HAZMAT_NO = "ors_hazmat_no", ORS_MAX_HEIGHT = "ors_max_height",
+      ORS_MAX_WIDTH = "ors_max_width", ORS_MAX_LENGTH = "ors_max_length", ORS_MAX_WEIGHT = "ors_max_weight",
+      ORS_MAX_AXLE_LOAD = "ors_max_axle_load";
+  public static final String ENCODED_VALUES = String.join(", ", ORS_HGV_ACCESS, ORS_HGV_SPEED, ORS_HGV_PRIORITY,
+      ORS_CAR_ACCESS, ORS_CAR_SPEED, ORS_ROAD_ACCESS, ORS_SERVICE, ORS_TOLL, ORS_FERRY, ORS_HGV_TYPE_NO, ORS_BUS_TYPE_NO, ORS_HAZMAT_NO,
+      ORS_MAX_HEIGHT, ORS_MAX_WIDTH, ORS_MAX_LENGTH, ORS_MAX_WEIGHT, ORS_MAX_AXLE_LOAD)
+      // the ADR tunnel category and the goods dangerous for water (asked in the app, not by openrouteservice)
+      + ", hazmat_tunnel, hazmat_water"
       // for the guidance (GhGuide): the OSM way (limits and difficulties of the tablet's data are
-      // matched by way), lanes, surface, country, speed limit, roundabouts
-      + "osm_way_id, lanes, surface, country, max_speed, roundabout";
+      // matched by way), road class, lanes, surface, country, speed limit, roundabouts, tolls, tunnels
+      + ", road_class, road_class_link, road_environment, toll, osm_way_id, lanes, surface, country, max_speed, roundabout";
 
   /** Values of the graph's key-value store added for the guidance (tools/gh/NmImport.java). */
   public static final String KV_TURN_LANES = "nm_turn_lanes", KV_LANES_DIR = "nm_lanes_dir",
@@ -98,10 +111,19 @@ public final class GhEngine implements Closeable {
     for (String n : profileNames()) out.add(n + ".json");
     return out;
   }
-  /** Vehicle types whose turn restrictions are followed (as when the graph was built). */
-  public static final List<String> TURN_VEHICLES_TRUCK = Arrays.asList("hgv", "motorcar", "motor_vehicle");
-  public static final List<String> TURN_VEHICLES_CAR = Arrays.asList("motorcar", "motor_vehicle");
-  public static final int U_TURN_COSTS = 60;
+  /**
+   * The turn restrictions are read as openrouteservice reads them (NmImport rewrites each relation
+   * as "restriction:hgv" for its lorries and "restriction:motorcar" for its cars).
+   */
+  public static final List<String> TURN_VEHICLES_TRUCK = Arrays.asList("hgv");
+  public static final List<String> TURN_VEHICLES_CAR = Arrays.asList("motorcar");
+  /**
+   * openrouteservice forbids u-turns (INFINITE_U_TURN_COSTS). GraphHopper 11's landmarks are not
+   * exact with infinite u-turn costs (on the Rimini test graph 7% of the routes came out worse than
+   * plain A*; none with a finite cost), so a u-turn costs one hour: never taken unless it saves more
+   * than an hour, i.e. the same routes as openrouteservice.
+   */
+  public static final int U_TURN_COSTS = 3600;
   /** Ways left out of the graph (no vehicle drives on them); the same list as on GitHub. */
   public static final String IGNORED_HIGHWAYS =
       "footway,cycleway,path,pedestrian,steps,bridleway,corridor,construction,proposed,platform,raceway";
@@ -134,10 +156,31 @@ public final class GhEngine implements Closeable {
   }
 
   public static List<Profile> profiles() {
+    return profiles(false);
+  }
+
+  /**
+   * [legacy]: the profiles of the graphs made before openrouteservice's turn restrictions (10/2026):
+   * GraphHopper's own reading of the restrictions for hgv / motorcar / motor_vehicle, u-turns 60 s.
+   */
+  static List<Profile> profiles(boolean legacy) {
     List<Profile> out = new ArrayList<>();
-    for (String n : profileNames()) out.add(profile(n, n + ".json", n.startsWith(PROFILE_TRUCK) ? TURN_VEHICLES_TRUCK : TURN_VEHICLES_CAR));
+    for (String n : profileNames()) {
+      boolean truck = n.startsWith(PROFILE_TRUCK);
+      if (legacy) {
+        Profile p = profile(n, n + ".json", truck ? LEGACY_TURN_TRUCK : LEGACY_TURN_CAR);
+        p.setTurnCostsConfig(new TurnCostsConfig(truck ? LEGACY_TURN_TRUCK : LEGACY_TURN_CAR, LEGACY_U_TURN_COSTS));
+        out.add(p);
+      } else {
+        out.add(profile(n, n + ".json", truck ? TURN_VEHICLES_TRUCK : TURN_VEHICLES_CAR));
+      }
+    }
     return out;
   }
+
+  static final List<String> LEGACY_TURN_TRUCK = Arrays.asList("hgv", "motorcar", "motor_vehicle");
+  static final List<String> LEGACY_TURN_CAR = Arrays.asList("motorcar", "motor_vehicle");
+  static final int LEGACY_U_TURN_COSTS = 60;
 
   public static List<LMProfile> lmProfiles() {
     List<LMProfile> out = new ArrayList<>();
@@ -150,13 +193,23 @@ public final class GhEngine implements Closeable {
    * folder with the base models. [mmap]: memory mapped (tablet) or in RAM (small test graphs).
    */
   public static GhEngine open(File dir, File modelsDir, boolean mmap) throws Exception {
+    try {
+      return open(dir, modelsDir, mmap, false);
+    } catch (IllegalStateException e) {
+      // a graph made before openrouteservice's turn restrictions: opened with its own profiles
+      if (e.getMessage() == null || !e.getMessage().contains("Profiles do not match")) throw e;
+      return open(dir, modelsDir, mmap, true);
+    }
+  }
+
+  private static GhEngine open(File dir, File modelsDir, boolean mmap, boolean legacy) throws Exception {
     GraphHopperConfig cfg = new GraphHopperConfig();
     cfg.putObject("graph.location", dir.getAbsolutePath());
     cfg.putObject("custom_models.directory", modelsDir.getAbsolutePath());
     // as when the graph was built (only checked, nothing is imported here)
     cfg.putObject("import.osm.ignored_highways", IGNORED_HIGHWAYS);
     cfg.putObject("graph.dataaccess.default_type", mmap ? "MMAP" : "RAM_STORE");
-    cfg.setProfiles(profiles());
+    cfg.setProfiles(profiles(legacy));
     // only the profiles whose landmarks were downloaded (lorries, other vehicles or both)
     List<LMProfile> lm = new ArrayList<>();
     java.util.Set<String> ready = new java.util.HashSet<>();
@@ -359,6 +412,35 @@ public final class GhEngine implements Closeable {
     return r;
   }
 
+  /**
+   * The first road of [r] the vehicle may not use with its measures and loads ([spec]), as "road:
+   * reason" for the driver, or null: a route computed elsewhere (openrouteservice's, whose cars
+   * have no measures, or made on other data) is checked with it before it is offered.
+   */
+  public String closedOn(Result r, TruckSpec spec) {
+    if (r.path == null) return null;
+    List<PathDetail> keys = r.path.getPathDetails().get("edge_key");
+    if (keys == null) return null;
+    OrsWeighting w = new OrsWeighting(hopper.getEncodingManager(), spec.hgv, OrsWeighting.Kind.FASTEST,
+        com.graphhopper.routing.weighting.TurnCostProvider.NO_TURN_COST_PROVIDER, spec);
+    com.graphhopper.storage.BaseGraph g = hopper.getBaseGraph();
+    for (PathDetail d : keys) {
+      if (!(d.getValue() instanceof Number)) continue;
+      int key = ((Number) d.getValue()).intValue();
+      try {
+        com.graphhopper.util.EdgeIteratorState e = g.getEdgeIteratorStateForKey(key);
+        String why = w.whyClosed(e, false);
+        if (why != null) {
+          String name = e.getName();
+          return (name == null || name.isEmpty() ? "una strada" : name) + ": " + why;
+        }
+      } catch (Exception ignored) {
+        // a key outside the graph (the start or the end of the path)
+      }
+    }
+    return null;
+  }
+
   static double metres(double lat1, double lon1, double lat2, double lon2) {
     double k = Math.cos(Math.toRadians((lat1 + lat2) / 2));
     double dy = (lat2 - lat1) * 111_195, dx = (lon2 - lon1) * 111_195 * k;
@@ -464,15 +546,17 @@ public final class GhEngine implements Closeable {
       }
     }
     req.getHints().putObject(NmWeightingFactory.SPEC, spec);
+    // tests on the computer: without the landmarks (plain A*, same routes, slower)
+    if (Boolean.getBoolean("nm.nolm")) req.getHints().putObject("lm.disable", true);
     // the roads of the path (alternatives, guidance) and the time on each one
     req.setPathDetails(Arrays.asList("edge_id", "edge_key", "time"));
     req.getHints().putObject("instructions", false);
     req.getHints().putObject("calc_points", true);
-    // every point of the roads, not simplified: Valhalla follows the path closely
+    // every point of the roads, not simplified: the guidance and the analysis follow the path closely
     req.getHints().putObject("way_point_max_distance", 0);
     if (maxPaths > 1) {
       // routes that are really different (at most 70% of road in common) and not much longer
-      // (at most 50% more) than the best one: on Rimini - San Marino three routes, as Valhalla gave
+      // (at most 50% more) than the best one: on Rimini - San Marino three routes
       req.setAlgorithm("alternative_route");
       req.getHints().putObject("alternative_route.max_paths", maxPaths);
       req.getHints().putObject("alternative_route.max_weight_factor", 1.5);

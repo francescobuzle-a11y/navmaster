@@ -17,7 +17,7 @@ import java.util.zip.GZIPInputStream
  * GraphHopper on the tablet: the graph of the country where the route starts (gh.tar.gz in the
  * country's package, unpacked once into its "gh" folder, plus the landmarks of the vehicles the
  * driver chose: gh-camion.tar.gz, gh-auto.tar.gz), opened memory-mapped and kept open.
- * Null when the country has no GraphHopper graph yet: the route is then Valhalla's alone.
+ * Null when the country has no GraphHopper graph yet (the map must be updated).
  */
 class GhRouting(private val context: Context, private val regions: RegionManager) {
   private var engine: GhEngine? = null
@@ -171,7 +171,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
   /**
    * The guidance along [r] worked out from the graph that computed it (GhGuide): an OSRM answer
    * for Ferrostar and the roads of the route for the analysis. Null when the graph was built
-   * without the guidance data (older packages: Valhalla guides then).
+   * without the guidance data (older packages, to be updated).
    */
   @Synchronized
   fun guide(r: GhEngine.Result, spec: TruckSpec, breaks: IntArray, requested: List<DoubleArray>): GhGuide.Output? {
@@ -184,7 +184,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return e.guide(r, spec, breaks, requested)
   }
 
-  // the roads of the routes guided by GraphHopper (trace_attributes form), for RouteAnalysis
+  // the roads of the routes guided by GraphHopper (shape, admins, edges), for RouteAnalysis
   private val attributes = object : LinkedHashMap<String, String>(16, 0.75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 24
   }
@@ -210,6 +210,39 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     val e = runCatching { engineAt(r.lat[0], r.lon[0]) }.getOrNull() ?: return null
     if (!e.canGuide() || !e.canRoute(spec)) return null
     return e.follow(r.lat, r.lon, r.waypointIndex, r.distanceM, spec)
+  }
+
+  /**
+   * The first road of [r] (a path of GraphHopper's graph, e.g. openrouteservice's route followed)
+   * closed to the vehicle [spec] with its measures and loads, as "road: reason"; null when it may
+   * drive all of it. openrouteservice's cars and campers have no measures (driving-car): its route
+   * is offered only when it passes this check.
+   */
+  @Synchronized
+  fun closedOn(r: GhEngine.Result, spec: TruckSpec): String? {
+    if (r.lat.isEmpty()) return null
+    val e = runCatching { engineAt(r.lat[0], r.lon[0]) }.getOrNull() ?: return null
+    return runCatching { e.closedOn(r, spec) }.onFailure { Log.w(TAG, "limits check failed: $it") }.getOrNull()
+  }
+
+  /**
+   * The roads of a route not guided here (or guided long ago): GraphHopper follows its line and
+   * reads them from its graph, as for its own routes. Null without a graph.
+   */
+  fun attributesAlong(route: Route, spec: TruckSpec): String? {
+    attributesFor(route)?.let { return it }
+    val g = route.geometry
+    if (g.size < 2) return null
+    val r = GhEngine.Result()
+    r.lat = DoubleArray(g.size) { g[it].lat }
+    r.lon = DoubleArray(g.size) { g[it].lng }
+    r.waypointIndex = intArrayOf(0, g.size - 1)
+    r.distanceM = route.distance
+    val f = follow(r, spec)?.takeIf { it.ok() && it.error == null } ?: return null
+    val out = guide(f, spec, intArrayOf(0, f.lat.size - 1), listOf(doubleArrayOf(g.first().lat, g.first().lng), doubleArrayOf(g.last().lat, g.last().lng)))
+        ?: return null
+    remember(route, out.attributes)
+    return out.attributes
   }
 
   @Synchronized
@@ -286,7 +319,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       val dir = File(regionDir, "gh")
       if (!File(dir, "properties").exists()) return GhState.MISSING
       if (!orsValues(File(dir, "properties"))) return GhState.OLD
-      // made before the guidance came from GraphHopper itself: it needs Valhalla, not kept any more
+      // made before the guidance came from GraphHopper itself: to be updated
       if (!guides(regionDir)) return GhState.OLD
       return if (wanted.all { hasPackage(regionDir, it) }) GhState.READY else GhState.PARTIAL
     }
@@ -360,8 +393,10 @@ class GhRouting(private val context: Context, private val regions: RegionManager
 fun app.navmaster.truck.vehicle.VehicleProfile.ghSpec(loadT: Double, trip: app.navmaster.truck.vehicle.TripOptions): TruckSpec {
   val v = this
   return TruckSpec().apply {
-    // the bans for lorries (hgv=no) are for goods vehicles over 3.5 t, not for buses and campers
-    hgv = v.isHgv
+    // the bans for lorries (hgv=no) are for goods vehicles over 3.5 t, not for campers; a bus is
+    // routed as openrouteservice routes it: driving-hgv with vehicle_type "bus"
+    hgv = v.isHgv || v.isBus
+    vehicleType = if (v.isBus) "bus" else "hgv"
     heightM = v.heightM
     widthM = v.widthM
     lengthM = v.lengthM
@@ -377,7 +412,7 @@ fun app.navmaster.truck.vehicle.VehicleProfile.ghSpec(loadT: Double, trip: app.n
     preferTruckRoutes = v.preferTruckRoutes
     shortest = trip.shortest
     route = trip.route.gh
-    // the zones are rings of [lon, lat] for Valhalla, [lat, lon] here
+    // the zones are rings of [lon, lat] (GeoJSON), [lat, lon] here
     for (ring in trip.excludePolygons) {
       avoidZones.add(ring.map { p -> doubleArrayOf(p[1], p[0]) }.toTypedArray())
     }

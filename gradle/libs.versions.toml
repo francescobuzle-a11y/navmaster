@@ -3,8 +3,6 @@ agp = "9.0.1"
 kotlin = "2.3.20"
 ferrostar = "0.57.0"
 maplibreCompose = "0.13.0"
-valhallaMobile = "0.6.3"
-valhallaModels = "0.5.2"
 composeBom = "2026.02.01"
 activityCompose = "1.13.0"
 lifecycle = "2.10.0"
@@ -21,9 +19,6 @@ ferrostar-ui-compose = { group = "com.stadiamaps.ferrostar", name = "ui-compose"
 ferrostar-ui-maplibre = { group = "com.stadiamaps.ferrostar", name = "ui-maplibre", version.ref = "ferrostar" }
 ferrostar-ui-formatters = { group = "com.stadiamaps.ferrostar", name = "ui-formatters", version.ref = "ferrostar" }
 maplibre-compose = { group = "org.maplibre.compose", name = "maplibre-compose-android", version.ref = "maplibreCompose" }
-valhalla-mobile = { group = "io.github.rallista", name = "valhalla-mobile", version.ref = "valhallaMobile" }
-valhalla-models = { group = "io.github.rallista", name = "valhalla-models", version.ref = "valhallaModels" }
-valhalla-models-config = { group = "io.github.rallista", name = "valhalla-models-config", version.ref = "valhallaModels" }
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }
 compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }

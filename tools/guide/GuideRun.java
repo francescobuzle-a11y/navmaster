@@ -10,8 +10,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The guidance computed by GraphHopper alone (GhGuide) on the test trips of one area, written as
- * Valhalla's answers are (tools/guide/vhref.py), to be compared with them (compare.py).
+ * The guidance computed by GraphHopper (GhGuide) on the test trips of one area, written as OSRM
+ * route answers (one file per trip), to be read and checked on the computer.
  *
  * usage: java -cp gh.jar:classes GuideRun GRAPH_DIR MODELS_DIR trips.json AREA OUTDIR
  */

@@ -8,7 +8,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -16,7 +15,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
 import uniffi.ferrostar.GeographicCoordinate
 import uniffi.ferrostar.Route
 
@@ -109,7 +107,7 @@ data class Span(val startM: Double, val endM: Double) {
 
 /**
  * What the route is made of: toll stretches, exit ramps, countries crossed, surface, road classes.
- * Read with Valhalla's trace_attributes on the route's own shape, on the tablet.
+ * Read from GraphHopper's graph along the route, on the tablet.
  */
 class RouteAnalysis(
     val route: Route,
@@ -234,7 +232,7 @@ class RouteAnalysis(
   fun laneSignsNear(alongM: Double): LaneSigns? =
       laneSigns.filter { it.atM >= alongM - 400 && it.atM <= alongM + 40 }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
 
-  // the edges in route order (they are, from trace_attributes): found by halving, several times a
+  // the edges in route order (they are, from GhGuide): found by halving, several times a
   // second on long routes (a scan of thousands of edges at every call was a cause of lag)
   private val edgesSorted: Boolean = edges.zipWithNext().all { (x, y) -> y.startM >= x.startM }
 
@@ -290,118 +288,26 @@ class RouteAnalysis(
     }
 
     /**
-     * Diagnosis: the speed the graph gives [vehicle] on every road of [route] (map_snap, so the
-     * vehicle's own rules apply), summed per OSM way: "way:metres@kmh", and the total time.
+     * The roads of the route from GraphHopper's graph (GhGuide: shape, admins, edges): kept when GraphHopper guided the route, else read by following its line on the
+     * graph; an analysis without edges when there is no graph.
      */
-    fun speedsDebug(engine: RoutingEngine, route: Route, vehicle: VehicleProfile, loadT: Double, match: String = "map_snap"): String {
-      val options = vehicle.valhallaOptions(loadT)
-      val first = route.geometry.first()
-      val req = buildJsonObject {
-        put("encoded_polyline", Geo.encodePolyline6(route.geometry))
-        put("shape_match", match)
-        put("costing", vehicle.costing)
-        options["costing_options"]?.let { put("costing_options", it) }
-        put("filters", buildJsonObject {
-          put("action", "include")
-          put("attributes", JsonArray(listOf("edge.way_id", "edge.length", "edge.speed", "edge.truck_speed", "edge.speed_limit",
-              "edge.road_class", "edge.truck_route", "edge.toll", "edge.use").map { JsonPrimitive(it) }))
-        })
-      }
-      val raw = engine.use(first.lat, first.lng) { it.traceAttributesRaw(req.toString()) }
-      val root = json.parseToJsonElement(raw).jsonObject
-      val edges = root["edges"]?.jsonArray ?: return "no edges: ${raw.take(300)}"
-      var total = 0.0
-      val parts = mutableListOf<String>()
-      var lastWay = -1L
-      var wayLen = 0.0
-      var waySpeed = 0.0
-      fun flush() {
-        if (lastWay >= 0) parts += "$lastWay:${wayLen.toInt()}@${waySpeed.toInt()}"
-      }
-      for (e in edges) {
-        val o = e.jsonObject
-        val way = o["way_id"]?.jsonPrimitive?.longOrNull ?: 0L
-        val lenM = (o["length"]?.jsonPrimitive?.doubleOrNull ?: 0.0) * 1000
-        val sp = o["speed"]?.jsonPrimitive?.doubleOrNull ?: 0.0
-        if (sp > 0) total += lenM / (sp / 3.6)
-        if (way != lastWay) { flush(); lastWay = way; wayLen = 0.0; waySpeed = sp }
-        wayLen += lenM
-        waySpeed = minOf(waySpeed, sp)
-      }
-      flush()
-      val t = edges.firstOrNull()?.jsonObject
-      return "$match ${vehicle.name}: ${edges.size} edges, ${total.toInt()} s at the graph speeds; truck_speed/limit of first " +
-          "${t?.get("truck_speed")}/${t?.get("speed_limit")}; " + parts.joinToString(" ")
-    }
-
-    /**
-     * The roads of the route: GraphHopper's own when it guided the route (GhGuide, the same form as
-     * Valhalla's trace_attributes), else trace_attributes on the route shape; an analysis without
-     * edges when the graph refuses it.
-     */
-    fun analyse(engine: RoutingEngine, route: Route, vehicle: VehicleProfile, loadT: Double): RouteAnalysis {
+    fun analyse(route: Route, vehicle: VehicleProfile, loadT: Double): RouteAnalysis {
       if (route.geometry.size < 2) return RouteAnalysis(route, emptyList())
       val started = System.currentTimeMillis()
-      app.navmaster.truck.AppGraph.gh.attributesFor(route)?.let { raw ->
-        val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "GraphHopper roads: $it") }.getOrNull()
-        if (p != null && p.edges.isNotEmpty()) {
-          val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
-          a.junctionShapes = p.shapes
-          Log.i(TAG, "GraphHopper roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
-              "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
-              "junctions ${p.junctions.size}, shapes ${p.shapes.size}")
-          return a
-        }
-      }
-      val options = vehicle.valhallaOptions(loadT)
-      val first = route.geometry.first()
-      for (match in listOf("edge_walk", "map_snap")) {
-        try {
-          val req = buildJsonObject {
-            put("encoded_polyline", Geo.encodePolyline6(route.geometry))
-            put("shape_match", match)
-            put("costing", vehicle.costing)
-            options["costing_options"]?.let { put("costing_options", it) }
-            put("filters", buildJsonObject {
-              put("action", "include")
-              put("attributes", JsonArray(ATTRS.map { JsonPrimitive(it) }))
-            })
-          }
-          val raw = engine.use(first.lat, first.lng) { it.traceAttributesRaw(req.toString()) }
-          val p = parse(raw)
-          if (p.edges.isNotEmpty()) {
-            val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
-            a.junctionShapes = p.shapes
-            Log.i(TAG, "junction shapes: ${p.shapes.size}; " + p.shapes.take(6).joinToString { j ->
-              "${j.atM.toInt()}: in ${j.inHeading?.toInt()} out ${j.outHeading?.toInt()} x${j.outLanes} | " +
-                  j.branches.joinToString(" ") { b -> "${b.heading.toInt()}/${b.roadClass}/${b.lanes}" }
-            })
-            Log.i(TAG, "$match: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
-                "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
-                "junctions ${p.junctions.size}, signs " +
-                p.edges.filter { it.sign != null }.joinToString(prefix = "[", postfix = "]") { e ->
-                  "${e.startM.toInt()}:${e.sign?.exitNumbers?.joinToString("/")} ${e.sign?.branches?.joinToString("/")} > ${e.sign?.towards?.joinToString("/")}"
-                })
-            return a
-          }
-        } catch (e: Exception) {
-          Log.w(TAG, "trace_attributes $match: $e")
-        }
-      }
-      return RouteAnalysis(route, emptyList())
+      val gh = app.navmaster.truck.AppGraph.gh
+      val raw = gh.attributesFor(route)
+          ?: runCatching { gh.attributesAlong(route, vehicle.ghSpec(loadT, app.navmaster.truck.vehicle.TripOptions())) }
+              .onFailure { Log.w(TAG, "GraphHopper roads along the route: $it") }.getOrNull()
+          ?: return RouteAnalysis(route, emptyList())
+      val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "GraphHopper roads: $it") }.getOrNull()
+          ?: return RouteAnalysis(route, emptyList())
+      val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
+      a.junctionShapes = p.shapes
+      Log.i(TAG, "GraphHopper roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
+          "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
+          "junctions ${p.junctions.size}, shapes ${p.shapes.size}")
+      return a
     }
-
-    private val ATTRS =
-        listOf(
-            "edge.way_id", "edge.road_class", "edge.use", "edge.toll", "edge.surface", "edge.lane_count",
-            "edge.length", "edge.begin_shape_index", "edge.end_shape_index", "edge.names", "edge.tunnel",
-            "edge.bridge", "edge.roundabout", "edge.sign.exit_number", "edge.sign.exit_branch", "edge.sign.exit_toward",
-            "edge.sign.exit_name", "edge.max_upward_grade", "edge.max_downward_grade", "edge.end_node.admin_index",
-            "node.admin_index", "node.type", "node.intersecting_edge.driveability", "node.intersecting_edge.use",
-            "node.intersecting_edge.begin_heading", "node.intersecting_edge.road_class", "node.intersecting_edge.lane_count",
-            "edge.begin_heading", "edge.end_heading",
-            "admin.country_code", "admin.country_text", "shape",
-        )
 
     private class Parsed(val edges: List<EdgeInfo>, val nodes: List<RouteNode>, val junctions: DoubleArray,
                          val shapes: List<JunctionShape> = emptyList())

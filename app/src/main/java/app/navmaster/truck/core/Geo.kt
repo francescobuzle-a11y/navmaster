@@ -137,7 +137,7 @@ object Geo {
     return false
   }
 
-  /** Google encoded polyline with 6 decimals (what Valhalla expects). */
+  /** Google encoded polyline with 6 decimals (the OSRM answers' precision). */
   fun encodePolyline6(points: List<GeographicCoordinate>): String {
     val sb = StringBuilder()
     var lastLat = 0L
@@ -190,7 +190,7 @@ object Geo {
     return out
   }
 
-  /** A small square around a point, as Valhalla's exclude_polygons wants it ([lon, lat] ring). */
+  /** A small square around a point, as a GeoJSON ring of the zones to avoid ([lon, lat]). */
   fun squareAround(lat: Double, lon: Double, halfM: Double): List<List<Double>> {
     val dLat = halfM / 110540.0
     val dLon = halfM / (111320.0 * cos(Math.toRadians(lat)))

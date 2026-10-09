@@ -21,7 +21,7 @@ import uniffi.ferrostar.RouteStep
  * how long the voice takes to say each sentence: a sentence is started early enough to be over
  * before the next one is due, so they never overlap.
  *
- * The words are the route's own (Valhalla, in Italian), without the chained "Poi ..." parts and
+ * The words are the route's own (GhGuide, in Italian), without the chained "Poi ..." parts and
  * without the distance, which is said here, at the right moment.
  */
 class Announcer(
@@ -225,7 +225,7 @@ class Announcer(
   }
 
   companion object {
-    /** The chained second manoeuvre of Valhalla ("Poi svolta a sinistra"), said here only when due. */
+    /** The chained second manoeuvre of the route's text ("Poi svolta a sinistra"), said here only when due. */
     private val THEN = Regex("^(poi|quindi|subito dopo|then|and then)\\b", RegexOption.IGNORE_CASE)
     /** "Tra 300 metri, " / "Fra 2 chilometri " / "In 500 m, " at the start of an instruction. */
     private val DISTANCE = Regex("^(tra|fra|in|entro)\\s+[\\d.,]+\\s*(metri|metro|chilometri|chilometro|km|m|miglia|piedi|meters|kilometers)\\b[,]?\\s*",
