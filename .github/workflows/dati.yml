@@ -241,7 +241,7 @@ jobs:
               gh_version = old.get("graphhopper", "")
           items += gh_keep
           manifest = {"region": region, "label": names.get(region, "Prova Rimini / San Marino"),
-                      "built": time.strftime("%Y-%m-%d"), "valhalla": "3.6.3", "format": 2, "files": items}
+                      "built": time.strftime("%Y-%m-%d"), "routing": "graphhopper", "format": 2, "files": items}
           if gh_keep:
               manifest["graphhopper"] = gh_version
           json.dump(manifest, open("pkg/manifest.json", "w"), indent=1)
