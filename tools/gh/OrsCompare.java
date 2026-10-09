@@ -33,6 +33,9 @@ import java.util.regex.Pattern;
  * 15 m). A route is "the same" when 99% of it lies on the other and the lengths differ by less
  * than 1%.
  *
+ * The trips that are not the same are also written with both lines (OUT.tsv → OUT-diff.jsonl:
+ * {"case", "from", "to", "ors": [[lat, lon]…], "gh": [[lat, lon]…]}), to be studied on the computer.
+ *
  * usage: java -cp gh.jar:classes OrsCompare GRAPH MODELS ORS_URL TRIPS OUT.tsv [seed]
  */
 public class OrsCompare {
@@ -62,7 +65,8 @@ public class OrsCompare {
     }
     HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
     int[] same = new int[CASES.length], close = new int[CASES.length], other = new int[CASES.length], none = new int[CASES.length];
-    try (PrintWriter out = new PrintWriter(new FileWriter(a[4]))) {
+    try (PrintWriter out = new PrintWriter(new FileWriter(a[4]));
+         PrintWriter diff = new PrintWriter(new FileWriter(a[4].replaceAll("\\.tsv$", "") + "-diff.jsonl"))) {
       out.println("case\tfrom\tto\tors_km\tgh_km\tors_min\tgh_min\tors_on_gh\tgh_on_ors\tverdict");
       for (int t = 0; t < trips; t++) {
         double[] p = points.get(2 * t), q = points.get(2 * t + 1);
@@ -120,6 +124,13 @@ public class OrsCompare {
           out.printf(Locale.ROOT, "%s-%s\t%.6f,%.6f\t%.6f,%.6f\t%.3f\t%.3f\t%.2f\t%.2f\t%.3f\t%.3f\t%s%n", CASES[c][0], pref,
               p[0], p[1], q[0], q[1], orsM / 1000, r.distanceM / 1000, orsS / 60, r.timeMs / 60000.0, a1, a2, verdict);
           out.flush();
+          if (!verdict.equals("same") && !verdict.equals("none_both")) {
+            StringBuilder j = new StringBuilder();
+            j.append(String.format(Locale.ROOT, "{\"case\":\"%s-%s\",\"from\":[%.6f,%.6f],\"to\":[%.6f,%.6f],\"verdict\":\"%s\",\"ors\":%s,\"gh\":%s}",
+                CASES[c][0], pref, p[0], p[1], q[0], q[1], verdict, line(orsLine), r.ok() ? line(r.lat, r.lon) : "[]"));
+            diff.println(j);
+            diff.flush();
+          }
         }
       }
     }
@@ -155,6 +166,19 @@ public class OrsCompare {
     }
     b.append(String.format(Locale.ROOT, ",\"maximum_speed\":%s}", Math.max(80, s.topSpeedKmh)));
     return b.toString();
+  }
+
+  static String line(double[][] l) {
+    if (l == null) return "[]";
+    StringBuilder b = new StringBuilder("[");
+    for (int i = 0; i < l.length; i++) b.append(i > 0 ? "," : "").append(String.format(Locale.ROOT, "[%.6f,%.6f]", l[i][0], l[i][1]));
+    return b.append("]").toString();
+  }
+
+  static String line(double[] lat, double[] lon) {
+    StringBuilder b = new StringBuilder("[");
+    for (int i = 0; i < lat.length; i++) b.append(i > 0 ? "," : "").append(String.format(Locale.ROOT, "[%.6f,%.6f]", lat[i], lon[i]));
+    return b.append("]").toString();
   }
 
   private static final Pattern PAIR = Pattern.compile("\\[(-?[0-9.]+),(-?[0-9.]+)\\]");

@@ -31,7 +31,8 @@ import java.util.List;
  *   "maximum_speed" (MaximumSpeedCalculator; openrouteservice does not accept less than 80 km/h);
  * - "recommended" (lorries): the time multiplied by 2^((4 - preference) / 3), preference 0..7
  *   (ORSPriorityWeighting: motorways 0.63, main roads 0.79, small streets 1.26, living streets 2…);
- *   for cars openrouteservice has no preference: "recommended" is "fastest";
+ *   for cars openrouteservice has no preference: "recommended" is "fastest"; for lorries and buses
+ *   "fastest" is "recommended" (ProfileTools.setWeightingMethod);
  * - "shortest": the length (ShortestWeighting);
  * - all of them multiplied by LimitedAccessWeighting's factors for motor vehicles: roads with
  *   destination or private access ×10, customers ×1.5, service roads ×1.2;
@@ -94,8 +95,12 @@ public final class OrsWeighting implements Weighting {
 
   public OrsWeighting(EncodedValueLookup ev, boolean truck, Kind kind, TurnCostProvider turns, TruckSpec spec) {
     this.truck = truck;
-    // openrouteservice's cars have no preference: "recommended" is the fastest
-    this.kind = !truck && kind == Kind.RECOMMENDED ? Kind.FASTEST : kind;
+    // openrouteservice's ProfileTools.setWeightingMethod: for cars "recommended" is the fastest,
+    // for heavy vehicles "fastest" is "recommended" (the same weighting); graphs made before the
+    // openrouteservice values keep the weighting their landmarks were prepared with
+    boolean old = !ev.hasEncodedValue(GhEngine.ORS_ROAD_ACCESS);
+    this.kind = !truck && kind == Kind.RECOMMENDED ? Kind.FASTEST
+        : truck && kind == Kind.FASTEST && !old ? Kind.RECOMMENDED : kind;
     this.turns = turns;
     this.spec = spec;
     access = ev.getBooleanEncodedValue(truck ? GhEngine.ORS_HGV_ACCESS : GhEngine.ORS_CAR_ACCESS);

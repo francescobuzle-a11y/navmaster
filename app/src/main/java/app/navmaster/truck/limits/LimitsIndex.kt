@@ -27,7 +27,22 @@ data class RouteLimit(
     val blocking: Boolean,
     /** OpenStreetMap object ("w123" / "n456"). */
     val osm: String? = null,
+    /**
+     * How sure the data is (data/build_limits.py): "doppio" two sources agree (two tags, the sign,
+     * an official list), "ufficiale" from an official list only, "osm" one OpenStreetMap tag,
+     * "dubbio" not plausible or contradictory; null for packages made before the checks.
+     */
+    val ver: String? = null,
 ) {
+  /** What the driver is told about the data, or null when there is nothing to say. */
+  val check: String?
+    get() = when (ver) {
+      "dubbio" -> "dato da verificare"
+      "doppio" -> if (kind == "speed_camera") "confermato dall'elenco ufficiale" else "confermato da due fonti"
+      "ufficiale" -> "elenco ufficiale"
+      else -> null
+    }
+
   /** Short text for the banner: "Altezza max", "Divieto mezzi pesanti" ... */
   val label: String
     get() =
@@ -85,8 +100,10 @@ class LimitsIndex(regions: RegionManager) {
     var elsewhere = 0
     dbs.perCells(m.cells) { db, inList ->
       val out = mutableListOf<RouteLimit>()
+      val hasVer = hasCheck(db)
       db.rawQuery(
-              "SELECT DISTINCT l.id, l.kind, l.value, l.raw, l.cond, l.name, l.pts, l.osm FROM cells c " +
+              "SELECT DISTINCT l.id, l.kind, l.value, l.raw, l.cond, l.name, l.pts, l.osm, " +
+                  (if (hasVer) "l.ver" else "NULL") + " FROM cells c " +
                   "JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList)",
               null,
           )
@@ -116,7 +133,8 @@ class LimitsIndex(regions: RegionManager) {
               val cond = c.getString(4)
               val at = departure.plusSeconds((lo / avgSpeedMs).toLong())
               out += RouteLimit(kind, value, c.getString(3), c.getString(5), cond, lo, p.lat, p.lng,
-                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)), osm.ifBlank { null })
+                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)), osm.ifBlank { null },
+                  c.getString(8))
             }
           }
       out
@@ -251,6 +269,16 @@ class LimitsIndex(regions: RegionManager) {
       }
 
   /** Speed cameras on the route, for the ones who want the warning (legal in the country). */
+  // the packages made before the checks have no "ver" column
+  private val checkColumn = java.util.WeakHashMap<android.database.sqlite.SQLiteDatabase, Boolean>()
+
+  private fun hasCheck(db: android.database.sqlite.SQLiteDatabase): Boolean = synchronized(checkColumn) {
+    checkColumn.getOrPut(db) {
+      runCatching { db.rawQuery("PRAGMA table_info(limits)", null).use { c -> var f = false; while (c.moveToNext()) if (c.getString(1) == "ver") f = true; f } }
+          .getOrDefault(false)
+    }
+  }
+
   fun cameras(all: List<RouteLimit>): List<RouteLimit> = all.filter { it.kind == "speed_camera" }
 
   private fun blocks(kind: String, value: Double, v: VehicleProfile, weightT: Double): Boolean =

@@ -165,6 +165,7 @@ fun RestrictionBanner(limit: RouteLimit, distanceM: Double, vehicleValue: String
         }
       }
       limit.conditional?.let { Text(it, color = Color(0xFFFFE082), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+      limit.check?.let { Text(it, color = if (limit.ver == "dubbio") Color(0xFFFFE082) else Color(0xFFB9F6CA), fontSize = 12.sp, maxLines = 1) }
     }
   }
 }

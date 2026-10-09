@@ -257,7 +257,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       if (d <= at && d > at - 400 && key !in spoken) {
         spoken += key
         vm.say("Attenzione: tra ${app.navmaster.truck.nav.SpeechIt.distance(d)}, ${l.label} ${l.signValue ?: ""}. " +
-            "Il mezzo non passa, verificare la segnaletica.")
+            "Il mezzo non passa, verificare la segnaletica." + (if (l.ver == "dubbio") " Il dato è da verificare." else ""))
       }
     }
   }
