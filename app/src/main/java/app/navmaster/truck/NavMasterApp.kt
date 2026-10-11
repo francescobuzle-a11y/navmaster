@@ -4,6 +4,7 @@ import android.app.Application
 import app.navmaster.truck.data.CatalogStore
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.limits.LimitsIndex
+import app.navmaster.truck.live.HereGuard
 import app.navmaster.truck.live.TomTomGuard
 import app.navmaster.truck.location.SmartLocationProvider
 import app.navmaster.truck.poi.PoiIndex
@@ -54,7 +55,7 @@ object AppGraph {
     app = application
     // TomTom and HERE only inside this tablet's part of the fleet's free allowance (also the map's own requests)
     TomTomGuard.init(application)
-    app.navmaster.truck.live.HereGuard.init(application)
+    HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)
   }
 
