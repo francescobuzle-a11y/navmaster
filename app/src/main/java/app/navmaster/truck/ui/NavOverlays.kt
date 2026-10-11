@@ -275,10 +275,38 @@ fun CameraBanner(camera: RouteLimit, distanceM: Double, zoneOnly: Boolean, modif
     }
     Spacer(Modifier.width(10.dp))
     Column(Modifier.padding(end = 12.dp)) {
-      Text(if (zoneOnly) "Zona di controllo" else "Autovelox" + (if (camera.value > 0) " · ${camera.value.toInt()} km/h" else ""),
+      Text(if (zoneOnly) "Zona di controllo" else (camera.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") +
+          (if (camera.value > 0) " · ${camera.value.toInt()} km/h" else ""),
           color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
       if (!zoneOnly) Text(if (distanceM < 30) "qui" else "tra " + Fmt.distanceText(distanceM), color = Color(0xFF90CAF9), fontSize = 20.sp,
           fontWeight = FontWeight.Bold)
+    }
+  }
+}
+
+/**
+ * A section under average speed control (Tutor): before it how far it starts, inside it the
+ * driver's average since its start against the limit, and how far it ends.
+ */
+@Composable
+fun SectionBanner(section: RouteLimit, traveled: Double, limitKmh: Int?, avgKmh: Int?, modifier: Modifier = Modifier) {
+  val inside = traveled >= section.alongM
+  val over = inside && avgKmh != null && limitKmh != null && avgKmh > limitKmh
+  Row(
+      modifier.shadow(6.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)).background(if (over) Color(0xF2B71C1C) else NmPanel)
+          .padding(6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(Modifier.size(46.dp).clip(CircleShape).background(Color(0xFF1565C0)), contentAlignment = Alignment.Center) {
+      Text(limitKmh?.toString() ?: "T", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+    }
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.padding(end = 12.dp)) {
+      Text(if (inside) "Tutor · media " + (avgKmh?.let { "$it km/h" } ?: "…") else "Tutor", color = Color.White, fontSize = 14.sp,
+          fontWeight = FontWeight.Bold)
+      Text(if (inside) "fine tra " + Fmt.distanceText((section.endM - traveled).coerceAtLeast(0.0))
+           else "inizia tra " + Fmt.distanceText((section.alongM - traveled).coerceAtLeast(0.0)),
+          color = if (over) Color.White else Color(0xFF90CAF9), fontSize = 18.sp, fontWeight = FontWeight.Bold)
     }
   }
 }

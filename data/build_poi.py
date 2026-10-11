@@ -20,6 +20,20 @@ def truthy(v):
     return v is not None and v.split(";")[0].strip().lower() in YES
 
 
+def camper_flags(t):
+    """What a camper stop or a campsite offers: power, water, dump station, showers, toilets, wi-fi, dogs, all year."""
+    return {
+        "power": truthy(t.get("power_supply")),
+        "water": truthy(t.get("drinking_water")) or truthy(t.get("water_point")),
+        "dump": truthy(t.get("sanitary_dump_station")) or truthy(t.get("dump_station")),
+        "shower": truthy(t.get("shower")),
+        "toilets": truthy(t.get("toilets")),
+        "wifi": (t.get("internet_access") or "").split(";")[0] in ("wlan", "yes", "wifi"),
+        "dog": truthy(t.get("dog")),
+        "all_year": (t.get("opening_hours") or "").strip() == "24/7" or t.get("seasonal") == "no",
+    }
+
+
 def category(t):
     """(category, flags) or None. Flags: hgv, adblue, lpg, h24, free, guarded, restaurant/fast_food/cafe."""
     amenity = t.get("amenity")
@@ -40,9 +54,21 @@ def category(t):
     if highway == "services":
         return "services", {"hgv": hgv}
     if tourism == "caravan_site":
-        return "camper_site", {}
+        # a motorhome stop ("area camper"): what it offers, as the camper driver chooses them
+        return "camper_site", camper_flags(t)
+    if tourism == "camp_site":
+        # a campsite: only where motorhomes or caravans are admitted (tents-only ones left out)
+        if t.get("motorhome") == "no" and t.get("caravans") == "no":
+            return None
+        if t.get("tents") == "only" or t.get("backcountry") == "yes":
+            return None
+        fl = camper_flags(t)
+        fl["motorhome"] = truthy(t.get("motorhome")) or truthy(t.get("caravans"))
+        return "campsite", fl
     if amenity == "sanitary_dump_station":
-        return "camper_service", {}
+        return "camper_service", {"water": truthy(t.get("water_point")) or truthy(t.get("drinking_water"))}
+    if shop in ("caravan", "camping"):
+        return "camper_shop", {"repair": shop == "caravan" and (truthy(t.get("repair")) or truthy(t.get("service:vehicle:repair")))}
     if amenity in ("restaurant", "fast_food", "cafe"):
         # the kind is a flag too: the driver may want only restaurants, or only a quick coffee
         return "food", {amenity: True}
@@ -106,8 +132,9 @@ def main():
         if t.get("fee") in ("no",):
             flags["free"] = True
         flags = {k: v for k, v in flags.items() if v}
-        extra = {k: t[k] for k in ("capacity:hgv", "capacity", "website", "operator", "fuel:diesel", "maxstay",
-                                   "toilets", "shower", "internet_access", "motorhome", "fee") if k in t}
+        extra = {k: t[k] for k in ("capacity:hgv", "capacity", "capacity:motorhome", "website", "operator", "fuel:diesel", "maxstay",
+                                   "toilets", "shower", "internet_access", "motorhome", "fee", "charge", "power_supply",
+                                   "drinking_water", "sanitary_dump_station", "stars", "reservation", "seasonal") if k in t}
         name = t.get("name") or t.get("brand") or t.get("operator")
         rows.append((pid, f.get("id"), cat, name, t.get("brand"), round(p[1], 6), round(p[0], 6),
                      ",".join(sorted(flags)) or None, t.get("opening_hours"), t.get("phone") or t.get("contact:phone"),

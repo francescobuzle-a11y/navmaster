@@ -77,6 +77,8 @@ data class JunctionScene(
     val laneSigns: List<app.navmaster.truck.routing.LaneDest>? = null,
     /** Which of those lanes the route takes (same size as [laneSigns]), when known. */
     val laneSignsActive: List<Boolean>? = null,
+    /** The lane the vehicle is really in (0 = leftmost of its direction), from the satellites; null when not known. */
+    val vehicleLane: Int? = null,
 )
 
 /** Countries whose motorway signs are green (the others use blue). */
@@ -183,7 +185,13 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
       val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { signsDp.toPx() }
       Canvas(Modifier.fillMaxSize()) {
         val rj = real
-        if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), near, night, signsPx)
+        // the vehicle's lane counts from the left of the carriageway; when the drawing adds the exit
+        // lane on the left (a left exit), the lanes of the carriageway move one to the right
+        val vl = scene.vehicleLane?.let { l ->
+          val g = scene.analysis?.edgeAt((scene.maneuverAtM - 40).coerceAtLeast(0.0))?.lanes ?: 0
+          if (model.n == g + 1 && model.side < 0 && model.takeBranch) l + 1 else l
+        }
+        if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), near, night, signsPx, vl)
         else drawJunctionScheme(model, dist.toDouble(), near, night, signsPx)
         // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
         if (hasSigns) drawGantry(signsPx, night)
@@ -529,6 +537,7 @@ fun junctionSceneOf(
     a: app.navmaster.truck.routing.RouteAnalysis?,
     traveled: Double,
     countryFallback: String? = null,
+    vehicleLane: Int? = null,
 ): JunctionScene? {
   if (instruction == null || distanceM == null || distanceM < 0) return null
   val p = instruction.primaryContent
@@ -556,8 +565,9 @@ fun junctionSceneOf(
   val complex = lanesMatter(lanes) && multiLane && here?.roadClass !in MINOR_CLASSES && !roundabout
   if (!motorwayJunction && !complex) return null
   val turnLike = false
-  // the junction view only close to the junction (the lane guidance bar shows the lanes from 2 km)
-  val range = if (motorway || motorwayJunction) 600.0 else 220.0
+  // the junction view from 1 km on motorways (the camera waits before the gore and the vehicle is
+  // seen going lane by lane towards it), close to the junction elsewhere
+  val range = if (motorway || motorwayJunction) 1000.0 else 220.0
   if (distanceM > range) return null
   val sign = a?.signNear(at)
   // the signs mapped in OSM at this junction: the road taken and the one left aside
@@ -616,6 +626,7 @@ fun junctionSceneOf(
       fork = type.contains("FORK"),
       laneSigns = laneDest,
       laneSignsActive = laneActive,
+      vehicleLane = vehicleLane,
   )
 }
 

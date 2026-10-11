@@ -51,7 +51,18 @@ internal class RealJv(
     val actOff: Double,
     val takeBranch: Boolean,
     val shapes: List<Shape>,
+    /** Lanes of the carriageway of arrival, whether the route's line is the middle of a two-way road, left-hand traffic. */
+    val lanesIn: Int = 1,
+    val twoWay: Boolean = false,
+    val lht: Boolean = false,
 ) {
+  /** Sideways offset (metres, positive to the left) of the middle of lane [i] (0 = leftmost). */
+  fun laneOff(i: Int): Double = when {
+    !twoWay -> ((lanesIn - 1) / 2.0 - i) * LANE
+    lht -> (lanesIn - i - 0.5) * LANE
+    else -> -(i + 0.5) * LANE
+  }
+
   var cacheKey = ""
   var cache: Any? = null
   var hills: androidx.compose.ui.graphics.Path? = null
@@ -296,7 +307,7 @@ internal class RealJv(
       }
       Log.i(TAG, "real junction: ${lines.size} roads, ${roads.size} drawn, lanes $lanesIn>$lanesOut, split ${split.toInt()} m, " +
           "${if (twoWay) "two-way" else "one-way"}, ${shapes.size} shapes in ${System.currentTimeMillis() - t0} ms")
-      return RealJv(route, rc, start, nodeS, node, branch, bc, split, side, halfIn, laneOff(first), md.takeBranch, shapes)
+      return RealJv(route, rc, start, nodeS, node, branch, bc, split, side, halfIn, laneOff(first), md.takeBranch, shapes, lanesIn, twoWay, lht)
     }
 
     // ---- geometry

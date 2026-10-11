@@ -118,3 +118,33 @@ class PoiIndex(regions: RegionManager) {
     return out
   }
 }
+
+/** The short badges of a place's flags, as the screens show them ("TIR", "AdBlue", "⚡", "💧"…). */
+fun poiBadges(flags: Set<String>): List<String> = listOfNotNull(
+    if ("hgv" in flags) "TIR" else null,
+    if ("adblue" in flags) "AdBlue" else null,
+    if ("h24" in flags) "24h" else null,
+    if ("lpg" in flags) "GPL" else null,
+    if ("free" in flags) "gratis" else null,
+    if ("motorhome" in flags) "camper" else null,
+    if ("power" in flags) "⚡ corrente" else null,
+    if ("water" in flags) "💧 acqua" else null,
+    if ("dump" in flags) "scarico" else null,
+    if ("shower" in flags) "docce" else null,
+    if ("toilets" in flags) "bagni" else null,
+    if ("wifi" in flags) "wi-fi" else null,
+    if ("dog" in flags) "cani ok" else null,
+    if ("all_year" in flags) "tutto l'anno" else null,
+    if ("repair" in flags) "officina" else null,
+)
+
+/** The same, spelt out for the detail sheet. */
+fun poiServices(flags: Set<String>): List<String> = flags.mapNotNull {
+  when (it) {
+    "hgv" -> "adatto ai mezzi pesanti"; "adblue" -> "AdBlue"; "h24" -> "aperto 24 ore"; "lpg" -> "GPL"; "free" -> "gratuito"
+    "motorhome" -> "posti per camper"; "power" -> "corrente elettrica"; "water" -> "acqua potabile"; "dump" -> "scarico acque"
+    "shower" -> "docce"; "toilets" -> "bagni"; "wifi" -> "wi-fi"; "dog" -> "cani ammessi"; "all_year" -> "aperto tutto l'anno"
+    "repair" -> "officina"; "guarded" -> "custodito"
+    else -> null
+  }
+}

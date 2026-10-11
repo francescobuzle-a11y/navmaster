@@ -156,6 +156,8 @@ fun PoiBrowser(
     FlowRow(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       val all = PoiCategories.all.map { it.id }.toSet()
       CatChip("Tutte", cats == all) { cats = all }
+      // the camper's places in one touch
+      CatChip("🚐 Tutto per il camper", cats == PoiCategories.camper) { cats = PoiCategories.camper }
       for (c in PoiCategories.all) {
         CatChip("${c.icon} ${c.label}", c.id in cats && cats != all) {
           cats = if (cats == all) setOf(c.id) else if (c.id in cats) (cats - c.id).ifEmpty { all } else cats + c.id
@@ -203,10 +205,8 @@ private fun PoiHitRow(h: PoiHit, onClick: () -> Unit) {
     Column(Modifier.weight(1f)) {
       Text(h.poi.title.ifBlank { cat?.label ?: "" }, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
           overflow = TextOverflow.Ellipsis)
-      val tags = listOfNotNull(cat?.label,
-          if ("hgv" in h.poi.flags) "TIR" else null, if ("adblue" in h.poi.flags) "AdBlue" else null,
-          if ("h24" in h.poi.flags) "24h" else null,
-          if (h.alongRoute && h.offRouteM > 150) "a ${h.offRouteM.toInt()} m dalla strada" else null)
+      val tags = listOfNotNull(cat?.label) + app.navmaster.truck.poi.poiBadges(h.poi.flags).take(5) +
+          listOfNotNull(if (h.alongRoute && h.offRouteM > 150) "a ${h.offRouteM.toInt()} m dalla strada" else null)
       Caption(tags.joinToString(" · "), size = 12, lines = 1)
     }
     Text(Fmt.distanceText(h.distanceM.coerceAtLeast(0.0)), color = Nm.Amber, fontSize = 16.sp, fontWeight = FontWeight.Bold)

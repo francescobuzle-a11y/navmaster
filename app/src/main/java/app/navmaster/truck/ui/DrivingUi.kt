@@ -245,11 +245,7 @@ private fun PoiChip(p: RoutePoi, traveledM: Double, bg: Color, onClick: () -> Un
     Column(Modifier.weight(1f)) {
       Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1,
           overflow = TextOverflow.Ellipsis)
-      val tags = listOfNotNull(
-          if ("hgv" in p.poi.flags) "TIR" else null, if ("adblue" in p.poi.flags) "AdBlue" else null,
-          if ("h24" in p.poi.flags) "24h" else null,
-          if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m" else null,
-      )
+      val tags = app.navmaster.truck.poi.poiBadges(p.poi.flags).take(3) + listOfNotNull(if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m" else null)
       if (tags.isNotEmpty()) Text(tags.joinToString(" · "), color = Color(0xFFB8C2CC), fontSize = 11.sp, maxLines = 1)
     }
     Text(Fmt.distanceText(p.alongM - traveledM), color = Nm.Amber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -286,11 +282,7 @@ fun PoiRow(p: RoutePoi, traveledM: Double, onClick: () -> Unit) {
     Column(Modifier.weight(1f)) {
       Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
           overflow = TextOverflow.Ellipsis)
-      val tags = listOfNotNull(
-          if ("hgv" in p.poi.flags) "TIR" else null, if ("adblue" in p.poi.flags) "AdBlue" else null,
-          if ("h24" in p.poi.flags) "24h" else null, if ("lpg" in p.poi.flags) "GPL" else null,
-          if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m" else null,
-      )
+      val tags = app.navmaster.truck.poi.poiBadges(p.poi.flags).take(4) + listOfNotNull(if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m" else null)
       if (tags.isNotEmpty()) Caption(tags.joinToString(" · "), size = 12, lines = 1)
     }
     Text(Fmt.distanceText(p.alongM - traveledM), color = Nm.Amber, fontSize = 16.sp, fontWeight = FontWeight.Bold)
@@ -307,7 +299,7 @@ fun PoiSheet(p: RoutePoi, traveledM: Double, onAddStop: () -> Unit, onClose: () 
     p.poi.hours?.let { KeyValue("Orari", it) }
     p.poi.phone?.let { KeyValue("Telefono", it) }
     if (p.offRouteM > 50) KeyValue("Distanza dalla strada", "${p.offRouteM.toInt()} m")
-    val flags = p.poi.flags.mapNotNull { when (it) { "hgv" -> "adatto ai mezzi pesanti"; "adblue" -> "AdBlue"; "h24" -> "aperto 24 ore"; "lpg" -> "GPL"; "free" -> "gratuito"; else -> null } }
+    val flags = app.navmaster.truck.poi.poiServices(p.poi.flags)
     if (flags.isNotEmpty()) KeyValue("Servizi", flags.joinToString(", "))
     Spacer(Modifier.height(10.dp))
     SatelliteView(p.poi.lat, p.poi.lon, null, Modifier.fillMaxWidth().height(220.dp))

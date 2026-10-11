@@ -120,6 +120,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
     vm.setLocationPermission(result[Manifest.permission.ACCESS_FINE_LOCATION] == true || result[Manifest.permission.ACCESS_COARSE_LOCATION] == true)
   }
+  // the microphone for the spoken "sì" / "no" to "c'è ancora?", asked once (Settings › Traffico can turn it off)
+  val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
   LaunchedEffect(Unit) {
     if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
       vm.setLocationPermission(true)
@@ -137,6 +139,13 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val settings by AppGraph.settings.settings.collectAsState()
   val location by vm.location.collectAsState()
   val navigating = ui.isNavigating()
+  LaunchedEffect(navigating, settings.voiceAnswers, settings.liveReports) {
+    if (navigating && settings.voiceAnswers && settings.liveReports && !settings.micAsked &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+      AppGraph.settings.update { it.copy(micAsked = true) }
+      micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+  }
   val here = rememberCurrentCountry(location?.coordinates?.lat, location?.coordinates?.lng)
 
   var night by remember { mutableStateOf(MapStyles.isNight(settings.nightMode)) }
@@ -188,10 +197,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val fastRoad = nav.analysis?.edgeAt((if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)) else 0.0).coerceAtLeast(0.0))
       ?.roadClass in setOf("motorway", "trunk")
   val closeUp = toManeuver != null && toManeuver < (if (fastRoad) 0.0 else 260.0)
-  val zoom by androidx.compose.animation.core.animateFloatAsState(
-      (if (is3d) 16.6f else 16.0f) + (if (closeUp) 0.9f else 0f), androidx.compose.animation.core.tween(1500), label = "zoom")
-  val tilt by androidx.compose.animation.core.animateFloatAsState(
-      if (is3d) settings.tiltDeg.toFloat() + (if (closeUp) 5f else 0f) else 0f, androidx.compose.animation.core.tween(1500), label = "tilt")
+  // zoom and tilt change in one step and the map engine eases them itself once: a value animated
+  // here frame by frame restarted the engine's own camera animation at every frame (stutter)
+  val zoom = (if (is3d) 16.6f else 16.0f) + (if (closeUp) 0.9f else 0f)
+  val tilt = if (is3d) settings.tiltDeg.toFloat() + (if (closeUp) 5f else 0f) else 0f
   val cameraOptions =
       NavigationCameraOptions(
           browsingZoom = 15.0,
@@ -224,7 +233,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var pendingPoint by remember { mutableStateOf<GeographicCoordinate?>(null) }
 
   val traveled = if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0) else 0.0
-  val nextLimit = nav.limits.firstOrNull { it.kind != "speed_camera" && it.alongM - traveled > -15 }
+  val nextLimit = nav.limits.firstOrNull { it.kind != "speed_camera" && !it.isSection && it.alongM - traveled > -15 }
   // fixed speed cameras: only where warning about them is allowed, facing our way when the map says
   // the cameras that may be announced, worked out once per route (not at every position)
   val camerasOk = remember(nav.limits, nav.analysis, settings.enforcementEverywhere) {
@@ -240,8 +249,42 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   LaunchedEffect(nextCamera?.alongM, (nextCamera?.alongM?.minus(traveled) ?: 9999.0) < 600) {
     val cam = nextCamera ?: return@LaunchedEffect
     if (cam.alongM - traveled < 600) vm.say(if (cameraZoneOnly) "Zona di controllo della velocità" else
-      "Autovelox tra ${(((cam.alongM - traveled) / 50).roundToInt() * 50).coerceAtLeast(50)} metri" +
+      (cam.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") +
+          " tra ${(((cam.alongM - traveled) / 50).roundToInt() * 50).coerceAtLeast(50)} metri" +
           (if (cam.value > 0) ", limite ${cam.value.toInt()}" else ""))
+  }
+  // sections under average speed control (Tutor): said 1 km before, the average shown inside, said
+  // at the end; the limit is the lower of the section's and the vehicle's (a lorry: 80 on motorways)
+  val sectionsOk = remember(nav.limits, nav.analysis, settings.enforcementEverywhere) {
+    nav.limits.filter { l ->
+      l.isSection && (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED)
+    }
+  }
+  val section = if (!navigating || !settings.speedCameras) null else sectionsOk.firstOrNull { l -> traveled < l.endM + 30 && l.alongM - traveled < 1500 }
+  val sectionKey = section?.alongM?.toLong()
+  val sectionLimit = section?.let { s -> listOf(s.value.toInt(), garage.active.topSpeedKmh).filter { it > 0 }.minOrNull() }
+  val sectionEntry = remember { androidx.compose.runtime.mutableStateMapOf<Long, Pair<Long, Double>>() }
+  val inSection = section != null && traveled >= section.alongM
+  LaunchedEffect(sectionKey, inSection) {
+    if (inSection && sectionKey != null && sectionKey !in sectionEntry) sectionEntry[sectionKey] = System.currentTimeMillis() to traveled
+  }
+  val sectionAvg = sectionKey?.let { sectionEntry[it] }?.let { (t0, m0) ->
+    val s = (System.currentTimeMillis() - t0) / 1000.0
+    if (s < 20) null else ((traveled - m0) / s * 3.6).roundToInt()
+  }
+  LaunchedEffect(sectionKey, section != null && section.alongM - traveled < 1000) {
+    val s = section ?: return@LaunchedEffect
+    if (s.alongM - traveled in 0.0..1000.0) vm.say("Tra ${app.navmaster.truck.nav.SpeechIt.distance(s.alongM - traveled)} " +
+        "inizia un tratto controllato dal Tutor" + (sectionLimit?.let { ", limite $it" } ?: "") + ".")
+  }
+  val sectionOver = inSection && sectionAvg != null && sectionLimit != null && sectionAvg > sectionLimit + 2 &&
+      traveled - (section?.alongM ?: 0.0) > 2000
+  LaunchedEffect(sectionKey, sectionOver) {
+    if (sectionOver) vm.say("Attenzione: velocità media sopra il limite del Tutor.")
+  }
+  LaunchedEffect(sectionKey, section != null && traveled >= section.endM) {
+    val s = section ?: return@LaunchedEffect
+    if (traveled >= s.endM && sectionKey != null && sectionKey in sectionEntry) vm.say("Fine del tratto Tutor" + (sectionAvg?.let { ", media $it" } ?: "") + ".")
   }
   val nextLimitDist = nextLimit?.let { it.alongM - traveled }
   val nextCrit = nav.criticalities.firstOrNull { it.severity != Severity.INFO && it.endM - traveled > -10 && it.startM - traveled < 3000 }
@@ -268,19 +311,38 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val trackAnalysis = nav.analysis
   val coreLoc = ui.location
   val measuredSpeed by vm.speedMs.collectAsState()
-  // the guidance's own position along the route matches the route of the analysis: otherwise (a
-  // new route not yet analysed, really off the route) the map shows the guidance's position as is
-  val trackOk = navigating && trackAnalysis != null && coreLoc != null &&
-      ui.routeDeviation is uniffi.ferrostar.RouteDeviation.NoDeviation &&
-      app.navmaster.truck.core.Geo.dist(trackAnalysis.pointAt(traveled), coreLoc.coordinates) < 40.0
+  // the position on the route from the satellites themselves (SmartLocationProvider), every fix:
+  // the guidance's own snapping stands still at the end of a step until the step moves on, then
+  // jumps; in the simulation (no satellites) the guidance's position is what there is
+  val gpsFix by AppGraph.smartLocation.onRoute.collectAsState()
+  val fixFresh = gpsFix != null && (System.nanoTime() - gpsFix!!.atNanos) < 4_000_000_000L &&
+      trackAnalysis != null && gpsFix!!.alongM <= trackAnalysis.length + 5
+  // off the route only when the guidance has said so for a few seconds (a single fix off and back
+  // made the arrow jump to the raw position and return): hysteresis
+  val deviated = ui.routeDeviation !is uniffi.ferrostar.RouteDeviation.NoDeviation
+  var deviatedSince by remember { mutableLongStateOf(0L) }
+  LaunchedEffect(deviated) { deviatedSince = if (deviated) System.currentTimeMillis() else 0L }
+  val offRoute = deviated && deviatedSince > 0 && System.currentTimeMillis() - deviatedSince > 2_500
+  val trackOk = navigating && trackAnalysis != null && coreLoc != null && !offRoute &&
+      (fixFresh || app.navmaster.truck.core.Geo.dist(trackAnalysis.pointAt(traveled), coreLoc.coordinates) < 60.0)
   SideEffect {
     if (trackOk) {
-      if (traveled != track.target) {
-        track.target = traveled
-        track.targetAt = System.nanoTime()
+      val f = gpsFix
+      if (fixFresh && f != null) {
+        if (f.alongM != track.target || f.atNanos != track.targetAt) {
+          track.target = f.alongM
+          track.targetAt = f.atNanos
+        }
+        track.speed = f.speedMs.coerceIn(0.0, 45.0)
+        track.accuracy = f.accuracyM
+      } else {
+        if (traveled != track.target) {
+          track.target = traveled
+          track.targetAt = System.nanoTime()
+        }
+        track.speed = maxOf(coreLoc?.speed?.value ?: 0.0, measuredSpeed ?: 0.0).coerceIn(0.0, 45.0)
+        track.accuracy = coreLoc?.horizontalAccuracy ?: 5.0
       }
-      track.speed = maxOf(coreLoc?.speed?.value ?: 0.0, measuredSpeed ?: 0.0).coerceIn(0.0, 45.0)
-      track.accuracy = coreLoc?.horizontalAccuracy ?: 5.0
       track.speedObj = coreLoc?.speed
     }
   }
@@ -368,7 +430,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       val crits = if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList()
       CritMarkers(crits)
       val limitsAll = if (navigating) nav.limits else plan.current?.limits ?: emptyList()
-      LimitMarkers(remember(limitsAll) { limitsAll.filter { it.kind != "speed_camera" } })
+      LimitMarkers(remember(limitsAll) { limitsAll.filter { it.kind != "speed_camera" && !it.isSection } })
       val stopPts = remember(plan.stops) { plan.stops.map { it.coordinate } }
       StopMarkers(stopPts)
       // the departure chosen for a simulated trip: a green point
@@ -403,7 +465,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           ?.takeIf { it.third <= 2500 }
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
           settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it },
+          section = section?.let { Triple(it, sectionLimit, sectionAvg) },
           live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
+          onQuickReport = { vm.quickReport(nav.analysis?.edgeAt(traveled)?.country ?: here?.iso) },
+          pendingReport = nav.pendingReport, onUndoReport = vm::undoReport, liveListening = nav.liveListening,
           stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
@@ -667,9 +732,14 @@ private fun NavigatingOverlay(
     liveAsk: app.navmaster.truck.live.RouteLiveEvent? = null,
     onSettings: () -> Unit = {},
     onReport: () -> Unit = {},
+    onQuickReport: () -> Unit = {},
+    pendingReport: app.navmaster.truck.live.LiveKind? = null,
+    onUndoReport: () -> Unit = {},
+    liveListening: Boolean = false,
     stopsCount: Int = 0,
     onStops: () -> Unit = {},
     onPois: () -> Unit = {},
+    section: Triple<RouteLimit, Int?, Int?>? = null,
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
@@ -681,11 +751,32 @@ private fun NavigatingOverlay(
     delay(8_000)
     controls = false
   }
+  // the lane the vehicle is really in (from the satellites, nav.LaneTracker): on motorways and
+  // slip roads, whose line is the middle of the carriageway; elsewhere the lane is not guessed
+  val hereEdge = analysis?.edgeAt(traveled)
+  val hereLanes = hereEdge?.lanes ?: 0
+  val vehicleLane = if (hereEdge != null && (hereEdge.roadClass in setOf("motorway", "trunk") || hereEdge.isRamp) && hereLanes in 2..6)
+    vm.laneTracker.lane(hereLanes, false, countryIso?.uppercase() in LEFT_HAND) else null
   // junction view and lane guidance only at motorway junctions and complicated multi-lane ones
-  val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso)
+  val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso, vehicleLane)
   val jv = if (settings.junctionView) scene else null
   // the lanes to keep, from 2 km before a motorway exit, fork or merge (400 m in town)
   val laneGuide = laneGuideOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled)
+  // the vehicle's lane among the lanes drawn (the same count, or one exit lane added on the right)
+  val stripLane = vehicleLane?.takeIf { v ->
+    laneGuide != null && laneGuide.plan.lanes.count { !it.merge }.let { n -> n == hereLanes || (n == hereLanes + 1 && laneGuide.plan.side > 0) }
+  }
+  // in the wrong lane with the manoeuvre coming: said once per manoeuvre ("spostati a destra")
+  val laneKey = laneGuide?.let { (traveled + it.distanceM).toLong() / 100 }
+  LaunchedEffect(laneKey, stripLane, laneGuide != null && laneGuide.distanceM < 700) {
+    val g = laneGuide ?: return@LaunchedEffect
+    val l = stripLane ?: return@LaunchedEffect
+    val lanes = g.plan.lanes.filter { !it.merge }
+    if (l !in lanes.indices || lanes[l].take || g.distanceM !in 200.0..700.0) return@LaunchedEffect
+    val nearest = lanes.indices.filter { lanes[it].take }.minByOrNull { kotlin.math.abs(it - l) } ?: return@LaunchedEffect
+    val k = kotlin.math.abs(nearest - l)
+    vm.say("Cambia corsia: spostati " + (if (nearest > l) "a destra" else "a sinistra") + (if (k > 1) " di $k corsie" else "") + ".")
+  }
   val fastRoad = analysis?.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
   val nextLive = live.firstOrNull { it.endM - traveled > -20 && it.startM - traveled < (if (fastRoad) 5000.0 else 2000.0) }
   // the speed the GPS gives, or measured from the last positions when it gives none
@@ -700,7 +791,8 @@ private fun NavigatingOverlay(
   Column(Modifier.weight(1f).fillMaxHeight()) {
     TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
     if (laneGuide != null) {
-      LaneStrip(laneGuide, (if (landscape && jv == null) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp))
+      LaneStrip(laneGuide, (if (landscape && jv == null) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp),
+          vehicleLane = stripLane)
     }
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
@@ -710,6 +802,7 @@ private fun NavigatingOverlay(
       }
       if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
       if (camera != null) CameraBanner(camera, (camera.alongM - traveled).coerceAtLeast(0.0), cameraZoneOnly)
+      if (section != null) SectionBanner(section.first, traveled, section.second, section.third)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
     if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp), height = jvHeight)
@@ -730,8 +823,11 @@ private fun NavigatingOverlay(
         // always there: report something on the road, and the settings (changed any time while driving)
         if (settings.liveReports) {
           Box(
+              // touch: the choice of what to report; long press: police (or a danger) at once, undoable
               Modifier.size(56.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.Amber).border(1.dp, Nm.Line, CircleShape)
-                  .clickable(onClick = onReport),
+                  .pointerInput(Unit) {
+                    androidx.compose.foundation.gestures.detectTapGestures(onTap = { onReport() }, onLongPress = { onQuickReport() })
+                  },
               contentAlignment = Alignment.Center,
           ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
         }
@@ -765,9 +861,12 @@ private fun NavigatingOverlay(
             onPrevManeuver = { vm.simManeuver(false) }, onBack = { vm.simJump(-500.0) }, onSlower = vm::simSlower,
             onFaster = vm::simFaster, onAhead = { vm.simJump(500.0) }, onNextManeuver = { vm.simManeuver(true) })
       }
-      if (liveAsk != null) {
-        LiveAskCard(liveAsk, analysis?.edgeAt(liveAsk.startM)?.country, onAnswer = { yes -> vm.voteLive(liveAsk, yes) },
+      if (pendingReport != null) {
+        PendingReportCard(pendingReport, countryIso, onUndo = onUndoReport,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (simulating) 84.dp else 12.dp))
+      } else if (liveAsk != null) {
+        LiveAskCard(liveAsk, analysis?.edgeAt(liveAsk.startM)?.country, onAnswer = { yes -> vm.voteLive(liveAsk, yes) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (simulating) 84.dp else 12.dp), listening = liveListening)
       }
       if (simulating) {
         Text("SIMULAZIONE", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp,
@@ -903,6 +1002,7 @@ private fun PointChooser(
 
 /** Countries where a navigator may not warn about speed cameras (Germany, Switzerland). */
 private val CAMERA_WARNINGS_BANNED = setOf("DE", "CH")
+private val LEFT_HAND = setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE")
 
 /** Countries where only a "control zone" may be shown, not the camera itself (France). */
 private val CAMERA_ZONE_ONLY = setOf("FR")
@@ -937,6 +1037,14 @@ private fun ScopedMap(content: @Composable () -> Unit) = content()
  * fixes at the speed of the vehicle and corrected softly towards each new one. It never goes
  * backwards, and it stands still when the vehicle does.
  */
+/**
+ * The arrow glides along the route at every frame. The target is the last position on the route
+ * (from the satellites, SmartLocationProvider.onRoute; in the simulation the guidance's), carried
+ * on at its speed since it came; the arrow chases it gently: never backwards, never with a lurch
+ * (the correction is a fraction of the speed), and jumps only when the target is far away (a
+ * recalculation, a position lost for a long time). Times are System.nanoTime, the clock of
+ * the frames and of the fixes.
+ */
 private class SmoothTrack {
   var shown = -1.0
   var lastFrame = 0L
@@ -945,26 +1053,32 @@ private class SmoothTrack {
   var speed = 0.0
   var accuracy = 5.0
   var speedObj: uniffi.ferrostar.Speed? = null
+  private var lastBrg = -1.0
 
   fun step(t: Long, a: app.navmaster.truck.routing.RouteAnalysis): uniffi.ferrostar.UserLocation {
     val dt = if (lastFrame == 0L) 0.0 else ((t - lastFrame) / 1e9).coerceIn(0.0, 0.1)
     lastFrame = t
-    // where the vehicle should be now: the last position of the guidance, carried on at its speed
-    val ahead = ((t - targetAt) / 1e9).coerceIn(0.0, 1.2)
+    // where the vehicle should be now: the last position, carried on at its speed (at most 2.5 s:
+    // longer silences are the tunnels, where the provider itself moves the position along)
+    val ahead = ((t - targetAt) / 1e9).coerceIn(0.0, 2.5)
     val predicted = target + speed * ahead
-    if (shown < 0 || kotlin.math.abs(predicted - shown) > 60) {
+    val err = predicted - shown
+    if (shown < 0 || kotlin.math.abs(err) > 80) {
       shown = predicted
     } else {
-      val rate = (speed + 1.8 * (predicted - shown)).coerceAtLeast(0.0)
-      shown += rate * dt
+      // behind the target: a little faster (up to +60% of the speed, +3 m/s); ahead of it: slower,
+      // down to standing still, never back
+      val corr = if (err >= 0) minOf(err * 1.2, 0.6 * speed + 3.0) else maxOf(err * 1.2, -(speed + 0.5))
+      shown += (speed + corr).coerceAtLeast(0.0) * dt
     }
     shown = shown.coerceIn(0.0, a.length)
     val p = a.pointAt(shown)
     val b0 = a.pointAt((shown - 5).coerceAtLeast(0.0))
     val b1 = a.pointAt((shown + 15).coerceAtMost(a.length))
-    val brg = ((app.navmaster.truck.core.Geo.bearing(b0, b1) % 360.0) + 360.0) % 360.0
+    // standing still the heading stays as it was (the arrow does not turn on the spot)
+    if (speed >= 0.8 || lastBrg < 0) lastBrg = ((app.navmaster.truck.core.Geo.bearing(b0, b1) % 360.0) + 360.0) % 360.0
     return uniffi.ferrostar.UserLocation(
-        p, accuracy, uniffi.ferrostar.CourseOverGround(brg.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()),
+        p, accuracy, uniffi.ferrostar.CourseOverGround(lastBrg.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()),
         java.time.Instant.now(), speedObj)
   }
 }

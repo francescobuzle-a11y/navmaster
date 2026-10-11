@@ -74,7 +74,7 @@ private val LaneTakeEdge = Color(0xFF90CAF9)
  * is. It fits any width: the lanes get narrower, the words wrap.
  */
 @Composable
-fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier) {
+fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier, vehicleLane: Int? = null) {
   val plan = guide.plan
   Column(
       modifier.shadow(8.dp, RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(Color(0xF2151B22)),
@@ -85,14 +85,21 @@ fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier) {
       Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
           Text(plan.label, color = NmAmber, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-          if (plan.hint.isNotEmpty()) {
-            Text(plan.hint, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                lineHeight = 20.sp)
+          // in a lane that does not go the route's way: what to do instead of where to be
+          val lanesNoMerge = plan.lanes.filter { !it.merge }
+          val wrong = vehicleLane != null && vehicleLane in lanesNoMerge.indices && !lanesNoMerge[vehicleLane].take
+          val hint = if (wrong) {
+            val nearest = lanesNoMerge.indices.filter { lanesNoMerge[it].take }.minByOrNull { kotlin.math.abs(it - vehicleLane!!) }
+            if (nearest == null) plan.hint else "Spostati " + (if (nearest > vehicleLane!!) "a destra" else "a sinistra")
+          } else plan.hint
+          if (hint.isNotEmpty()) {
+            Text(hint, color = if (wrong) NmAmber else Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2,
+                overflow = TextOverflow.Ellipsis, lineHeight = 20.sp)
           }
         }
         if (n > 0) {
           Spacer(Modifier.width(8.dp))
-          Canvas(Modifier.width(lanesW).height(52.dp)) { drawLanes(plan) }
+          Canvas(Modifier.width(lanesW).height(60.dp)) { drawLanes(plan, vehicleLane) }
         } else {
           // the number of lanes is not known: just the side to keep
           Spacer(Modifier.width(8.dp))
@@ -110,13 +117,17 @@ fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier) {
   }
 }
 
-/** The lanes seen from above, across the road: edges, dashed lines between lanes, arrows. */
-private fun DrawScope.drawLanes(plan: LanePlan.Plan) {
+/**
+ * The lanes seen from above, across the road: edges, dashed lines between lanes, arrows; under them
+ * the vehicle (a blue mark) in the lane the satellites put it in, when known.
+ */
+private fun DrawScope.drawLanes(plan: LanePlan.Plan, vehicleLane: Int?) {
   val lanes = plan.lanes
   val n = lanes.size
   if (n == 0) return
   val w = size.width
-  val h = size.height
+  val carH = if (vehicleLane != null) size.height * 0.16f else 0f
+  val h = size.height - carH
   // a merge lane is narrower (the slip road joining)
   val weights = lanes.map { if (it.merge) 0.8f else 1f }
   val unit = w / weights.sum()
@@ -152,6 +163,18 @@ private fun DrawScope.drawLanes(plan: LanePlan.Plan) {
     translate(xs[i] + (cw - cell) / 2, (h - cell) / 2) {
       drawIntoCell(cell, directionAngle(lanes[i].arrow), if (lanes[i].take) Color.White else Color(0x66FFFFFF), cw)
     }
+  }
+  // the vehicle under its lane (the lanes drawn are the carriageway's, merge lanes aside)
+  if (vehicleLane != null) {
+    val real = lanes.indices.filter { !lanes[it].merge }
+    val idx = real.getOrNull(vehicleLane) ?: return
+    val cx = (xs[idx] + xs[idx + 1]) / 2
+    val ok = lanes[idx].take
+    drawRect(if (ok) LaneTake else Color(0xFFFFB300), Offset(xs[idx] + 2f, h), Size(xs[idx + 1] - xs[idx] - 4f, carH))
+    val tri = androidx.compose.ui.graphics.Path().apply {
+      moveTo(cx, h + carH * 0.1f); lineTo(cx - carH * 0.55f, h + carH * 0.95f); lineTo(cx + carH * 0.55f, h + carH * 0.95f); close()
+    }
+    drawPath(tri, Color.White)
   }
 }
 

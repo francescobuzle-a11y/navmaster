@@ -159,6 +159,10 @@ data class NavExtras(
     val live: List<RouteLiveEvent> = emptyList(),
     /** A driver's report just passed: "still there?". */
     val liveAsk: RouteLiveEvent? = null,
+    /** The tablet listens for the spoken answer to [liveAsk] ("sì" / "no"). */
+    val liveListening: Boolean = false,
+    /** A report made with one touch (long press on ⚠), sent in a few seconds unless undone. */
+    val pendingReport: LiveKind? = null,
     /** Where the live information comes from and how fresh it is ("TomTom, segnalazioni · 1 min fa"). */
     val liveInfo: String? = null,
 )
@@ -193,6 +197,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       combine(super.navigationUiState, lastLocation) { ui, loc -> if (ui.isNavigating()) ui else ui.copy(location = loc) }
           .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), NavigationUiState.empty())
 
+  /** The lane the vehicle is in (see LaneTracker), read by the lane guidance and the junction view. */
+  val laneTracker = LaneTracker()
+
   init {
     viewModelScope.launch {
       hasPermission
@@ -204,6 +211,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     // everything that has to follow the vehicle while driving
     viewModelScope.launch { super.navigationUiState.collect { onNavUpdate(it) } }
+    // the lane the vehicle is in, from where the satellite fixes fall across the route
+    viewModelScope.launch {
+      AppGraph.smartLocation.onRoute.collect { f ->
+        if (f != null && !f.reckoned && f.speedMs > 2.0) laneTracker.feed(f.lateralM, f.accuracyM, f.atNanos)
+      }
+    }
     // a jump of the simulation is not a wrong turn: no new route while the vehicle is being moved
     core.deviationHandler = RouteDeviationHandler { _, _, waypoints ->
       if (_simulating.value && simJumping()) CorrectiveAction.DoNothing else CorrectiveAction.GetNewRoutes(waypoints)
@@ -570,6 +583,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     // the route for the tunnels (the position goes on along it when the satellites are silent)
     AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry)
+    laneTracker.reset()
     AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false)
     asked.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
@@ -835,8 +849,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     _nav.update { it.copy(live = list, liveInfo = info?.let { i -> "$i · agg. $stamp" }) }
   }
 
-  /** The driver reports something where he is now. */
-  fun report(kind: LiveKind) {
+  /**
+   * The driver reports something where he is now. [delayMs] > 0 (the one-touch report): the
+   * report shows at once on this tablet and is sent after that time, unless [undoReport] comes first.
+   */
+  fun report(kind: LiveKind, delayMs: Long = 0) {
+    // one one-touch report at a time
+    if (delayMs > 0 && _nav.value.pendingReport != null) return
     val loc = navigationUiState.value.location ?: lastLocation.value ?: return
     val c = loc.coordinates
     val heading = loc.courseOverGround?.degrees?.toDouble()
@@ -845,16 +864,47 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         lat = c.lat, lon = c.lng, timeMs = System.currentTimeMillis(), official = false, mine = true, headingDeg = heading)
     localReports = localReports + local
     liveEvents = liveEvents + local
-    viewModelScope.launch(Dispatchers.IO) {
+    if (delayMs > 0) _nav.update { it.copy(pendingReport = kind) }
+    val job = viewModelScope.launch(Dispatchers.IO) {
       runCatching { matchLive() }
+      if (delayMs > 0) {
+        say("${kind.label}: la invio tra pochi secondi.")
+        delay(delayMs)
+        _nav.update { it.copy(pendingReport = null) }
+      }
       val id = SharedReports.publish(s.reportsServer, deviceTag(), kind, c.lat, c.lng, heading)
       say(if (id != null) "Segnalazione inviata: ${kind.label.lowercase()}." else "Segnalazione salvata sul tablet: la invio appena c'è rete.")
     }
+    if (delayMs > 0) {
+      pendingJob = job
+      pendingLocal = local.id
+    }
+  }
+
+  private var pendingJob: Job? = null
+  private var pendingLocal: String? = null
+
+  /** One touch (long press on ⚠): police where it may be announced, else a danger on the road. */
+  fun quickReport(country: String?) =
+      report(if (LiveRules.allowed(LiveKind.POLICE, country)) LiveKind.POLICE else LiveKind.HAZARD, delayMs = 6_000)
+
+  /** The one-touch report is not sent after all. */
+  fun undoReport() {
+    val id = pendingLocal ?: return
+    if (_nav.value.pendingReport == null) return
+    pendingJob?.cancel()
+    pendingLocal = null
+    localReports = localReports.filterNot { it.id == id }
+    liveEvents = liveEvents.filterNot { it.id == id }
+    _nav.update { it.copy(pendingReport = null) }
+    viewModelScope.launch(Dispatchers.IO) { runCatching { matchLive() } }
+    say("Segnalazione annullata.")
   }
 
   /** Answer to "still there?" on a report just passed. */
   fun voteLive(e: RouteLiveEvent, yes: Boolean) {
-    _nav.update { it.copy(liveAsk = null) }
+    VoiceAnswer.stop()
+    _nav.update { it.copy(liveAsk = null, liveListening = false) }
     if (e.e.official || e.e.mine || !e.e.id.startsWith("nx:")) return
     val s = AppGraph.settings.settings.value
     viewModelScope.launch(Dispatchers.IO) {
@@ -867,6 +917,32 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   }
 
   fun dismissLiveAsk() = _nav.update { it.copy(liveAsk = null) }
+
+  /**
+   * "C'è ancora?" said aloud, then the tablet listens for "sì" or "no" (VoiceAnswer): the driver
+   * answers without touching the screen. Only with the voice on and the microphone allowed.
+   */
+  private fun askByVoice(ev: RouteLiveEvent, country: String?) {
+    val s = AppGraph.settings.settings.value
+    if (!s.voiceAnswers || !s.voiceWarnings || AppGraph.ferrostar.spokenInstructionObserver?.isMuted == true) return
+    if (!VoiceAnswer.allowed(AppGraph.app)) return
+    viewModelScope.launch {
+      say("${LiveRules.label(ev.e.kind, country)} segnalato: c'è ancora? Rispondi sì o no.")
+      // the question said (and nothing else in the way), then listen
+      var waited = 0
+      delay(400)
+      while (voice.busy && waited < 8_000) { delay(200); waited += 200 }
+      if (_nav.value.liveAsk?.e?.id != ev.e.id) return@launch
+      _nav.update { it.copy(liveListening = true) }
+      VoiceAnswer.listen(AppGraph.app) { answer ->
+        _nav.update { it.copy(liveListening = false) }
+        if (answer != null && _nav.value.liveAsk?.e?.id == ev.e.id) {
+          voteLive(ev, answer)
+          say(if (answer) "Grazie, confermato." else "Grazie, la tolgo.")
+        }
+      }
+    }
+  }
 
   /** The road ahead is closed: go around it (the closed stretch is avoided from here on). */
   fun answerClosure(avoid: Boolean) {
@@ -898,9 +974,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   private fun pois(r: Route): List<RoutePoi> {
     val s = AppGraph.settings.settings.value
+    val v = AppGraph.profiles.garage.value.active
+    // a camper in the late afternoon: the campsites and camper stops too (a place for the night)
+    val evening = v.type == app.navmaster.truck.vehicle.VehicleType.CAMPER && s.camperEveningStops &&
+        java.time.LocalTime.now().hour >= s.camperEveningFromHour
+    val cats = if (evening) s.poiCategories + setOf("campsite", "camper_site") else s.poiCategories
     return runCatching {
-      AppGraph.poi.alongRoute(RouteMatcher(r.geometry), s.poiCategories, s.poiOnlyTruckFriendly && AppGraph.profiles.garage.value.active.type.heavy,
-          s.poiMaxDetourM, s.poiSubs)
+      AppGraph.poi.alongRoute(RouteMatcher(r.geometry), cats, s.poiOnlyTruckFriendly && v.type.heavy, s.poiMaxDetourM, s.poiSubs)
     }.getOrDefault(emptyList())
   }
 
@@ -981,6 +1061,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     if (key != lastGeometryKey && geometry.size > 1) {
       lastGeometryKey = key
       AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry)
+      laneTracker.reset()
       if (key == simPendingKey) {
         // a jump of the simulation: the same route from another point, already checked
         simPendingKey = null
@@ -1130,9 +1211,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       if (passed != null) {
         asked += "ask:${passed.e.id}"
         _nav.update { it.copy(liveAsk = passed) }
+        askByVoice(passed, a?.edgeAt(passed.startM)?.country)
         viewModelScope.launch {
-          delay(15_000)
-          _nav.update { if (it.liveAsk?.e?.id == passed.e.id) it.copy(liveAsk = null) else it }
+          delay(20_000)
+          _nav.update { if (it.liveAsk?.e?.id == passed.e.id) it.copy(liveAsk = null, liveListening = false) else it }
         }
       }
     }

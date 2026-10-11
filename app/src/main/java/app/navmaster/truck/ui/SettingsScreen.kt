@@ -61,9 +61,11 @@ private enum class SettingsPage(val id: String, val title: String, val icon: Str
   LIVE("live", "Traffico e segnalazioni", "🚦"),
   MAP("map", "Mappa e vista", "🗺"),
   POI("poi", "Punti di interesse", "📍"),
+  CAMPER("camper", "Camper", "🚐"),
   OFFLINE("offline", "Mappe offline", "📥"),
   PHOTOS("photos", "Foto stradali", "📷"),
   ABOUT("about", "Dati e licenze", "📄"),
+  KEYS("keys", "Chiavi dei servizi", "🔐"),
 }
 
 @Composable
@@ -90,9 +92,11 @@ fun SettingsScreen(onClose: () -> Unit, onRegions: () -> Unit, initialPage: Stri
           SettingsPage.LIVE -> LivePage(s, ::set)
           SettingsPage.MAP -> MapPage(s, ::set)
           SettingsPage.POI -> PoiPage(s, ::set)
+          SettingsPage.CAMPER -> CamperPage(s, ::set)
           SettingsPage.OFFLINE -> OfflinePage(s, ::set, onRegions)
           SettingsPage.PHOTOS -> PhotosPage(s, ::set)
           SettingsPage.ABOUT -> AboutPage()
+          SettingsPage.KEYS -> KeysPage(s, ::set)
         }
         Spacer(Modifier.height(24.dp))
       }
@@ -118,9 +122,12 @@ private fun summary(p: SettingsPage, s: Settings): String =
       SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
+      SettingsPage.CAMPER -> "${PoiCategories.camper.count { it in s.poiCategories }} di ${PoiCategories.camper.size} tipi di sosta" +
+          (if (s.camperEveningStops) " · sosta notturna dalle ${s.camperEveningFromHour}" else "")
       SettingsPage.OFFLINE -> (if (s.downloadWifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con i dati mobili")
       SettingsPage.PHOTOS -> if (app.navmaster.truck.live.ApiKeys.mapillary(s).isBlank()) "Panoramax e KartaView" else "Panoramax, KartaView e Mapillary"
       SettingsPage.ABOUT -> "OpenStreetMap, Esri, divieti di circolazione"
+      SettingsPage.KEYS -> "Solo con la password del proprietario" + (if (KeysGate.unlocked) " · aperto" else "")
     }
 
 @Composable
@@ -244,7 +251,21 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         "altri autisti NavMaster sulla tua strada, e il pulsante ⚠ per segnalare. Senza account e senza il tuo nome.", s.liveReports) { v ->
       set { it.copy(liveReports = v) }
     }
-    ToggleRow("Polizia e autovelox in tutti i Paesi", "Anche in Germania e Svizzera (dove la legge vieta l'avviso al conducente) " +
+    if (s.liveReports) {
+      Caption("Tocca ⚠ per scegliere cosa segnalare; tieni premuto ⚠ per segnalare subito la polizia (dove si può " +
+          "avvisare, altrimenti un pericolo): parte dopo 6 secondi, con «Annulla» per ripensarci.",
+          Modifier.padding(start = 4.dp, bottom = 6.dp), size = 13, lines = 4)
+      val mic = androidx.activity.compose.rememberLauncherForActivityResult(
+          androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok -> if (ok) set { it.copy(voiceAnswers = true) } }
+      ToggleRow("Rispondi a voce", "Passata una segnalazione, il navigatore chiede «c'è ancora?» e ascolta «sì» o «no» per qualche " +
+          "secondo: niente mani sullo schermo. Usa il microfono solo in quel momento.", s.voiceAnswers) { v ->
+        if (v && androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) mic.launch(android.Manifest.permission.RECORD_AUDIO)
+        else set { it.copy(voiceAnswers = v) }
+      }
+    }
+    ToggleRow("Polizia e autovelox in tutti i Paesi", "Acceso (scelta del proprietario, sotto la sua responsabilità): autovelox, Tutor, " +
+        "polizia e segnalazioni mostrati e detti ovunque, anche in Germania e Svizzera (dove la legge vieta l'avviso al conducente) " +
         "e in Francia (dove è ammessa solo la «zona di controllo»). Spento: si seguono le regole di ogni Paese.",
         s.enforcementEverywhere) { v -> set { it.copy(enforcementEverywhere = v) } }
   }
@@ -338,12 +359,44 @@ private fun PoiPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   }
 }
 
+/**
+ * The camper's own page: campsites, camper stops, service points and shops along the route (the
+ * same places as in «Punti di interesse», gathered here), the place for the night.
+ */
+@Composable
+private fun CamperPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
+  val isCamper = AppGraph.profiles.garage.value.active.type == app.navmaster.truck.vehicle.VehicleType.CAMPER
+  Card("Soste per il camper") {
+    Caption("Campeggi, aree camper, parcheggi camper, punti di carico e scarico acque, negozi e officine camper di tutta " +
+        "Europa, da OpenStreetMap e Overture: lungo il percorso, intorno a te o vicino alla meta (pulsante Punti di interesse). " +
+        "Dentro ogni tipo puoi tenere solo le soste con corrente, acqua, scarico, docce o cani ammessi.", size = 13, lines = 6)
+    if (!isCamper) Caption("Il mezzo in uso non è un camper: queste soste si vedono comunque se le accendi qui.",
+        Modifier.padding(top = 6.dp), color = Nm.Amber, size = 13)
+  }
+  val camper = PoiCategories.groups.first { it.id == "camper" }
+  PoiGroupCard(camper, s, set, openAtStart = true)
+  Card("Sosta per la notte") {
+    ToggleRow("Campeggi e aree camper la sera", "Dal tardo pomeriggio il pannello lungo il percorso mostra anche campeggi e aree " +
+        "camper, qualunque cosa tu abbia scelto per il giorno (solo con un camper in uso).", s.camperEveningStops) { v ->
+      set { it.copy(camperEveningStops = v) }
+    }
+    if (s.camperEveningStops) Stepper("Dalle ore", s.camperEveningFromHour.toDouble(), "", 1.0, 12.0, 22.0, 0) { v ->
+      set { it.copy(camperEveningFromHour = v.toInt()) }
+    }
+  }
+  Card("Misure del camper") {
+    Caption("Altezza, larghezza, lunghezza e peso del camper si impostano nel mezzo (pulsante del veicolo): il percorso evita " +
+        "sottopassi, strade strette e divieti ai camper (OpenStreetMap motorhome=no) e la voce avvisa dei limiti sulla strada.",
+        size = 13, lines = 5)
+  }
+}
+
 /** One group of places, folded: the header says how many are on and switches all of them. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PoiGroupCard(g: PoiGroup, s: Settings, set: ((Settings) -> Settings) -> Unit) {
+private fun PoiGroupCard(g: PoiGroup, s: Settings, set: ((Settings) -> Settings) -> Unit, openAtStart: Boolean = g.id == "rest") {
   // the first group opens by itself, to show how the finer choices work
-  var open by rememberSaveable(g.id) { mutableStateOf(g.id == "rest") }
+  var open by rememberSaveable(g.id) { mutableStateOf(openAtStart) }
   val ids = g.categories.map { it.id }
   val on = ids.count { it in s.poiCategories }
   Column(

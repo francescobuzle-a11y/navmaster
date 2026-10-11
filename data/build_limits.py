@@ -16,10 +16,16 @@ Every limit gets a check ("ver"), what the app tells the driver about how sure i
               motorway, trunk or primary road, a height over 6.5 m), or two tags disagree (the
               smaller value is kept, the safe one).
 The official lists used for the speed cameras (fetched on GitHub, only for their country):
-  France: radars automatiques, data.gouv.fr (Licence Ouverte 2.0), only to confirm OSM's;
+  France: «Liste des radars fixes en France», Ministère de l'Intérieur, data.gouv.fr (Licence
+          Ouverte 2.0, about 3,300 radars, updated 30/12/2025): to confirm and to add;
   Spain: radares fijos y de tramo, DGT NAP (DATEX II, CC BY 4.0), to confirm and to add.
 Italy publishes the list of the approved devices (velox.mit.gov.it) without their positions:
 there the cameras stay "osm".
+
+The sections under average speed control (Tutor in Italy, ETVM in France, trajectcontrole…) go in
+their own table «sections» (start and end point in the direction of travel, the limit), from the
+OpenStreetMap relations type=enforcement + enforcement=average_speed: the apps made before it do
+not read that table.
 """
 import json
 import math
@@ -39,10 +45,17 @@ MAIN_ROADS = {"motorway", "trunk", "primary", "motorway_link", "trunk_link"}
 # a sign value in traffic_sign: "IT:Fig.48(3.5)", "DE:265[3.8]", "FR:B12(3,5)", "maxheight=3.8"
 SIGN_VALUE = re.compile(r"[\[(]\s*(\d+(?:[.,]\d+)?)\s*(?:m|t)?\s*[\])]")
 OFFICIAL = {
-    "france": ("fr", "https://www.data.gouv.fr/api/1/datasets/r/8a22b5a8-4b65-41be-891a-7c0aead4ba51"),
-    "spain": ("es", "https://nap.dgt.es/datex2/dgt/PredefinedLocationsPublication/radares/content.xml"),
+    # the dataset (its newest CSV is taken), and the CSV of 12/2025 when the dataset cannot be read
+    "france": ("fr", "https://www.data.gouv.fr/api/1/datasets/6712583387af110196942793/",
+               "https://www.data.gouv.fr/api/1/datasets/r/17f7cfd9-a5fe-4b6a-9f5d-3625feaa396e"),
+    "spain": ("es", "https://nap.dgt.es/datex2/dgt/PredefinedLocationsPublication/radares/content.xml", None),
 }
-MATCH_M = 80         # an official camera and OSM's are the same within this distance
+# an official camera and OSM's are the same within this distance (the French list gives the
+# positions with 3 to 6 decimals: up to about 100 m off)
+MATCH_M = {"fr": 150, "es": 80}
+# the kinds of the French radars, as the driver is told about them
+FR_TYPES = {"ETF": "autovelox", "ETD": "autovelox (per categoria di veicolo)", "ETT": "autovelox", "ETU": "autovelox urbano",
+            "ETVM": "controllo della velocità media", "ETFR": "semaforo rosso", "ETPN": "passaggio a livello"}
 
 
 def parse_length(raw):
@@ -214,11 +227,24 @@ def official_cameras(region):
     add = the camera is added where OpenStreetMap has none (a list kept up to date)."""
     if region not in OFFICIAL:
         return []
-    code, url = OFFICIAL[region]
+    code, url, fallback = OFFICIAL[region]
     import urllib.request
+    ua = {"User-Agent": "NavMaster data build (github.com/francescobuzle-a11y/navmaster)"}
+    def get(u):
+        return urllib.request.urlopen(urllib.request.Request(u, headers=ua), timeout=120).read()
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "NavMaster data build (github.com/francescobuzle-a11y/navmaster)"})
-        raw = urllib.request.urlopen(req, timeout=120).read()
+        if code == "fr":
+            # the newest CSV of the dataset (a new file is added every year)
+            try:
+                ds = json.loads(get(url))
+                csvs = [r for r in ds.get("resources", []) if (r.get("format") or "").lower() == "csv"]
+                csvs.sort(key=lambda r: r.get("last_modified") or "", reverse=True)
+                url = csvs[0]["url"]
+                print(f"official cameras fr: {csvs[0].get('title')} ({csvs[0].get('last_modified', '')[:10]})")
+            except Exception as ex:
+                print(f"official cameras fr: dataset not read ({ex}), the 12/2025 file")
+                url = fallback
+        raw = get(url)
     except Exception as ex:
         print(f"official cameras {code}: not downloaded ({ex})")
         return []
@@ -227,15 +253,33 @@ def official_cameras(region):
         if code == "fr":
             import csv
             import io
+            import unicodedata
             text = raw.decode("utf-8-sig", errors="replace")
-            dialect = csv.Sniffer().sniff(text[:4000], delimiters=",;")
-            for row in csv.DictReader(io.StringIO(text), dialect=dialect):
+            if text.count("\ufffd") > 20:
+                text = raw.decode("latin-1")
+            head = text.split("\n", 1)[0]
+            dialect = "excel" if head.count(",") > head.count(";") else None
+            if dialect is None:
+                class dialect(csv.excel):
+                    delimiter = ";"
+            # the column names change from file to file ("Latitude", " Longitude", "VMA ", "latitude"…)
+            def norm(k):
+                k = unicodedata.normalize("NFKD", k or "").encode("ascii", "ignore").decode().strip().lower()
+                return re.sub(r"[^a-z0-9]+", "_", k).strip("_")
+            def num(v):
                 try:
-                    lat, lon = float(row["latitude"]), float(row["longitude"])
-                except (KeyError, ValueError):
+                    return float((v or "").strip().replace(",", ".").lstrip("+"))
+                except ValueError:
+                    return None
+            for row in csv.DictReader(io.StringIO(text), dialect=dialect):
+                r = {norm(k): v for k, v in row.items() if k is not None}
+                lat = num(next((v for k, v in r.items() if k.startswith("latitude")), None))
+                lon = num(next((v for k, v in r.items() if k.startswith("longitude")), None))
+                if lat is None or lon is None or not (41 < lat < 52 and -6 < lon < 10):
                     continue
-                sp = row.get("vitesse_vehicules_legers_kmh") or ""
-                out.append((lat, lon, float(sp) if sp.replace(".", "").isdigit() else 0.0, "radar " + (row.get("type") or ""), False))
+                sp = num(next((v for k, v in r.items() if k in ("vma", "vitesse_vehicules_legers_kmh")), None)) or 0.0
+                kind = (next((v for k, v in r.items() if k in ("type_de_radar", "type")), None) or "").strip().upper()
+                out.append((lat, lon, sp if 0 < sp <= 130 else 0.0, FR_TYPES.get(kind, "autovelox") + (f" ({kind})" if kind else ""), True))
         elif code == "es":
             import xml.etree.ElementTree as ET
             root = ET.fromstring(raw)
@@ -274,7 +318,7 @@ def official_cameras(region):
         print(f"official cameras {code}: not readable ({ex})")
         return []
     print(f"official cameras {code}: {len(out)}")
-    return out
+    return [(la, lo, sp, what, add, MATCH_M.get(code, 80)) for la, lo, sp, what, add in out]
 
 
 def conditional_of(tags):
@@ -336,13 +380,15 @@ def main():
             grid.setdefault(cell_id(lat, lon), []).append((lat, lon, lid))
         confirmed = set()
         added = 0
-        for lat, lon, speed, what, add in official:
+        for lat, lon, speed, what, add, match_m in official:
             near = None
+            best = match_m
             c0 = cell_id(lat, lon)
             for dc in (-100001, -100000, -99999, -1, 0, 1, 99999, 100000, 100001):
                 for la, lo, lid in grid.get(c0 + dc, []):
-                    if dist_m((lo, la), (lon, lat)) <= MATCH_M:
-                        near = lid
+                    d = dist_m((lo, la), (lon, lat))
+                    if d <= best:
+                        near, best = lid, d
             if near is not None:
                 confirmed.add(near)
             elif add:
@@ -392,6 +438,99 @@ def signs(dst):
                 os.remove(f)
 
 
+def opl_unescape(s):
+    """OPL text: %hex% stands for one character."""
+    return re.sub(r"%([0-9a-fA-F]+)%", lambda m: chr(int(m.group(1), 16)), s)
+
+
+def read_sections(opl_path):
+    """[(name, maxspeed, maxspeed_hgv, (lat, lon) start, (lat, lon) end, relation id)] of the
+    relations type=enforcement + enforcement=average_speed of an OPL file: start = member "from",
+    end = member "to" (a node, or the first node of a way)."""
+    nodes, ways, rels = {}, {}, []
+    with open(opl_path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split(" ")
+            if not parts or not parts[0]:
+                continue
+            kind, oid = parts[0][0], parts[0][1:]
+            fields = {p[0]: p[1:] for p in parts[1:] if p}
+            if kind == "n" and "x" in fields and "y" in fields and fields["x"]:
+                nodes[oid] = (float(fields["y"]), float(fields["x"]))
+            elif kind == "w":
+                ways[oid] = [r[1:] for r in fields.get("N", "").split(",") if r.startswith("n")]
+            elif kind == "r":
+                tags = {}
+                for kv in fields.get("T", "").split(","):
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        tags[opl_unescape(k)] = opl_unescape(v)
+                members = []
+                for m in fields.get("M", "").split(","):
+                    if "@" in m and len(m) > 1:
+                        ref, role = m.split("@", 1)
+                        members.append((ref[0], ref[1:], opl_unescape(role)))
+                rels.append((oid, tags, members))
+    def where(t, ref):
+        if t == "n":
+            return nodes.get(ref)
+        if t == "w" and ways.get(ref):
+            return nodes.get(ways[ref][0])
+        return None
+    out = []
+    for oid, tags, members in rels:
+        if tags.get("type") != "enforcement" or tags.get("enforcement") != "average_speed":
+            continue
+        a = next((where(t, ref) for t, ref, role in members if role == "from" and where(t, ref)), None)
+        b = next((where(t, ref) for t, ref, role in members if role == "to" and where(t, ref)), None)
+        if a is None or b is None or dist_m((a[1], a[0]), (b[1], b[0])) < 300:
+            continue
+        sp = re.match(r"\s*(\d+)", tags.get("maxspeed") or "")
+        hgv = re.match(r"\s*(\d+)", tags.get("maxspeed:hgv") or "")
+        out.append((tags.get("name") or tags.get("description"), float(sp.group(1)) if sp else 0.0,
+                    float(hgv.group(1)) if hgv else None, a, b, oid))
+    return out
+
+
+def sections(dst):
+    """The sections under average speed control (Tutor) go in the same file, table «sections»,
+    from the region extract next to it, with osmium (as the signs)."""
+    import os
+    import subprocess
+    if not os.path.exists("region.osm.pbf"):
+        print("sections: no region.osm.pbf here, skipped")
+        return
+    try:
+        subprocess.run(["osmium", "tags-filter", "region.osm.pbf", "r/enforcement=average_speed",
+                        "-o", "sections.osm.pbf", "--overwrite"], check=True)
+        subprocess.run(["osmium", "cat", "sections.osm.pbf", "-f", "opl", "-o", "sections.opl", "--overwrite"], check=True)
+        found = read_sections("sections.opl")
+        db = sqlite3.connect(dst)
+        db.executescript("""
+            DROP TABLE IF EXISTS sections; DROP TABLE IF EXISTS section_cells;
+            CREATE TABLE sections(id INTEGER PRIMARY KEY, osm TEXT, kind TEXT, value REAL, hgv REAL, name TEXT,
+                                  pts TEXT, ver TEXT);
+            CREATE TABLE section_cells(cell INTEGER NOT NULL, sid INTEGER NOT NULL);
+        """)
+        for name, sp, hgv, a, b, oid in found:
+            cur = db.execute("INSERT INTO sections(osm, kind, value, hgv, name, pts, ver) VALUES (?,?,?,?,?,?,?)",
+                             ("r" + oid, "average_speed", sp, hgv, name, f"{a[0]:.6f},{a[1]:.6f};{b[0]:.6f},{b[1]:.6f}", "osm"))
+            for c in {cell_id(*a), cell_id(*b)}:
+                db.execute("INSERT INTO section_cells(cell, sid) VALUES (?,?)", (c, cur.lastrowid))
+        db.execute("CREATE INDEX section_cells_cell ON section_cells(cell)")
+        db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('sections', ?)", (str(len(found)),))
+        db.commit()
+        db.close()
+        print(f"sections: {len(found)} under average speed control")
+    except Exception as ex:
+        print(f"sections: skipped ({ex})")
+    finally:
+        for f in ("sections.osm.pbf", "sections.opl"):
+            if os.path.exists(f):
+                os.remove(f)
+
+
 if __name__ == "__main__":
     main()
     signs(sys.argv[2])
+    sections(sys.argv[2])

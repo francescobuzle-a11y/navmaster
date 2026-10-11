@@ -5,7 +5,6 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.util.Log
-import app.navmaster.truck.BuildConfig
 import app.navmaster.truck.routing.gh.GhEngine
 import app.navmaster.truck.routing.gh.TruckSpec
 import java.util.Calendar
@@ -47,7 +46,7 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
     private set
 
   val key: String
-    get() = BuildConfig.ORS_KEY
+    get() = app.navmaster.truck.live.ApiKeys.ors(app.navmaster.truck.AppGraph.settings.settings.value)
 
   fun available(): Boolean {
     if (key.isBlank() || !enabled()) return false

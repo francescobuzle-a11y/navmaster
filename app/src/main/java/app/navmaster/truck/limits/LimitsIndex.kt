@@ -33,7 +33,21 @@ data class RouteLimit(
      * "dubbio" not plausible or contradictory; null for packages made before the checks.
      */
     val ver: String? = null,
+    /** Where it ends along the route: a section under average speed control (Tutor); else [alongM]. */
+    val endM: Double = alongM,
 ) {
+  /** A section under average speed control (Tutor, trajectcontrole, ETVM sections). */
+  val isSection: Boolean
+    get() = kind == "average_speed"
+
+  /**
+   * What a speed camera of an official list checks when it is not the speed ("semaforo rosso",
+   * "passaggio a livello", "controllo della velocità media"), for the voice; else null.
+   */
+  val cameraWhat: String?
+    get() = name?.takeIf { kind == "speed_camera" && (it.startsWith("semaforo") || it.startsWith("passaggio") || it.startsWith("controllo")) }
+        ?.substringBefore(" (")
+
   /** What the driver is told about the data, or null when there is nothing to say. */
   val check: String?
     get() = when (ver) {
@@ -58,6 +72,7 @@ data class RouteLimit(
           "hazmat" -> "Divieto merci pericolose"
           "adr_tunnel" -> "Galleria ADR cat. ${raw ?: ""}"
           "speed_camera" -> "Autovelox"
+          "average_speed" -> "Tutor"
           else -> "Divieto a orario"
         }
 
@@ -68,7 +83,7 @@ data class RouteLimit(
           "maxheight", "maxwidth", "maxlength" -> fmt(value) + "m"
           "maxweight", "maxaxleload" -> fmt(value) + "t"
           "adr_tunnel" -> raw
-          "speed_camera" -> if (value > 0) value.toInt().toString() else null
+          "speed_camera", "average_speed" -> if (value > 0) value.toInt().toString() else null
           else -> null
         }
 
@@ -145,6 +160,8 @@ class LimitsIndex(regions: RegionManager) {
       if (!relevant(l, vehicle)) continue
       out += l
     }
+    out += runCatching { sections(m, vehicle) }.getOrElse { Log.w("NavMasterLimits", "sections: $it"); emptyList() }
+    out.sortBy { it.alongM }
     if (a != null) a.osmSigns = runCatching { signs(m, a) }.getOrElse { Log.w("NavMasterLimits", "signs: $it"); emptyList() }
     if (a != null) a.laneSigns = runCatching { laneSigns(m, a) }.getOrElse { Log.w("NavMasterLimits", "lane signs: $it"); emptyList() }
     Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
@@ -153,6 +170,39 @@ class LimitsIndex(regions: RegionManager) {
     for (l in out) Log.d("NavMasterLimits", "limit ${l.kind} ${l.value} @${l.alongM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, l.lat)}," +
         "${"%.5f".format(java.util.Locale.ROOT, l.lon)} blocking=${l.blocking} ${l.name ?: ""}")
     return out
+  }
+
+  /**
+   * The sections under average speed control the route drives through from their start to their
+   * end, in their direction (table «sections», data/build_limits.py; not in older packages). The
+   * limit is the heavy vehicles' one when mapped (maxspeed:hgv) and the vehicle is one.
+   */
+  private fun sections(m: RouteMatcher, vehicle: VehicleProfile): List<RouteLimit> {
+    val heavy = vehicle.isHgv || vehicle.type == VehicleType.AUTOBUS
+    val rows = dbs.perCells(m.cells) { db, inList ->
+      val out = mutableListOf<RouteLimit>()
+      try {
+        db.rawQuery("SELECT DISTINCT s.id, s.osm, s.value, s.hgv, s.name, s.pts, s.ver FROM section_cells c " +
+            "JOIN sections s ON s.id = c.sid WHERE c.cell IN ($inList)", null).use { c ->
+          while (c.moveToNext()) {
+            val pts = RouteMatcher.parsePts(c.getString(5))
+            if (pts.size < 2) continue
+            val (da, a) = m.nearest(pts.first()) ?: continue
+            val (db2, b) = m.nearest(pts.last()) ?: continue
+            // both ends on the route, in this order (the other carriageway has them the other way)
+            if (da > 40 || db2 > 40 || b - a < 300) continue
+            val hgv = if (c.isNull(3)) null else c.getDouble(3)
+            val limit = if (heavy && hgv != null && hgv > 0) hgv else c.getDouble(2)
+            out += RouteLimit("average_speed", limit, hgv?.toInt()?.toString(), c.getString(4), null, a,
+                pts.first().lat, pts.first().lng, false, c.getString(1), c.getString(6), endM = b)
+          }
+        }
+      } catch (e: android.database.sqlite.SQLiteException) {
+        // a package made before the sections
+      }
+      out
+    }
+    return rows.distinctBy { (it.alongM / 50).toLong() }
   }
 
   /**

@@ -42,7 +42,8 @@ internal fun realJunctionOf(scene: JunctionScene, md: JvModel): RealJv? {
  * with the vehicle, lane by lane, through the junction and into the road taken; the vehicle is the
  * blue arrow on its lane. [vehAlong]: where the vehicle is (metres of the route).
  */
-internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, near: Boolean, night: Boolean, signsSpace: Float) {
+internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, near: Boolean, night: Boolean, signsSpace: Float,
+                                        vehLane: Int? = null) {
   val w = size.width.toDouble()
   val h = size.height.toDouble()
   if (w < 10 || h < 10) return
@@ -61,8 +62,10 @@ internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, near: Bool
   fy /= fl
   val rx = fy
   val ry = -fx
-  // the camera over the lane of the vehicle, then over the middle of the road taken
-  fun laneR(sAt: Double): Double = -rj.actOff * RealJv.glide(sAt - rj.nodeS)
+  // the vehicle on the lane the satellites put it in (when known), else on the lane to take; the
+  // camera over that lane, then over the middle of the road taken
+  val vehOff = vehLane?.takeIf { it in 0 until rj.lanesIn }?.let { rj.laneOff(it) } ?: rj.actOff
+  fun laneR(sAt: Double): Double = -vehOff * RealJv.glide(sAt - rj.nodeS)
   val camX = laneR(sCam + 30) * 0.5
 
   // the camera: height, looking down, and the scale that frames the road at the vehicle

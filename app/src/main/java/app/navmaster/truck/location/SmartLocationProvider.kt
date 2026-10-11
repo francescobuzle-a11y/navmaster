@@ -13,6 +13,9 @@ import com.stadiamaps.ferrostar.core.location.NavigationLocationProviding
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -47,7 +50,26 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       Line(geometry, cum)
     }
     drAlong = -1.0
+    hintIndex = 0
+    _onRoute.value = null
   }
+
+  /**
+   * The last position on the route as this provider worked it out from the satellites (or along
+   * the route in a tunnel): metres from the start of the route, the speed, when (System.nanoTime,
+   * the clock of the frames), the accuracy. The arrow on the map glides from here (ui.MainScreen
+   * SmoothTrack), not
+   * from the guidance's own snapping, which stands still at the end of a step until the step moves
+   * on and then jumps.
+   */
+  class Fix(val alongM: Double, val speedMs: Double, val atNanos: Long, val accuracyM: Double, val reckoned: Boolean,
+            /** Metres to the right of the route's line (negative: left), for the lane the vehicle is in. */
+            val lateralM: Double = 0.0)
+
+  @Volatile private var fixLateral = 0.0
+
+  private val _onRoute = MutableStateFlow<Fix?>(null)
+  val onRoute: StateFlow<Fix?> = _onRoute.asStateFlow()
 
   // the last good satellite fix: where it was on the route, how fast, when (elapsed realtime)
   @Volatile private var fixAlong = -1.0
@@ -98,6 +120,15 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     if (bestD > 60) scan(0, n - 1)
     if (bestI < 0 || bestD > 45) return null
     hintIndex = bestI
+    // on which side of the line: the cross product of the segment and the point (right is negative)
+    val a = ln.pts[bestI]
+    val b = ln.pts[bestI + 1]
+    val k = Math.cos(Math.toRadians(p.lat))
+    val ex = (b.lng - a.lng) * k
+    val ey = b.lat - a.lat
+    val px = (p.lng - a.lng) * k
+    val py = p.lat - a.lat
+    fixLateral = if (ex * py - ey * px > 0) -bestD else bestD
     return bestS
   }
 
@@ -144,14 +175,16 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           // the speed measured by the satellites (Doppler): precise, and current when braking
           fixSpeed = v
           fixAt = el
+          _onRoute.value = Fix(s, if (v < 0.8) 0.0 else v, System.nanoTime(), acc, false, fixLateral)
         } else {
           fixAlong = -1.0
+          _onRoute.value = null
         }
         if (wasTunnel) Log.i(TAG, "satellites back: dead reckoning ends")
         // standing still (a queue, a light, a roundabout entry): the fixes wander by some metres;
         // the position handed on stays where it is, so the map does not twitch
         val prev = lastSent
-        if (s != null && v < 0.8 && prev != null && prev.distanceTo(l) < 20f) {
+        if (s != null && v < 0.8 && prev != null && prev.distanceTo(l) < 12f) {
           send(Location(prev).apply {
             time = l.time
             elapsedRealtimeNanos = l.elapsedRealtimeNanos
@@ -206,6 +239,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           tunnel = false
           drAlong = -1.0
           fixAlong = -1.0
+          _onRoute.value = null
           continue
         }
         if (silent >= 1500 && !tunnel) {
@@ -215,6 +249,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         val s = (fixAlong + fixSpeed * silent / 1000.0).coerceAtMost(ln.cum.last() - 1)
         drAlong = s
         lastDr = now
+        _onRoute.value = Fix(s, fixSpeed, System.nanoTime(), 8.0, true)
         send(locationAt(ln, s, fixSpeed))
       }
     }

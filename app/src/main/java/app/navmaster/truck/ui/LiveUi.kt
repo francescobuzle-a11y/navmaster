@@ -71,7 +71,7 @@ fun LiveBanner(ev: RouteLiveEvent, distanceM: Double, country: String?, modifier
 
 /** A driver's report just passed: is it still there? Two big answers, gone by itself. */
 @Composable
-fun LiveAskCard(ev: RouteLiveEvent, country: String?, onAnswer: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+fun LiveAskCard(ev: RouteLiveEvent, country: String?, onAnswer: (Boolean) -> Unit, modifier: Modifier = Modifier, listening: Boolean = false) {
   Column(
       modifier.shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(Nm.PanelSolid)
           .border(1.dp, Color(ev.e.kind.color), RoundedCornerShape(22.dp)).padding(14.dp).widthIn(max = 380.dp),
@@ -81,6 +81,7 @@ fun LiveAskCard(ev: RouteLiveEvent, country: String?, onAnswer: (Boolean) -> Uni
       Spacer(Modifier.width(10.dp))
       Text("${LiveRules.label(ev.e.kind, country)}: c'è ancora?", color = Nm.Text, fontSize = 19.sp, fontWeight = FontWeight.Bold)
     }
+    if (listening) Text("🎤 Rispondi a voce: «sì» o «no»", color = Nm.Accent, fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
     Spacer(Modifier.height(10.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
       BigButton("Sì", Modifier.weight(1f)) { onAnswer(true) }
@@ -119,5 +120,24 @@ fun ReportPicker(country: String?, onPick: (LiveKind) -> Unit, onClose: () -> Un
       Spacer(Modifier.height(12.dp))
       BigButton("Annulla", Modifier.fillMaxWidth(), style = BtnStyle.GHOST, onClick = onClose)
     }
+  }
+}
+
+/** A one-touch report waiting a few seconds before it is sent: the driver can still take it back. */
+@Composable
+fun PendingReportCard(kind: LiveKind, country: String?, onUndo: () -> Unit, modifier: Modifier = Modifier) {
+  Row(
+      modifier.shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(Nm.PanelSolid)
+          .border(1.dp, Color(kind.color), RoundedCornerShape(22.dp)).padding(14.dp).widthIn(max = 420.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(kind.icon, fontSize = 26.sp)
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.weight(1f)) {
+      Text("${LiveRules.label(kind, country)} segnalato", color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+      Text("Parte tra pochi secondi", color = Nm.Muted, fontSize = 13.sp)
+    }
+    Spacer(Modifier.width(10.dp))
+    BigButton("Annulla", style = BtnStyle.SECONDARY, onClick = onUndo)
   }
 }

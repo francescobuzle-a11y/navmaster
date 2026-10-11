@@ -77,9 +77,14 @@ object PoiCategories {
               PoiCategory("weighbridge", "Pese", "⚖"),
           )),
           PoiGroup("camper", "Camper", "🚐", listOf(
-              PoiCategory("camper_site", "Aree camper", "🚐", listOf(PoiSub("free", "Gratuite"))),
+              PoiCategory("campsite", "Campeggi", "⛺", listOf(
+                  PoiSub("motorhome", "Posti camper"), PoiSub("power", "Corrente"), PoiSub("dump", "Scarico acque"),
+                  PoiSub("shower", "Docce"), PoiSub("dog", "Cani ammessi"), PoiSub("all_year", "Tutto l'anno"))),
+              PoiCategory("camper_site", "Aree camper", "🚐", listOf(
+                  free, PoiSub("power", "Corrente"), PoiSub("water", "Acqua"), PoiSub("dump", "Scarico acque"), PoiSub("toilets", "Bagni"))),
               PoiCategory("camper_parking", "Parcheggi camper", "🅿"),
-              PoiCategory("camper_service", "Carico/scarico camper", "💧"),
+              PoiCategory("camper_service", "Carico/scarico acque", "💧", listOf(PoiSub("water", "Con acqua potabile"))),
+              PoiCategory("camper_shop", "Negozi e assistenza camper", "🛠", listOf(PoiSub("repair", "Officina"))),
           )),
           PoiGroup("other", "Salute, soldi e confini", "🏥", listOf(
               PoiCategory("pharmacy", "Farmacie", "💊"),
@@ -90,6 +95,9 @@ object PoiCategories {
       )
 
   val all = groups.flatMap { it.categories }
+
+  /** The places of the camper (its own group). */
+  val camper: Set<String> = groups.first { it.id == "camper" }.categories.map { it.id }.toSet()
 
   fun byId(id: String) = all.firstOrNull { it.id == id }
 }
@@ -148,6 +156,12 @@ data class Settings(
     val poiMaxDetourM: Int = 800,
     /** How many places the side panel shows (0 = never). */
     val poiRailCount: Int = 3,
+    /**
+     * Camper: from the late afternoon the side panel shows campsites and camper stops along the
+     * route (a place for the night), whatever the categories chosen for the day.
+     */
+    val camperEveningStops: Boolean = true,
+    val camperEveningFromHour: Int = 17,
     /** Seconds the panel stays open when new places come up (0 = always open). */
     val poiRailSeconds: Int = 12,
     /** Opacity of the panel, percent. */
@@ -165,6 +179,10 @@ data class Settings(
     val speedWarningKmh: Int = 5,
     /** Reports of the other NavMaster drivers on the road ahead (and the button to send one). */
     val liveReports: Boolean = true,
+    /** "C'è ancora?" asked aloud and answered with the voice (sì / no), with the microphone. */
+    val voiceAnswers: Boolean = true,
+    /** The microphone was asked for once (for [voiceAnswers]): not asked again at every start. */
+    val micAsked: Boolean = false,
     /** Official traffic information (road operators; TomTom / HERE with the driver's free key). */
     val liveTraffic: Boolean = true,
     /** Free TomTom key (developer.tomtom.com): incidents and queues of all Europe, traffic on the map. */
@@ -173,6 +191,8 @@ data class Settings(
     val readyDefaults: Int = 0,
     /** Free HERE key (platform.here.com): incidents of all Europe. */
     val hereKey: String = "",
+    /** Free openrouteservice key (online routing), typed on the tablet; else the one built into the app. */
+    val orsKey: String = "",
     /** Official traffic information of the European countries (national access points, open data). */
     val nationalTraffic: Boolean = true,
     /** Free key of Trafikverket (Sweden), asked by the driver. */

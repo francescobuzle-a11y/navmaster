@@ -64,8 +64,10 @@ def our_category(cat, name):
         return "truck_repair", {}
     if cat in ("car_wash", "truck_wash") and re.search(r"truck|camion|tir\b|lkw|poids", n):
         return "truck_wash", {}
-    if cat in ("rv_park", "campground", "caravan_site") and cat != "campground":
+    if cat in ("rv_park", "caravan_site"):
         return "camper_site", {}
+    if cat in ("campground", "campsite", "camping"):
+        return "campsite", {}
     if cat in ("ev_charging_station",) and re.search(r"truck|camion|lkw|hgv|megawatt|mcs", n):
         return "hgv_charging", {"hgv": True}
     return None
@@ -74,7 +76,7 @@ def our_category(cat, name):
 CATS = ["gas_station", "fuel_station", "truck_stop", "rest_stop", "rest_area", "highway_rest_stop", "fast_food_restaurant",
         "cafe", "coffee_shop", "bar", "restaurant", "diner", "pizza_place", "supermarket", "grocery_store", "hypermarket", "hotel",
         "motel", "inn", "pharmacy", "drugstore", "hospital", "emergency_room", "atms", "atm", "tire_dealer_and_repair", "tire_shop",
-        "tire_repair_shop", "truck_repair", "commercial_truck_repair", "truck_repair_shop", "car_wash", "truck_wash", "rv_park",
+        "tire_repair_shop", "truck_repair", "commercial_truck_repair", "truck_repair_shop", "car_wash", "truck_wash", "rv_park", "campground",
         "ev_charging_station"]
 
 
