@@ -48,9 +48,16 @@ jobs:
           npx --yes -p @maplibre/maplibre-gl-style-spec gl-style-validate app/src/main/assets/style/style-day.json app/src/main/assets/style/style-night.json
 
       - name: Compila APK
-        # service keys from the repository secrets (empty when not set): openrouteservice online routing
+        # service keys from the repository secrets (empty when not set): openrouteservice online routing,
+        # TomTom and HERE traffic (one free account each for the whole fleet); fleet size and free
+        # monthly requests from the repository variables (defaults 20, 200000, 5000 when not set)
         env:
           ORS_KEY: ${{ secrets.ORS_KEY }}
+          TOMTOM_KEY: ${{ secrets.TOMTOM_KEY }}
+          HERE_KEY: ${{ secrets.HERE_KEY }}
+          FLEET_SIZE: ${{ vars.FLEET_SIZE }}
+          TOMTOM_MONTH_FREE: ${{ vars.TOMTOM_MONTH_FREE }}
+          HERE_MONTH_FREE: ${{ vars.HERE_MONTH_FREE }}
         run: gradle :app:assembleRelease --stacktrace --no-daemon
 
       - name: Pubblica APK (release app-${{ github.run_number }})
