@@ -52,8 +52,9 @@ object AppGraph {
 
   fun init(application: Application) {
     app = application
-    // TomTom only inside its free allowance, also for the map's own requests
+    // TomTom and HERE only inside this tablet's part of the fleet's free allowance (also the map's own requests)
     TomTomGuard.init(application)
+    app.navmaster.truck.live.HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)
   }
 

@@ -4,8 +4,6 @@ import android.content.Context
 import android.util.Log
 import java.io.File
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +23,8 @@ data class TomTomUsage(
     val dayIncidents: Int = 0,
     val dayFlow: Int = 0,
     val monthTiles: Int = 0,
+    /** Month's tiles when today began (today's budget is reckoned from what was left then). */
+    val monthAtDayStart: Int = 0,
     /** After a "too many requests" answer, nothing is asked until this time (epoch ms). */
     val pausedUntil: Long = 0,
 ) {
@@ -33,25 +33,31 @@ data class TomTomUsage(
 }
 
 /**
- * Keeps TomTom always inside its free allowance. Every request to api.tomtom.com - the traffic
+ * Keeps TomTom always inside this tablet's part of the free allowance of the fleet's one account
+ * (TOMTOM_MONTH_FREE, 200,000 traffic tiles a month, × 90% / FLEET_SIZE, see Fleet). Every request to api.tomtom.com - the traffic
  * incidents the app reads along the route and the traffic colours the map draws - passes through
  * here (also the map's own ones: MapLibre gets this same guard on its HTTP client):
  *
  * - only tiles are used (incidents as vector tiles, traffic flow as map tiles): they are counted in
  *   the large tile allowance, never in the small one of the other requests;
- * - hard limits per day and per month well under the free allowance, with a part of the day kept
- *   for the incidents on the route (the colours on the map go first when the budget runs low);
+ * - hard limits per month (this tablet's part) and per day (what is left spread over the days
+ *   left), the colours on the map at most a quarter of the day: the incidents on the route first;
+ * - when the day's part is used up HERE takes over (NavViewModel.refreshLive), till tomorrow;
  * - a "429 too many requests" pauses TomTom until the next day, the other sources go on;
  * - the map keeps traffic tiles 5 minutes instead of asking them again at every movement.
  * Over the limit a request is not sent at all: it gets an empty answer from here.
  */
 object TomTomGuard : Interceptor {
   private const val TAG = "NavMasterLive"
-  /** Tiles a day at most (TomTom's free allowance: 50,000 a day, or 200,000 a month on the newest plans). */
-  const val DAY_TILES = 4_000
-  /** Tiles of this day kept for the incidents on the route. */
-  private const val INCIDENT_RESERVE = 1_500
-  const val MONTH_TILES = 180_000
+  /** This tablet's tiles a month. */
+  val MONTH_TILES: Int
+    get() = Fleet.share(app.navmaster.truck.BuildConfig.TOMTOM_MONTH_FREE)
+
+  /** Today's tiles at most. */
+  val DAY_TILES: Int
+    get() = dayLimit(current())
+
+  private fun dayLimit(u: TomTomUsage): Int = Fleet.today(MONTH_TILES - u.monthAtDayStart)
 
   private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
   private var file: File? = null
@@ -69,8 +75,8 @@ object TomTomGuard : Interceptor {
     val today = LocalDate.now().toString()
     val month = today.take(7)
     var u = _usage.value
-    if (u.day != today) u = u.copy(day = today, dayIncidents = 0, dayFlow = 0)
-    if (u.month != month) u = u.copy(month = month, monthTiles = 0)
+    if (u.month != month) u = u.copy(month = month, monthTiles = 0, monthAtDayStart = 0)
+    if (u.day != today) u = u.copy(day = today, dayIncidents = 0, dayFlow = 0, monthAtDayStart = u.monthTiles)
     return u
   }
 
@@ -86,20 +92,33 @@ object TomTomGuard : Interceptor {
     val u = current()
     if (System.currentTimeMillis() < u.pausedUntil) return false
     if (u.monthTiles >= MONTH_TILES) return false
-    val limit = if (incident) DAY_TILES else DAY_TILES - INCIDENT_RESERVE + u.dayIncidents.coerceAtMost(INCIDENT_RESERVE)
-    if (u.dayTiles >= limit) return false
+    val day = dayLimit(u)
+    if (u.dayTiles >= day) return false
+    // the colours on the map: at most a quarter of the day
+    if (!incident && u.dayFlow >= day / 4) return false
     save(if (incident) u.copy(dayIncidents = u.dayIncidents + 1, monthTiles = u.monthTiles + 1)
          else u.copy(dayFlow = u.dayFlow + 1, monthTiles = u.monthTiles + 1))
     return true
   }
 
   /** Share of today's budget still free (0..1): the refresh gets slower when it runs low. */
-  fun leftToday(): Double = (1.0 - current().dayTiles.toDouble() / DAY_TILES).coerceIn(0.0, 1.0)
+  fun leftToday(): Double {
+    val u = current()
+    val day = dayLimit(u)
+    return if (day <= 0) 0.0 else (1.0 - u.dayTiles.toDouble() / day).coerceIn(0.0, 1.0)
+  }
+
+  /** May the incidents of the road ahead ([n] tiles) still be asked today? false: HERE takes over. */
+  @Synchronized
+  fun canAsk(n: Int = 1): Boolean {
+    val u = current()
+    if (System.currentTimeMillis() < u.pausedUntil) return false
+    return u.monthTiles + n <= MONTH_TILES && u.dayTiles + n <= dayLimit(u)
+  }
 
   @Synchronized
   private fun pauseTillTomorrow() {
-    val next = LocalDateTime.now().toLocalDate().plusDays(1).atTime(0, 5).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-    save(current().copy(pausedUntil = next))
+    save(current().copy(pausedUntil = Fleet.tomorrowMs()))
     Log.w(TAG, "TomTom: free allowance reached, paused until tomorrow")
   }
 
@@ -114,7 +133,7 @@ object TomTomGuard : Interceptor {
     val u = current()
     val paused = System.currentTimeMillis() < u.pausedUntil
     return (if (paused && u.pausedUntil - System.currentTimeMillis() <= 3_600_000L) "Chiave rifiutata da TomTom: controllala. " else "") +
-        "Oggi ${u.dayTiles} di $DAY_TILES richieste (${u.dayIncidents} per il percorso, ${u.dayFlow} per la mappa) · " +
+        "TomTom oggi ${u.dayTiles} di ${dayLimit(u)} richieste (${u.dayIncidents} per il percorso, ${u.dayFlow} per la mappa) · " +
         "mese ${u.monthTiles} di $MONTH_TILES" + if (paused) " · in pausa" else ""
   }
 

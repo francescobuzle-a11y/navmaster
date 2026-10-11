@@ -592,6 +592,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private var tomtomEvents: List<LiveEvent> = emptyList()
   private val tomtomTiles = HashMap<String, Pair<Long, List<LiveEvent>>>()
   private var lastMoveAt = 0L
+  private var hereEvents: List<LiveEvent> = emptyList()
+  private var lastHereAt = 0L
+  /** Which of the two commercial sources gave the traffic of the last minute ("TomTom 3", "HERE 2 …"). */
+  private var commercialSource: String? = null
   private var personalEvents: List<LiveEvent> = emptyList()
   private var lastPersonalAt = 0L
   private var personalMoveAt = 0L
@@ -600,20 +604,21 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private var nationalCounts: List<String> = emptyList()
 
   /**
-   * TomTom incidents of the road ahead (60 km on motorways, 30 km elsewhere), read as zoom 12
-   * tiles: a tile is asked again only after 4 minutes on motorways and 8 elsewhere (twice as long
-   * when less than a third of the day's budget is left), never while the vehicle stands still.
+   * TomTom incidents of the road ahead (30 km on motorways, 15 km elsewhere), read as zoom 12
+   * tiles: a tile is asked again only after 15 minutes on motorways and 25 elsewhere (twice as
+   * long when less than a third of the day's part is left), never while the vehicle stands still.
+   * With a fleet of 20 a tablet has about 300 tiles a day: about 25 an hour of driving.
    */
   private fun refreshTomTom(key: String, a: RouteAnalysis, traveled: Double) {
     val now = System.currentTimeMillis()
     val speed = navigationUiState.value.location?.speed?.value ?: 0.0
     if (speed > 2.0 || lastMoveAt == 0L) lastMoveAt = now
     val fast = a.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
-    val end = minOf(a.length, traveled + if (fast) 60_000.0 else 30_000.0)
+    val end = minOf(a.length, traveled + if (fast) 30_000.0 else 15_000.0)
     val z = TrafficFeeds.INCIDENT_ZOOM
     val tiles = LinkedHashSet<String>()
     var at = traveled
-    while (at <= end && tiles.size < 16) {
+    while (at <= end && tiles.size < 8) {
       val p = a.pointAt(at)
       val (x, y) = app.navmaster.truck.live.Mvt.tileOf(p.lat, p.lng, z)
       tiles += "$z/$x/$y"
@@ -621,7 +626,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     tomtomTiles.keys.retainAll(tiles)
     if (now - lastMoveAt < 5 * 60_000L) {
-      val maxAge = (if (fast) 4 else 8) * 60_000L * (if (app.navmaster.truck.live.TomTomGuard.leftToday() < 0.3) 2 else 1)
+      val maxAge = (if (fast) 15 else 25) * 60_000L * (if (app.navmaster.truck.live.TomTomGuard.leftToday() < 0.3) 2 else 1)
       var asked = 0
       for (t in tiles) {
         val old = tomtomTiles[t]
@@ -634,6 +639,49 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       if (asked > 0) Log.i(TAG, "TomTom: $asked tiles asked, ${app.navmaster.truck.live.TomTomGuard.summary()}")
     }
     tomtomEvents = tomtomTiles.values.flatMap { it.second }.distinctBy { it.id }
+  }
+
+  /**
+   * TomTom first; when TomTom's part of the day is used up (or it paused after a refusal) HERE
+   * goes on, and the next day TomTom again. When both are used up only the national traffic
+   * centres and the drivers' reports are left. The answers of the source not asked any more stay
+   * on the road for half an hour.
+   */
+  private fun refreshCommercial(s: app.navmaster.truck.settings.Settings, a: RouteAnalysis, traveled: Double) {
+    val now = System.currentTimeMillis()
+    val tomtomKey = app.navmaster.truck.live.ApiKeys.tomtom(s)
+    val hereKey = app.navmaster.truck.live.ApiKeys.here(s)
+    val tomtom = tomtomKey.isNotBlank() && app.navmaster.truck.live.TomTomGuard.canAsk()
+    tomtomTiles.values.removeAll { now - it.first > 30 * 60_000L }
+    if (tomtom) {
+      refreshTomTom(tomtomKey, a, traveled)
+      if (now - lastHereAt > 30 * 60_000L) hereEvents = emptyList()
+      commercialSource = "TomTom ${tomtomEvents.size}"
+      return
+    }
+    tomtomEvents = tomtomTiles.values.flatMap { it.second }.distinctBy { it.id }
+    val why = if (tomtomKey.isBlank()) "" else " (TomTom finito per oggi)"
+    if (hereKey.isNotBlank() && app.navmaster.truck.live.HereGuard.canAsk()) {
+      // one square of the next 40 km, every 20 minutes while moving: HERE's part is small
+      val speed = navigationUiState.value.location?.speed?.value ?: 0.0
+      if (speed > 2.0 || lastMoveAt == 0L) lastMoveAt = now
+      val moving = now - lastMoveAt < 5 * 60_000L
+      if (moving && now - lastHereAt > 20 * 60_000L) {
+        val got = runCatching { TrafficFeeds.here(hereKey, boxesAhead(a, traveled, 40_000.0, 1)) }.getOrNull()
+        if (got != null) {
+          hereEvents = got
+          lastHereAt = now
+          Log.i(TAG, "HERE: ${got.size} events, ${app.navmaster.truck.live.HereGuard.summary()}")
+        }
+      }
+      commercialSource = "HERE ${hereEvents.size}$why"
+      return
+    }
+    if (now - lastHereAt > 30 * 60_000L) hereEvents = emptyList()
+    commercialSource = when {
+      tomtomKey.isBlank() && hereKey.isBlank() -> null
+      else -> "TomTom e HERE finiti per oggi"
+    }
   }
 
   private fun traveledNow(): Double =
@@ -667,6 +715,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     trafficEvents = emptyList()
     openEvents = emptyList()
     tomtomEvents = emptyList()
+    hereEvents = emptyList()
+    lastHereAt = 0L
+    commercialSource = null
     nationalEvents = emptyList()
     tomtomTiles.clear()
     lastTrafficAt = 0L
@@ -697,18 +748,18 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       val deRoads = a.edges.filter { it.endM > traveled && it.country?.uppercase() == "DE" && it.roadClass == "motorway" }
           .flatMap { it.refs }.mapNotNull { r -> Regex("^A ?(\\d{1,3})$").find(r)?.let { "A" + it.groupValues[1] } }.distinct()
       if (deRoads.isNotEmpty()) list += TrafficFeeds.autobahn(deRoads).also { sources += "Autobahn ${it.size}" }
-      val hereKey = app.navmaster.truck.live.ApiKeys.here(s)
-      if (hereKey.isNotBlank()) list += runCatching { TrafficFeeds.here(hereKey, boxesAhead(a, traveled)) }.getOrDefault(emptyList()).also { sources += "HERE ${it.size}" }
       openEvents = list
       trafficSources = sources.filterNot { it.startsWith("segnalazioni") }
     }
-    // TomTom: incident tiles along the road ahead, each asked again only when old (see TomTomGuard)
-    val tomtomKey = app.navmaster.truck.live.ApiKeys.tomtom(s)
-    if (s.liveTraffic && tomtomKey.isNotBlank()) {
-      runCatching { refreshTomTom(tomtomKey, a, traveled) }.onFailure { Log.w(TAG, "TomTom: $it") }
-      sources += "TomTom ${tomtomEvents.size}"
-      trafficSources = trafficSources.filterNot { it.startsWith("TomTom") } + "TomTom ${tomtomEvents.size}"
-    } else tomtomEvents = emptyList()
+    // TomTom (incident tiles along the road ahead), else HERE when TomTom's part is used up
+    if (s.liveTraffic) {
+      runCatching { refreshCommercial(s, a, traveled) }.onFailure { Log.w(TAG, "TomTom/HERE: $it") }
+      commercialSource?.let { sources += it }
+      trafficSources = trafficSources.filterNot { it.startsWith("TomTom") || it.startsWith("HERE") } + listOfNotNull(commercialSource)
+    } else {
+      tomtomEvents = emptyList()
+      hereEvents = emptyList()
+    }
     // the traffic centres of the countries crossed (open data), each file at its own pace (5 - 15
     // minutes, see NationalFeeds), only while moving
     if (s.liveTraffic && s.nationalTraffic) {
@@ -724,7 +775,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       nationalEvents = emptyList()
       nationalCounts = emptyList()
     }
-    trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents + nationalEvents else emptyList()
+    trafficEvents = if (s.liveTraffic) openEvents + tomtomEvents + hereEvents + nationalEvents else emptyList()
     // personal test (see PersonalFeed): Waze asked by the tablet itself, or the owner's own server;
     // every 2 minutes, only the stretch of route ahead, never while standing still
     val direct = s.personalFeedDirect
@@ -1632,7 +1683,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         Log.i(TAG, "livetest mvt: ${bytes.size} bytes, ${f.size} features, layers ${f.map { it.layer }.distinct()}, " +
             "roads ${roads.size}, first road point $first, props ${roads.firstOrNull()?.props}")
       }.onFailure { Log.w(TAG, "livetest mvt: $it") }
-      Log.i(TAG, "livetest tomtom guard: ${app.navmaster.truck.live.TomTomGuard.summary()}")
+      Log.i(TAG, "livetest tomtom guard: ${app.navmaster.truck.live.TomTomGuard.summary()} | ${app.navmaster.truck.live.HereGuard.summary()} (fleet ${app.navmaster.truck.live.Fleet.size})")
       // the national traffic centres, every open feed read whole: how many events of each kind
       for (line in app.navmaster.truck.live.NationalFeeds.selfTest()) Log.i(TAG, "livetest national $line")
     }

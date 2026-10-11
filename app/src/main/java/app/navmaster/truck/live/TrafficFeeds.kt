@@ -27,13 +27,14 @@ data class GeoBox(val w: Double, val s: Double, val e: Double, val n: Double) {
 /**
  * Official traffic information, from free sources:
  * - Autobahn GmbH (Germany): open data, no key, every motorway (warnings, queues, closures);
- * - TomTom Traffic and HERE Traffic: all of Europe, with a free key the driver creates (free tier:
- *   2,500 TomTom requests a day, far more than a day of driving needs).
+ * - TomTom Traffic and HERE Traffic: all of Europe, one free account of each for the whole fleet
+ *   (keys built into the app); TomTom first, HERE when TomTom's part of the day is used up, each
+ *   one kept inside this tablet's part of its free allowance (TomTomGuard, HereGuard, Fleet).
  * No Waze data, ever.
  */
 object TrafficFeeds {
   private const val TAG = "NavMasterLive"
-  private val client = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).addInterceptor(TomTomGuard).build()
+  private val client = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).addInterceptor(TomTomGuard).addInterceptor(HereGuard).build()
   private val json = Json { ignoreUnknownKeys = true }
 
   private fun get(url: String): String? =
@@ -211,11 +212,14 @@ object TrafficFeeds {
 
   // ------------------------------------------------------------------------------ HERE
 
-  fun here(key: String, boxes: List<GeoBox>): List<LiveEvent> {
+  /** HERE's incidents in [boxes]; null when nothing could be asked (budget, refused key, no network). */
+  fun here(key: String, boxes: List<GeoBox>): List<LiveEvent>? {
     val out = mutableListOf<LiveEvent>()
+    var asked = false
     for (b in boxes) {
       val url = "https://data.traffic.hereapi.com/v7/incidents?in=bbox:${b.csv()}&locationReferencing=shape&lang=it-IT&apiKey=${enc(key)}"
-      val text = get(url) ?: continue
+      val text = runCatching { get(url) }.getOrNull()?.takeIf { it.isNotBlank() } ?: continue
+      asked = true
       val list = (json.parseToJsonElement(text) as? JsonObject)?.get("results") as? JsonArray ?: continue
       for (item in list) {
         val o = item as? JsonObject ?: continue
@@ -249,7 +253,7 @@ object TrafficFeeds {
             timeMs = time(str(d["startTime"])), official = true)
       }
     }
-    return out
+    return if (asked) out else null
   }
 
   private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

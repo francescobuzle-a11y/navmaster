@@ -34,6 +34,12 @@ android {
     for (k in listOf("TOMTOM_KEY", "HERE_KEY", "TRAFIKVERKET_KEY", "MAPILLARY_TOKEN", "ORS_KEY")) {
       buildConfigField("String", k, "\"" + (System.getenv(k) ?: "").replace("\"", "") + "\"")
     }
+    // the fleet sharing one free TomTom account and one free HERE account (repository variables,
+    // see live/HereGuard.kt Fleet): vehicles, and the free monthly traffic requests of each account
+    fun num(k: String, d: Int) = System.getenv(k)?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: d
+    buildConfigField("int", "FLEET_SIZE", num("FLEET_SIZE", 20).toString())
+    buildConfigField("int", "TOMTOM_MONTH_FREE", num("TOMTOM_MONTH_FREE", 200_000).toString())
+    buildConfigField("int", "HERE_MONTH_FREE", num("HERE_MONTH_FREE", 5_000).toString())
   }
 
   signingConfigs {

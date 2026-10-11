@@ -266,8 +266,16 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
           "Finlandia, Polonia, Lituania e Svezia, letti solo per i Paesi che attraversi.", s.nationalTraffic) { v ->
         set { it.copy(nationalTraffic = v) }
       }
-      if (app.navmaster.truck.live.ApiKeys.tomtom(s).isNotBlank()) {
-        ToggleRow("Colori del traffico sulla mappa", "Giallo, arancio e rosso sulle strade rallentate", s.trafficOnMap) { v ->
+      val tt = app.navmaster.truck.live.ApiKeys.tomtom(s).isNotBlank()
+      val hr = app.navmaster.truck.live.ApiKeys.here(s).isNotBlank()
+      Caption(if (!tt && !hr) "TomTom e HERE non attivi: l'app è stata compilata senza le loro chiavi."
+          else "Incidenti, code e chiusure di tutta Europa: prima TomTom, poi HERE quando TomTom ha finito la parte " +
+              "di oggi. Ogni tablet usa solo la sua parte delle quote gratuite (flotta di ${app.navmaster.truck.live.Fleet.size} mezzi).\n" +
+              (if (tt) app.navmaster.truck.live.TomTomGuard.summary() else "TomTom: chiave mancante") + "\n" +
+              (if (hr) app.navmaster.truck.live.HereGuard.summary() else "HERE: chiave mancante"),
+          Modifier.padding(start = 4.dp, bottom = 6.dp), size = 13, lines = 6)
+      if (tt) {
+        ToggleRow("Colori del traffico sulla mappa", "Giallo, arancio e rosso sulle strade rallentate (al massimo un quarto delle richieste TomTom del giorno)", s.trafficOnMap) { v ->
           set { it.copy(trafficOnMap = v) }
         }
       }
