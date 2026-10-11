@@ -117,7 +117,7 @@ jobs:
           osmium tags-filter region.osm.pbf \
             nwr/amenity=fuel,parking,restaurant,fast_food,cafe,toilets,shower,car_wash,weighbridge,atm,bank,pharmacy,hospital,sanitary_dump_station,charging_station \
             nwr/highway=rest_area,services nwr/shop=supermarket,tyres,truck_repair,car_repair \
-            nwr/tourism=hotel,motel,caravan_site nwr/barrier=border_control nwr/craft=truck_repair \
+            nwr/tourism=hotel,motel,caravan_site,camp_site nwr/shop=caravan,camping nwr/barrier=border_control nwr/craft=truck_repair \
             -o poi.osm.pbf --overwrite
           osmium export poi.osm.pbf -f geojsonseq --add-unique-id=type_id \
             --format-option print_record_separator=false -o poi.geojsonseq --overwrite
