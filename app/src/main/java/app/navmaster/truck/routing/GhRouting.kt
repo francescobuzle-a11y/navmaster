@@ -66,16 +66,24 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       engine = null
       loadedKey = null
       val started = SystemClock.elapsedRealtime()
-      try {
-        engine = GhEngine.open(dir, modelsDir(), true)
-      } catch (e: Exception) {
-        problem = "${region.label}: il grafo GraphHopper non si apre (${e.message?.take(80)}). In «Mappe d'Europa» tocca «Aggiorna»"
-        throw e
+      // the same graph already open for a trip abroad: taken as it is, not opened twice
+      val open = others[region.id]?.takeIf { it.first == key }?.second
+      if (open != null) {
+        others.remove(region.id)
+        engine = open
+      } else {
+        try {
+          engine = GhEngine.open(dir, modelsDir(), true)
+        } catch (e: Throwable) {
+          problem = "${region.label}: il grafo GraphHopper non si apre (${e.javaClass.simpleName}: ${e.message?.take(80)}). In «Mappe d'Europa» tocca «Aggiorna»"
+          Log.e(TAG, "GraphHopper of ${region.id} not opened", e)
+          // an Error (memory, a class missing) must not pass for "no route"
+          throw if (e is Exception) e else IllegalStateException(problem, e)
+        }
       }
       loadedKey = key
       Log.i(TAG, "GraphHopper ready on ${region.id} in ${SystemClock.elapsedRealtime() - started} ms")
     }
-    problem = null
     return engine
   }
 
@@ -85,9 +93,25 @@ class GhRouting(private val context: Context, private val regions: RegionManager
    */
   @Synchronized
   fun routes(points: List<DoubleArray>, headings: List<Double>, spec: TruckSpec, maxPaths: Int = 1): List<GhEngine.Result>? {
+    problem = null
+    return try {
+      routesIn(points, headings, spec, maxPaths).also {
+        if (it == null && problem == null) problem = "GraphHopper non ha dato un percorso (motivo non noto: vedi il registro NavMasterRoute)"
+      }
+    } catch (t: Throwable) {
+      Log.e(TAG, "GraphHopper route failed", t)
+      problem = "errore del calcolo sul tablet (${t.javaClass.simpleName}: ${t.message?.take(100)})"
+      null
+    }
+  }
+
+  /** [routes], with [problem] said for every case without a route. */
+  private fun routesIn(points: List<DoubleArray>, headings: List<Double>, spec: TruckSpec, maxPaths: Int): List<GhEngine.Result>? {
     val first = points.firstOrNull() ?: return null
-    val e = runCatching { engineAt(first[0], first[1]) }.onFailure { Log.w(TAG, "GraphHopper not available: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }.getOrNull()
-        ?: return null
+    val e = runCatching { engineAt(first[0], first[1]) }.onFailure {
+      Log.w(TAG, "GraphHopper not available: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it)
+      if (problem == null) problem = "il grafo GraphHopper non si apre (${it.javaClass.simpleName}: ${it.message?.take(80)})"
+    }.getOrNull() ?: return null
     if (!e.canRoute(spec)) {
       // the data of this kind of vehicle were not downloaded (only lorries, or only the others)
       problem = "manca il calcolo GraphHopper per ${if (spec.hgv) "i camion" else "camper, bus e auto"}: in «Mappe d'Europa» " +
@@ -150,10 +174,15 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       others.remove(id)
     }
     if (state(region.dir, emptyList()).let { it != GhState.READY && it != GhState.PARTIAL }) return null
-    val e = GhEngine.open(dir, modelsDir(), true)
+    val e = try {
+      GhEngine.open(dir, modelsDir(), true)
+    } catch (t: Throwable) {
+      Log.e(TAG, "GraphHopper of $id not opened", t)
+      throw if (t is Exception) t else IllegalStateException("${region.label}: grafo non aperto (${t.javaClass.simpleName})", t)
+    }
     others[id] = key to e
-    // at most three other countries' graphs open
-    while (others.size > 3) {
+    // at most five other countries' graphs open (a trip through many countries keeps them all)
+    while (others.size > 5) {
       val eldest = others.keys.first()
       others.remove(eldest)?.second?.close()
     }
@@ -219,10 +248,15 @@ class GhRouting(private val context: Context, private val regions: RegionManager
   @Synchronized
   fun strongMotorwayFor(points: List<DoubleArray>, spec: TruckSpec): Boolean {
     if (spec.route != GhEngine.ROUTE_MOTORWAY || spec.shortest) return false
-    val ids = points.map { regions.regionAt(it[0], it[1])?.id ?: return false }.distinct()
-    for (id in ids) {
-      val e = runCatching { engineFor(id) }.getOrNull() ?: return false
-      if (!e.strongMotorway() || !e.ready(GhEngine.profileFor(spec))) return false
+    // read from the graphs' files, without opening them (each graph opened costs memory and time)
+    val regs = points.map { regions.regionAt(it[0], it[1]) ?: return false }.distinctBy { it.id }
+    for (r in regs) {
+      runCatching { ready(r.dir) }
+      val dir = File(r.dir, "gh")
+      val props = File(dir, "properties")
+      val strong = runCatching { props.length() < 4_000_000 && props.readBytes().toString(Charsets.ISO_8859_1).contains(GhEngine.STRONG_MOTORWAY_MARK) }
+          .getOrDefault(false)
+      if (!strong || !GhEngine.hasLandmarks(dir, GhEngine.profileFor(spec))) return false
     }
     return true
   }
@@ -445,7 +479,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
           if (!tmp.renameTo(dir)) throw IllegalStateException("impossibile installare il grafo GraphHopper")
           gz.delete()
           Log.i(TAG, "GraphHopper graph unpacked in ${regionDir.name} in ${SystemClock.elapsedRealtime() - started} ms")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
           Log.e(TAG, "GraphHopper graph of ${regionDir.name} not unpacked", e)
           tmp.deleteRecursively()
         }
@@ -458,7 +492,7 @@ class GhRouting(private val context: Context, private val regions: RegionManager
             GZIPInputStream(lm.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, dir) }
             lm.delete()
             Log.i(TAG, "GraphHopper landmarks $pkg unpacked in ${regionDir.name}")
-          } catch (e: Exception) {
+          } catch (e: Throwable) {
             Log.e(TAG, "GraphHopper landmarks $pkg of ${regionDir.name} not unpacked", e)
           }
         }

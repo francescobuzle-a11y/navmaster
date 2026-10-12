@@ -312,21 +312,22 @@ public final class GhEngine implements Closeable {
    * those. [profileNames] when the file cannot be read.
    */
   public static List<String> graphProfiles(File dir) {
+    // read as text, without GraphHopper's storage classes: the file holds "key=value" lines
+    // after a small binary header ("profiles=nm_truck|123,nm_truck_mw|456,...")
     try {
-      com.graphhopper.storage.StorableProperties p = new com.graphhopper.storage.StorableProperties(
-          new com.graphhopper.storage.GHDirectory(dir.getAbsolutePath(), com.graphhopper.storage.DAType.RAM_STORE));
-      if (!p.loadExisting()) return profileNames();
-      String v = p.get("profiles");
-      p.close();
-      if (v == null || v.isEmpty()) return profileNames();
+      File f = new File(dir, "properties");
+      if (!f.exists() || f.length() > 4_000_000) return profileNames();
+      String text = new String(java.nio.file.Files.readAllBytes(f.toPath()), java.nio.charset.StandardCharsets.ISO_8859_1);
+      java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?m)^profiles=([^\\r\\n\\u0000]*)").matcher(text);
+      if (!m.find()) return profileNames();
       List<String> out = new ArrayList<>();
-      for (String part : v.split(",")) {
+      for (String part : m.group(1).split(",")) {
         String n = part.contains("|") ? part.substring(0, part.indexOf('|')) : part;
         n = n.trim();
         if (!n.isEmpty()) out.add(n);
       }
       return out.isEmpty() ? profileNames() : out;
-    } catch (Exception e) {
+    } catch (Throwable e) {
       return profileNames();
     }
   }

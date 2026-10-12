@@ -57,12 +57,19 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
   val key: String
     get() = app.navmaster.truck.live.ApiKeys.ors(app.navmaster.truck.AppGraph.settings.settings.value)
 
-  fun available(): Boolean {
-    if (key.isBlank() || !enabled()) return false
-    if (SystemClock.elapsedRealtime() < pausedUntil) return false
-    val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
-    val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) } ?: return false
-    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+  fun available(): Boolean = unavailable() == null
+
+  /** Why openrouteservice cannot be used now, in words for the driver; null when it can. */
+  fun unavailable(): String? {
+    if (key.isBlank()) return "il calcolo online non è attivo: manca la chiave di openrouteservice (Impostazioni › Chiavi dei servizi, o secret ORS_KEY su GitHub)"
+    if (!enabled()) return "il calcolo online è spento (Impostazioni › Percorso › Calcolo online)"
+    if (SystemClock.elapsedRealtime() < pausedUntil) return "openrouteservice non risponde fino a mezzanotte (${note ?: "quota del giorno finita o chiave rifiutata"})"
+    val cm = context.getSystemService(ConnectivityManager::class.java) ?: return "nessuna connessione a internet"
+    val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) } ?: return "nessuna connessione a internet"
+    // a network that Android has not checked (VALIDATED) is tried all the same: some mobile
+    // networks and private DNS settings never get the mark and work fine
+    if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return "nessuna connessione a internet"
+    return null
   }
 
   /**

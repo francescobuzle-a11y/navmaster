@@ -7,6 +7,7 @@ import app.navmaster.truck.vehicle.Garage
 import app.navmaster.truck.vehicle.TripOptions
 import com.stadiamaps.ferrostar.core.CustomRouteProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import uniffi.ferrostar.Route
 import uniffi.ferrostar.UserLocation
@@ -94,7 +95,13 @@ class OfflineRouteProvider(
     return Stops(points, headings, kinds)
   }
 
+  /** One computation at a time: the notes of a route (why it failed, its warnings) are its own. */
+  private val busy = kotlinx.coroutines.sync.Mutex()
+
   suspend fun routes(userLocation: UserLocation, waypoints: List<Waypoint>, options: TripOptions): List<Route> =
+      busy.withLock { routesNow(userLocation, waypoints, options) }
+
+  private suspend fun routesNow(userLocation: UserLocation, waypoints: List<Waypoint>, options: TripOptions): List<Route> =
       withContext(Dispatchers.IO) {
         val g = garage()
         val vehicle = g.active
@@ -109,7 +116,8 @@ class OfflineRouteProvider(
         softWhy = null
         // 0. online: openrouteservice's routes, followed and checked by GraphHopper; not for the
         //    "more routes" the driver asks for (GraphHopper's alternatives)
-        val online = ors != null && ors.available()
+        val offlineWhy = if (ors == null) "il calcolo online non è disponibile" else ors.unavailable()
+        val online = offlineWhy == null
         // "more motorway": the strong preference lives in the graphs on the tablet (built from
         // 10/2026); where they cover the trip the route is computed there, not online
         val localMotorway = spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest &&
@@ -138,9 +146,21 @@ class OfflineRouteProvider(
           return@withContext local.also(onRoutes)
         }
         val problem = gh.problem
+        // 1b. "more motorway" was kept on the tablet but the tablet found nothing: online after all
+        if (localMotorway && online && !options.moreRoutes) {
+          val found = runCatching { orsRoutes(stops, spec, options) }
+              .onFailure { Log.w(TAG, "openrouteservice route failed: $it", it) }
+              .getOrNull()?.takeIf { it.isNotEmpty() }
+          if (found != null) {
+            note = "Calcolo online (sul tablet: ${problem ?: "nessun percorso"})"
+            mark(found, "ORS")
+            return@withContext found.also(onRoutes)
+          }
+        }
         // 2. no road respects every limit of the vehicle: the route that passes the fewest of them
         //    (the limits as a strong penalty), never no route at all because of the measures
-        if (problem == null) {
+        //    (also across countries: no crossing passable with the measures is not "no route")
+        if (problem == null || problem.startsWith("percorso tra Paesi")) {
           val soft = spec.copy().apply { this.soft = true }
           val relaxed = runCatching { ghRoutes(stops, soft, 0, checkWith = spec) }
               .onFailure { Log.w(TAG, "GraphHopper soft route failed: $it", it) }
@@ -175,7 +195,13 @@ class OfflineRouteProvider(
           }
         }
         val why = problem ?: ghNote ?: "GraphHopper non ha trovato un percorso"
-        throw IllegalStateException("Nessun percorso: $why" + if (!online) ". Collegati a internet per la guida online." else "")
+        val onlineWhy = when {
+          !online -> " Online non provato: $offlineWhy."
+          orsAnswered -> ""
+          else -> " Online: openrouteservice non ha risposto (${ors?.note?.take(120) ?: "errore"})."
+        }
+        Log.w(TAG, "no route: $why |$onlineWhy")
+        throw IllegalStateException("Nessun percorso: $why.$onlineWhy")
       }
 
   // openrouteservice's best route followed on the graph but refused for a limit (route, why)
