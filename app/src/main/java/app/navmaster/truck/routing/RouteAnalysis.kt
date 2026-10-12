@@ -39,6 +39,8 @@ data class EdgeInfo(
     val names: List<String> = emptyList(),
     /** What the direction signs say at the start of this road (from the OSM destination tags). */
     val sign: EdgeSign? = null,
+    /** The arrows painted on the lanes (OSM turn:lanes, "through|through|slight_right"), null when not mapped. */
+    val turnLanes: String? = null,
 ) {
   /** Road numbers only: "A14", "SS16", "E45", "DN1". */
   val refs: List<String>
@@ -378,6 +380,7 @@ class RouteAnalysis(
             roundabout = e.bool("roundabout") ?: false,
             names = e["names"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
             sign = sign,
+            turnLanes = e.str("turn_lanes")?.takeIf { it.isNotBlank() },
         )
       }
       return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes, root["partial_ways"]?.jsonPrimitive?.booleanOrNull == true)

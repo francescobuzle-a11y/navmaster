@@ -54,6 +54,39 @@ class RoadsIndex(regions: RegionManager) {
     runCatching { db.rawQuery("SELECT 1 FROM sqlite_master WHERE name='roads'", null).use { it.moveToFirst() } }.getOrDefault(false)
   }
 
+  /** The roads within [radiusM] of a point (the junction view of a route guided online). */
+  fun near(lat: Double, lon: Double, radiusM: Double): List<Road> {
+    val dLat = radiusM / 110_540.0
+    val dLon = radiusM / (111_320.0 * kotlin.math.cos(Math.toRadians(lat)))
+    val cells = HashSet<Long>()
+    var la = lat - dLat
+    while (la <= lat + dLat + Geo.CELL) {
+      var lo = lon - dLon
+      while (lo <= lon + dLon + Geo.CELL) { cells += Geo.cell(la, lo); lo += Geo.CELL }
+      la += Geo.CELL
+    }
+    return dbs.perCells(cells) { db, inList -> readRoads(db, inList) }.distinctBy { it.osm to it.pts.size }
+  }
+
+  private fun readRoads(db: android.database.sqlite.SQLiteDatabase, inList: String): List<Road> {
+    val list = mutableListOf<Road>()
+    runCatching {
+      db.rawQuery(
+          "SELECT DISTINCT r.osm, r.hw, r.ms, r.msf, r.msb, r.mshgv, r.ow, r.ln, r.lnf, r.lnb, r.tl, r.tlf, r.tlb, r.rb, r.toll, r.tun, r.br, " +
+              "r.ref, r.name, r.pts FROM road_cells c JOIN roads r ON r.id = c.rid WHERE c.cell IN ($inList)", null).use { c ->
+        fun d(i: Int) = if (c.isNull(i)) null else c.getDouble(i)
+        fun n(i: Int) = if (c.isNull(i)) null else c.getInt(i)
+        fun s(i: Int) = if (c.isNull(i)) null else c.getString(i)
+        while (c.moveToNext()) {
+          list += Road(c.getLong(0), c.getString(1) ?: "", d(2), d(3), d(4), d(5), c.getInt(6), n(7), n(8), n(9), s(10), s(11), s(12),
+              c.getInt(13) == 1, c.getInt(14) == 1, c.getInt(15) == 1, c.getInt(16) == 1, s(17), s(18),
+              RouteMatcher.decodePolyline(c.getString(19) ?: ""))
+        }
+      }
+    }
+    return list
+  }
+
   /**
    * For every piece i → i+1 of [line], the road it runs on (null where none is known): the road
    * whose line is within 12 m of most of the piece's points, going the same way (a oneway road the
@@ -64,24 +97,7 @@ class RoadsIndex(regions: RegionManager) {
     if (line.size < 2) return out
     val started = System.currentTimeMillis()
     val m = RouteMatcher(line)
-    val roads = dbs.perCells(m.cells) { db, inList ->
-      val list = mutableListOf<Road>()
-      runCatching {
-        db.rawQuery(
-            "SELECT DISTINCT r.osm, r.hw, r.ms, r.msf, r.msb, r.mshgv, r.ow, r.ln, r.lnf, r.lnb, r.tl, r.tlf, r.tlb, r.rb, r.toll, r.tun, r.br, " +
-                "r.ref, r.name, r.pts FROM road_cells c JOIN roads r ON r.id = c.rid WHERE c.cell IN ($inList)", null).use { c ->
-          fun d(i: Int) = if (c.isNull(i)) null else c.getDouble(i)
-          fun n(i: Int) = if (c.isNull(i)) null else c.getInt(i)
-          fun s(i: Int) = if (c.isNull(i)) null else c.getString(i)
-          while (c.moveToNext()) {
-            list += Road(c.getLong(0), c.getString(1) ?: "", d(2), d(3), d(4), d(5), c.getInt(6), n(7), n(8), n(9), s(10), s(11), s(12),
-                c.getInt(13) == 1, c.getInt(14) == 1, c.getInt(15) == 1, c.getInt(16) == 1, s(17), s(18),
-                RouteMatcher.decodePolyline(c.getString(19) ?: ""))
-          }
-        }
-      }
-      list
-    }.distinctBy { it.osm to it.pts.size }
+    val roads = dbs.perCells(m.cells) { db, inList -> readRoads(db, inList) }.distinctBy { it.osm to it.pts.size }
     if (roads.isEmpty()) return out
     // the road segments by cell
     val byCell = HashMap<Long, MutableList<Pair<Int, Int>>>()

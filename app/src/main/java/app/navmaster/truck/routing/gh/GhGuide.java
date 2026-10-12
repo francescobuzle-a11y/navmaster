@@ -88,6 +88,83 @@ public final class GhGuide {
     maxSpeed = ev.getDecimalEncodedValue("max_speed");
   }
 
+  // ------------------------------------------------------------------------- roads around a point
+
+  /** A road of the graph near a junction, for the junction view: its line and its lanes. */
+  public static final class Road {
+    public long way;
+    public String cls = "", turnLanes = "", turnLanesBack = "", name = "", ref = "";
+    public boolean link, roundabout, bridge, tunnel, oneway;
+    /** Lanes in the direction of [lat]/[lon] and the other way (0 when closed that way). */
+    public int lanesFwd, lanesBack;
+    public double[] lat, lon;
+  }
+
+  /**
+   * The roads of the graph within [radiusM] of a point (open to cars at least), with their real
+   * lanes and arrows: what the junction view draws around the route.
+   */
+  public static List<Road> roadsAround(GraphHopper hopper, double lat0, double lon0, double radiusM) {
+    List<Road> out = new ArrayList<>();
+    EncodedValueLookup ev = hopper.getEncodingManager();
+    if (!supported(hopper)) return out;
+    BaseGraph g = hopper.getBaseGraph();
+    EnumEncodedValue<RoadClass> roadClass = ev.getEnumEncodedValue("road_class", RoadClass.class);
+    BooleanEncodedValue link = ev.getBooleanEncodedValue("road_class_link");
+    BooleanEncodedValue roundabout = ev.getBooleanEncodedValue("roundabout");
+    BooleanEncodedValue access = ev.getBooleanEncodedValue("ors_car_access");
+    EnumEncodedValue<RoadEnvironment> environment = ev.getEnumEncodedValue("road_environment", RoadEnvironment.class);
+    IntEncodedValue lanes = ev.getIntEncodedValue("lanes");
+    IntEncodedValue wayId = ev.getIntEncodedValue("osm_way_id");
+    double dLat = radiusM / 110_540.0;
+    double dLon = radiusM / (111_320.0 * Math.cos(Math.toRadians(lat0)));
+    com.graphhopper.util.shapes.BBox box = new com.graphhopper.util.shapes.BBox(lon0 - dLon, lon0 + dLon, lat0 - dLat, lat0 + dLat);
+    java.util.Set<Integer> seen = new java.util.HashSet<>();
+    hopper.getLocationIndex().query(box, edgeId -> {
+      if (!seen.add(edgeId)) return;
+      EdgeIteratorState e = g.getEdgeIteratorState(edgeId, Integer.MIN_VALUE);
+      boolean fwd = e.get(access), back = e.getReverse(access);
+      if (!fwd && !back) return;
+      RoadClass rc = e.get(roadClass);
+      if (rc == RoadClass.FOOTWAY || rc == RoadClass.PATH || rc == RoadClass.CYCLEWAY || rc == RoadClass.PEDESTRIAN
+          || rc == RoadClass.STEPS || rc == RoadClass.TRACK || rc == RoadClass.BRIDLEWAY || rc == RoadClass.CORRIDOR
+          || rc == RoadClass.PLATFORM) return;
+      RoadEnvironment env = e.get(environment);
+      if (env == RoadEnvironment.FERRY) return;
+      Road r = new Road();
+      r.way = e.get(wayId);
+      r.cls = rc == null ? "" : rc.toString();
+      r.link = e.get(link);
+      r.roundabout = e.get(roundabout);
+      r.bridge = env == RoadEnvironment.BRIDGE;
+      r.tunnel = env == RoadEnvironment.TUNNEL;
+      r.oneway = !(fwd && back);
+      r.name = str(e.getValue("street_name"));
+      r.ref = refs(str(e.getValue("street_ref")));
+      int total = e.get(lanes);
+      String dir = str(e.getValue(GhEngine.KV_LANES_DIR));
+      int perDir = !dir.isEmpty() && dir.matches("\\d+") ? Integer.parseInt(dir) : (total <= 0 ? 1 : (r.oneway || r.link || r.roundabout ? total : Math.max(1, total / 2)));
+      if (fwd && back) {
+        r.lanesFwd = Math.max(1, perDir);
+        r.lanesBack = Math.max(1, total > 0 ? total - r.lanesFwd : 1);
+      } else {
+        r.lanesFwd = fwd ? Math.max(1, perDir) : 0;
+        r.lanesBack = back ? Math.max(1, perDir) : 0;
+      }
+      r.turnLanes = str(e.getValue(GhEngine.KV_TURN_LANES));
+      PointList pl = e.fetchWayGeometry(FetchMode.ALL);
+      int n = pl.size();
+      r.lat = new double[n];
+      r.lon = new double[n];
+      for (int i = 0; i < n; i++) {
+        r.lat[i] = pl.getLat(i);
+        r.lon[i] = pl.getLon(i);
+      }
+      out.add(r);
+    });
+    return out;
+  }
+
   // ------------------------------------------------------------------------------------ the path
 
   /** One road (graph edge) of the route, in the direction driven. */
@@ -1365,6 +1442,10 @@ public final class GhGuide {
         .append(",\"begin_shape_index\":").append(from).append(",\"end_shape_index\":").append(to)
         .append(",\"tunnel\":").append(s.tunnel).append(",\"bridge\":").append(s.bridge).append(",\"roundabout\":").append(s.roundabout);
     if (!Double.isNaN(s.maxSpeed)) b.append(",\"speed_limit\":").append(Math.round(s.maxSpeed));
+    if (!s.turnLanes.isEmpty()) {
+      b.append(",\"turn_lanes\":");
+      q(b, s.turnLanes);
+    }
     List<String> names = new ArrayList<>();
     if (!s.ref.isEmpty()) for (String r : s.ref.split("; ")) names.add(r);
     if (!s.name.isEmpty()) names.add(s.name);

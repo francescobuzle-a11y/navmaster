@@ -209,6 +209,14 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return out
   }
 
+  /** The roads of the graph around a point with their real lanes (the junction view), empty without a graph there. */
+  @Synchronized
+  fun roadsAround(lat: Double, lon: Double, radiusM: Double): List<app.navmaster.truck.routing.gh.GhGuide.Road> {
+    val region = regions.regionAt(lat, lon) ?: return emptyList()
+    val e = runCatching { engineFor(region.id) }.getOrNull() ?: return emptyList()
+    return runCatching { e.roadsAround(lat, lon, radiusM) }.onFailure { Log.w(TAG, "roads around: $it") }.getOrDefault(emptyList())
+  }
+
   /**
    * The guidance along [r] worked out from the graph that computed it (GhGuide): an OSRM answer
    * for Ferrostar and the roads of the route for the analysis. Null when the graph was built

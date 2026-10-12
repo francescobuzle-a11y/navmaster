@@ -803,15 +803,19 @@ private fun NavigatingOverlay(
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
   // the junction view fits the screen: about a third of the height upright, never taller than wide
-  val jvHeight = (maxHeight.value * 0.36f).coerceIn(170f, 360f).coerceAtMost(maxWidth.value * 0.8f).dp
+  val jvHeight = (maxHeight.value * 0.40f).coerceIn(200f, 400f).coerceAtMost(maxWidth.value * 0.78f).dp
   Column(Modifier.fillMaxSize()) {
   Row(Modifier.weight(1f).fillMaxWidth()) {
   Column(Modifier.weight(1f).fillMaxHeight()) {
     TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
-    if (laneGuide != null) {
-      LaneStrip(laneGuide, (if (landscape && jv == null) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp),
+    // the lane bar from 2 km; once the junction view is open it carries the lanes itself (one
+    // picture, in the same place, upright and sideways)
+    if (laneGuide != null && jv == null) {
+      LaneStrip(laneGuide, (if (landscape) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp),
           vehicleLane = stripLane)
     }
+    // upright: the junction view right under the manoeuvre, a fixed height (the banners go under it)
+    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 6.dp), height = jvHeight)
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
         RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
@@ -823,7 +827,6 @@ private fun NavigatingOverlay(
       if (section != null) SectionBanner(section.first, traveled, section.second, section.third)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
-    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 8.dp), height = jvHeight)
     Box(Modifier.weight(1f).fillMaxWidth()) {
       // the speed is in the bottom bar when the driver keeps it there, else under the limit sign
       val speedInBar = settings.tripFields.contains("SPEED")

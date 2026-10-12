@@ -253,6 +253,7 @@ object OrsGuide {
           .append(",\"tunnel\":").append(tunnel).append(",\"bridge\":").append(o?.road?.bridge == true)
           .append(",\"roundabout\":").append(o?.road?.roundabout == true)
       o?.road?.limit(o.forward, false)?.takeIf { it > 0 }?.let { edges.append(",\"speed_limit\":").append(Math.round(it)) }
+      o?.let { it.road.turns(it.forward) }?.takeIf { it.isNotBlank() }?.let { edges.append(",\"turn_lanes\":").append(JsonPrimitive(it)) }
       val names = listOfNotNull(o?.road?.ref, o?.road?.name).flatMap { it.split(";").map(String::trim) }.filter { it.isNotEmpty() }
       if (names.isNotEmpty()) edges.append(",\"names\":").append(names.joinToString(",", "[", "]") { JsonPrimitive(it).toString() })
       val cc = countryOf?.invoke(pts[i].lat, pts[i].lng)

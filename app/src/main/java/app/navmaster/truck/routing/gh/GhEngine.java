@@ -613,6 +613,11 @@ public final class GhEngine implements Closeable {
     return new GhGuide(hopper, spec.hgv).guide(r.path, breaks, requested);
   }
 
+  /** The roads of the graph around a point, with their real lanes (for the junction view). */
+  public List<GhGuide.Road> roadsAround(double lat, double lon, double radiusM) {
+    return GhGuide.roadsAround(hopper, lat, lon, radiusM);
+  }
+
   /**
    * The guidance of a route between countries ([trip]: a piece in each country's graph), as one
    * route: [breaks] the stops in the whole route's points.

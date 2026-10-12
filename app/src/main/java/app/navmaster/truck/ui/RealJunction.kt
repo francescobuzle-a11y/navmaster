@@ -10,99 +10,140 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import app.navmaster.truck.AppGraph
 import app.navmaster.truck.data.RoadTiles
-import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.min
+import app.navmaster.truck.ui.jv.JvEdge
+import app.navmaster.truck.ui.jv.JvFrame
+import app.navmaster.truck.ui.jv.JvGeo
+import app.navmaster.truck.ui.jv.JvInput
+import app.navmaster.truck.ui.jv.JvProject
+import app.navmaster.truck.ui.jv.JvRoad
 import kotlin.math.sin
-import kotlin.math.tan
 
-/** The real junction for a scene of the guidance: the route around it and the roads of the offline map. */
+/** The real junction of a scene, with the drawings of its last picture kept (one per camera position and panel size). */
+internal class RealJv(val geo: JvGeo) {
+  var cacheKey = ""
+  var cache: List<Pair<Path, Int>>? = null
+  var cacheFrame: JvFrame? = null
+  var hills: Path? = null
+  var hillsKey = ""
+}
+
+private val LHT = setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE")
+
+/**
+ * The real junction for a scene of the guidance: the route around it (its roads with their lanes
+ * and arrows) and the roads of the map around the junction, with their real lanes when the graph of
+ * the country (or its light package) is there, from the map tiles otherwise.
+ */
 internal fun realJunctionOf(scene: JunctionScene, md: JvModel): RealJv? {
   val a = scene.analysis ?: return null
-  // roundabouts keep the drawing made for them
   if (scene.roundabout) return null
   val m = scene.maneuverAtM
   val start = (m - 600).coerceAtLeast(0.0)
   val end = (m + 500).coerceAtMost(a.length)
   if (m - start < 80 || end - m < 60) return null
   val o = a.pointAt(m)
-  val file = AppGraph.regions.regionAt(o.lat, o.lng)?.map ?: return null
-  if (!file.exists()) return null
   val routeLL = (0..((end - start) / 3.0).toInt()).map { i -> a.pointAt(start + i * 3.0).let { doubleArrayOf(it.lat, it.lng) } }
-  val lines = RoadTiles.around(file, o.lat, o.lng, 800.0)
-  return RealJv.assemble(routeLL, start, m, lines, md, scene.motorway, scene.exit, scene.country)
+  val edges = a.edges.map { e -> JvEdge(e.startM, e.endM, e.lanes, e.turnLanes ?: "", e.isRamp, e.roadClass, e.wayId) }
+  // the roads around: the graph first (real lanes), then the light package, then the map tiles
+  var roads: List<JvRoad> = AppGraph.gh.roadsAround(o.lat, o.lng, 900.0).map { r ->
+    JvRoad(r.lat, r.lon, r.cls, r.link, r.oneway, r.lanesFwd, r.lanesBack, r.turnLanes, r.roundabout, r.bridge, r.tunnel, r.way)
+  }
+  var source = "graph"
+  if (roads.isEmpty()) {
+    roads = runCatching { AppGraph.roads.near(o.lat, o.lng, 900.0) }.getOrDefault(emptyList()).map { r ->
+      val lf = r.laneCount(true)
+      val lb = if (r.oneway != 0) 0 else r.laneCount(false)
+      JvRoad(DoubleArray(r.pts.size) { r.pts[it].lat }, DoubleArray(r.pts.size) { r.pts[it].lng }, r.hw.removeSuffix("_link"), r.isLink,
+          r.oneway != 0, if (r.oneway < 0) 0 else lf, if (r.oneway < 0) lf else lb, r.turnLanes ?: "", r.roundabout, r.bridge, r.tunnel, r.osm)
+    }
+    source = "light package"
+  }
+  if (roads.isEmpty()) {
+    val file = AppGraph.regions.regionAt(o.lat, o.lng)?.map
+    if (file != null && file.exists()) {
+      roads = RoadTiles.around(file, o.lat, o.lng, 800.0).map { l -> JvRoad(l.lat, l.lon, l.cls, l.ramp, l.oneway, 0, 0, "", false, l.bridge, l.tunnel) }
+      source = "map tiles"
+    }
+  }
+  val country = scene.country?.uppercase()
+  val inp = JvInput(routeLL, start, m, edges, roads, scene.side, md.takeBranch, scene.fork, scene.motorway, scene.exit,
+      if (scene.lanes.size >= 2) md.active else emptyList(), country in LHT)
+  val t0 = System.currentTimeMillis()
+  val geo = JvGeo.build(inp) ?: return null
+  android.util.Log.i("NavMasterJV", "real junction from $source: ${roads.size} roads, lanes at the gore ${geo.lanesAtNode} " +
+      "(${geo.profile.n.toList().distinct()} before, ${geo.outProfile.n.toList().distinct()} after), take ${geo.active}, " +
+      "arrows ${geo.arrowsAtNode}, split ${geo.split.toInt()} m, ${geo.shapes.size} shapes in ${System.currentTimeMillis() - t0} ms")
+  return RealJv(geo)
 }
 
 /**
- * Draws [rj] as the driver needs it: the road seen from above and behind the vehicle (a camera 20 m
- * high, looking down at 21°), with its real lanes, the road going on ahead and the lanes to take
- * painted violet with the arrow into the road to take.
- *
- * The camera waits about 190 m before the gore (the whole junction in view) and from there goes
- * with the vehicle, lane by lane, through the junction and into the road taken; the vehicle is the
- * blue arrow on its lane. [vehAlong]: where the vehicle is (metres of the route).
+ * Draws [rj] as the driver needs it: the road seen from above and behind the vehicle, with its real
+ * lanes (the ones opening before the exit too), the road going on ahead, the arrows painted on the
+ * lanes and the lanes to take painted violet with the arrow into the road to take. The camera waits
+ * before the gore, then goes with the vehicle (the blue arrow on its lane). [vehAlong]: where the
+ * vehicle is (metres of the route).
  */
-internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, near: Boolean, night: Boolean, signsSpace: Float,
-                                        vehLane: Int? = null) {
+internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, night: Boolean, signsSpace: Float, vehLane: Int? = null) {
   val w = size.width.toDouble()
   val h = size.height.toDouble()
   if (w < 10 || h < 10) return
-  val gS = rj.nodeS + rj.split
-  val vehS = vehAlong - rj.start
-  val endS = rj.nodeS + (rj.bc.lastOrNull() ?: 0.0) - 80
-  // waits before the junction, then follows the vehicle (30 m behind it)
-  val sCam = max(gS - 190, vehS - 30).coerceAtMost(max(endS, gS - 190))
-  val cam = rj.along(sCam)
-  val a0 = rj.along(sCam - 10)
-  val a1 = rj.along(sCam + 60)
-  var fx = a1.x - a0.x
-  var fy = a1.y - a0.y
-  val fl = hypot(fx, fy).takeIf { it > 1e-6 } ?: 1.0
-  fx /= fl
-  fy /= fl
-  val rx = fy
-  val ry = -fx
-  // the vehicle on the lane the satellites put it in (when known), else on the lane to take; the
-  // camera over that lane, then over the middle of the road taken
-  val vehOff = vehLane?.takeIf { it in 0 until rj.lanesIn }?.let { rj.laneOff(it) } ?: rj.actOff
-  fun laneR(sAt: Double): Double = -vehOff * RealJv.glide(sAt - rj.nodeS)
-  val camX = laneR(sCam + 30) * 0.5
-
-  // the camera: height, looking down, and the scale that frames the road at the vehicle
-  val camH = 20.0
-  val th = Math.toRadians(21.0)
-  val cosT = kotlin.math.cos(th)
-  val sinT = sin(th)
-  val tanT = tan(th)
-  val horizon = max(h * 0.12, signsSpace + h * 0.03)
-  val fT = 30.0
-  val dT = fT * cosT + camH * sinT
-  val uT = fT * sinT - camH * cosT
-  val fVert = (h * 0.93 - horizon) / (tanT - uT / dT)
-  val fHor = (w / 2) * dT / 20.0
-  val f0 = fVert.coerceIn(fHor * 0.75, fHor * 1.5)
-  val cy = horizon + f0 * tanT
-  val nearD = 2.0
-
-  // sky, hills, land
-  val hz = horizon.toFloat()
+  val geo = rj.geo
+  // the camera moves with the vehicle: a new drawing every metre, not at every frame
+  val vehKey = vehAlong.toLong()
+  val key = "$vehKey:${size.width.toInt()}x${size.height.toInt()}:${signsSpace.toInt()}:$vehLane"
+  var frame = rj.cacheFrame
+  var cached = rj.cache
+  if (key != rj.cacheKey || cached == null || frame == null) {
+    frame = JvProject.frame(geo, vehAlong, w, h, signsSpace.toDouble(), vehLane) ?: return
+    // one drawing for all the shapes of a kind in a layer (a few drawings instead of a thousand)
+    val out = ArrayList<Pair<Path, Int>>()
+    var curPath: Path? = null
+    var curKind = -1
+    for (p in frame.polys) {
+      if (p.kind != curKind || curPath == null) {
+        curPath = Path()
+        curKind = p.kind
+        out += curPath to p.kind
+      }
+      // all the outlines of a drawing turn the same way, so that two overlapping shapes add up
+      var area = 0.0
+      for (i in 0 until p.n) {
+        val j = if (i + 1 == p.n) 0 else i + 1
+        area += p.xs[i].toDouble() * p.ys[j] - p.xs[j].toDouble() * p.ys[i]
+      }
+      val path: Path = curPath
+      if (area >= 0) {
+        path.moveTo(p.xs[0], p.ys[0])
+        for (i in 1 until p.n) path.lineTo(p.xs[i], p.ys[i])
+      } else {
+        path.moveTo(p.xs[p.n - 1], p.ys[p.n - 1])
+        for (i in p.n - 2 downTo 0) path.lineTo(p.xs[i], p.ys[i])
+      }
+      path.close()
+    }
+    rj.cache = out
+    rj.cacheFrame = frame
+    rj.cacheKey = key
+    cached = out
+  }
+  val hz = frame.horizon
+  // sky, clouds, hills, land
   val skyTop = if (night) Color(0xFF0A1322) else Color(0xFF3E86D8)
   val skyLow = if (night) Color(0xFF22324A) else Color(0xFFD6E8F8)
   drawRect(Brush.verticalGradient(listOf(skyTop, skyLow), 0f, hz), size = Size(size.width, hz))
   if (!night && hz > h * 0.10) {
     for ((cxr, cyr, rr) in listOf(Triple(0.16, 0.40, 0.07), Triple(0.55, 0.25, 0.09), Triple(0.84, 0.45, 0.06))) {
       val x0 = (w * cxr).toFloat()
-      val y0 = (horizon * cyr).toFloat()
+      val y0 = (hz * cyr)
       val r = (w * rr).toFloat()
       drawOval(Color(0xE6FFFFFF), Offset(x0 - r, y0 - r * 0.35f), Size(r * 2, r * 0.7f))
       drawOval(Color(0xE6FFFFFF), Offset(x0 - r * 0.55f, y0 - r * 0.6f), Size(r * 1.1f, r * 0.8f))
     }
   }
-  // the far hills: the same for every frame of a panel size (one drawing kept, not rebuilt)
   val hillKey = "${size.width.toInt()}x${size.height.toInt()}:${hz.toInt()}"
   val hills = (rj.hills?.takeIf { rj.hillsKey == hillKey } ?: Path().apply {
     moveTo(0f, hz)
-    for (i in 0..100) lineTo((w * i / 100).toFloat(), (horizon - h * (0.012 + 0.007 * sin(i * 0.21) + 0.005 * sin(i * 0.57 + 1.3))).toFloat())
+    for (i in 0..100) lineTo((w * i / 100).toFloat(), (hz - h * (0.012 + 0.007 * sin(i * 0.21) + 0.005 * sin(i * 0.57 + 1.3))).toFloat())
     lineTo(size.width, hz)
     close()
   }.also { rj.hills = it; rj.hillsKey = hillKey })
@@ -111,144 +152,33 @@ internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, near: Bool
   val grassNear = if (night) Color(0xFF152014) else Color(0xFF4F9136)
   drawRect(Brush.verticalGradient(listOf(grassFar, grassNear), hz, size.height), Offset(0f, hz), Size(size.width, size.height - hz))
 
-  // a point of the ground (f ahead, r to the right, z up, in metres from the camera) on the screen
-  fun depth(f: Double, z: Double) = f * cosT + (camH - z) * sinT
-  fun sx(d: Double, r: Double) = (w / 2 + f0 * (r - camX) / d).toFloat()
-  fun sy(d: Double, f: Double, z: Double) = (cy - f0 * (f * sinT - (camH - z) * cosT) / d).toFloat()
-
-  val key = "${(sCam * 10).toLong()}:${size.width.toInt()}x${size.height.toInt()}:${signsSpace.toInt()}"
-  @Suppress("UNCHECKED_CAST")
-  var cached = rj.cache as? List<Pair<Path, Int>>
-  if (key != rj.cacheKey || cached == null) {
-    // one drawing for all the shapes of a kind in a layer (a few drawings instead of a thousand)
-    val out = ArrayList<Pair<Path, Int>>()
-    var curPath: Path? = null
-    var curKey = -1
-    val fs = DoubleArray(4096)
-    val rs = DoubleArray(4096)
-    val ds = DoubleArray(4096)
-    val xs = FloatArray(8200)
-    val ys = FloatArray(8200)
-    for (sh in rj.drawOrder) {
-      val n = sh.pts.size
-      if (n < 2 || n > 4000) continue
-      // far away or behind the camera as a whole: not even looked at
-      val bnd = sh.bound
-      val bx = bnd[0] - cam.x
-      val by = bnd[1] - cam.y
-      if (hypot(bx, by) - bnd[2] > 650 || bx * fx + by * fy < -bnd[2] - 40) continue
-      var anyIn = false
-      for (i in 0 until n) {
-        val vx = sh.pts[i].x - cam.x
-        val vy = sh.pts[i].y - cam.y
-        fs[i] = vx * fx + vy * fy
-        rs[i] = vx * rx + vy * ry
-        ds[i] = depth(fs[i], 0.0)
-        if (ds[i] >= nearD) anyIn = true
-      }
-      if (!anyIn) continue
-      var m = 0
-      if (sh.kind == RealJv.RAIL) {
-        // a band between two heights along the line (points behind the camera left out)
-        val idx = (0 until n).filter { depth(fs[it], sh.z1) >= nearD && depth(fs[it], sh.z0) >= nearD }
-        if (idx.size < 2) continue
-        for (i in idx) { val d = depth(fs[i], sh.z1); xs[m] = sx(d, rs[i]); ys[m] = sy(d, fs[i], sh.z1); m++ }
-        for (i in idx.reversed()) { val d = depth(fs[i], sh.z0); xs[m] = sx(d, rs[i]); ys[m] = sy(d, fs[i], sh.z0); m++ }
-      } else {
-        // a polygon on the ground, cut where it comes too close to the camera
-        for (i in 0 until n) {
-          val j = (i + 1) % n
-          val ina = ds[i] >= nearD
-          val inb = ds[j] >= nearD
-          if (ina) { xs[m] = sx(ds[i], rs[i]); ys[m] = sy(ds[i], fs[i], 0.0); m++ }
-          if (ina != inb) {
-            val t = (nearD - ds[i]) / (ds[j] - ds[i])
-            val r = rs[i] + (rs[j] - rs[i]) * t
-            val f = fs[i] + (fs[j] - fs[i]) * t
-            xs[m] = sx(nearD, r); ys[m] = sy(nearD, f, 0.0); m++
-          }
-          if (m >= 8190) break
-        }
-      }
-      if (m < 3) continue
-      val groupKey = sh.layer * 16 + sh.kind
-      if (groupKey != curKey || curPath == null) {
-        curPath = Path()
-        curKey = groupKey
-        out += curPath to sh.kind
-      }
-      // all the outlines of a drawing turn the same way, so that two overlapping shapes add up
-      // (with opposite turns the overlap would be left empty)
-      var area = 0.0
-      for (i in 0 until m) {
-        val j = if (i + 1 == m) 0 else i + 1
-        area += xs[i].toDouble() * ys[j] - xs[j].toDouble() * ys[i]
-      }
-      val p: Path = curPath ?: continue
-      if (area >= 0) {
-        p.moveTo(xs[0], ys[0])
-        for (i in 1 until m) p.lineTo(xs[i], ys[i])
-      } else {
-        p.moveTo(xs[m - 1], ys[m - 1])
-        for (i in m - 2 downTo 0) p.lineTo(xs[i], ys[i])
-      }
-      p.close()
-    }
-    rj.cache = out
-    rj.cacheKey = key
-    cached = out
-  }
   val shoulder = if (night) Color(0xFF1E2023) else Color(0xFF2E3034)
   val asphalt = if (night) Color(0xFF26282C) else Color(0xFF3B3E43)
   val mark = if (night) Color(0xFFD2D5D9) else Color.White
   val rail = if (night) Color(0xFF69707A) else Color(0xFFC7CCD2)
   val arrow = if (night) Color(0xFF8246DA) else Color(0xFF9148EE)
   val arrowLight = if (night) Color(0xFFB891F2) else Color(0xFFD2B4FF)
-  for ((p, kind) in cached.orEmpty()) {
+  val gore = if (night) Color(0xFFBFC3C8) else Color(0xFFECECEC)
+  for ((p, kind) in cached) {
     when (kind) {
-      RealJv.SHOULDER -> drawPath(p, shoulder)
-      RealJv.ASPHALT -> drawPath(p, asphalt)
-      RealJv.MARK -> drawPath(p, mark)
-      RealJv.RAIL -> drawPath(p, rail)
-      RealJv.ARROW_SHADOW -> translate(0f, (h * 0.008).toFloat()) { drawPath(p, Color(0x66000000)) }
-      RealJv.ARROW -> {
+      JvGeo.SHOULDER -> drawPath(p, shoulder)
+      JvGeo.ASPHALT -> drawPath(p, asphalt)
+      JvGeo.MARK -> drawPath(p, mark)
+      JvGeo.RAIL -> drawPath(p, rail)
+      JvGeo.GORE -> drawPath(p, gore)
+      JvGeo.LANE_ARROW -> drawPath(p, mark.copy(alpha = 0.75f))
+      JvGeo.LANE_ARROW_LIT -> drawPath(p, mark)
+      JvGeo.ARROW_SHADOW -> translate(0f, (h * 0.008).toFloat()) { drawPath(p, Color(0x66000000)) }
+      JvGeo.ARROW -> {
         drawPath(p, Brush.verticalGradient(listOf(arrowLight, arrow), hz, size.height))
         drawPath(p, arrowLight, style = Stroke((w * 0.004).toFloat()))
       }
     }
   }
-  // the vehicle: a blue arrow on its lane, where it really is (it moves at every frame)
-  if (vehS > 0 && vehS < endS + 80) {
-    val vp = rj.along(vehS)
-    val vq = rj.along(vehS + 6)
-    val lr = laneR(vehS)
-    fun toScreen(px: Double, py: Double, r0: Double, ahead: Double): Offset? {
-      val vx = px - cam.x
-      val vy = py - cam.y
-      val f = vx * fx + vy * fy + ahead
-      val r = vx * rx + vy * ry + r0
-      val d = depth(f, 0.0)
-      if (d < nearD) return null
-      return Offset(sx(d, r), sy(d, f, 0.0))
-    }
-    // the arrow points the way the road goes there
-    var dx = vq.x - vp.x
-    var dy = vq.y - vp.y
-    val dl = hypot(dx, dy).takeIf { it > 1e-6 } ?: 1.0
-    dx /= dl
-    dy /= dl
-    val nx = dy
-    val ny = -dx
-    val len = 5.5
-    val half = 1.4
-    val tip = toScreen(vp.x + dx * len / 2, vp.y + dy * len / 2, lr, 0.0)
-    val left = toScreen(vp.x - dx * len / 2 - nx * half, vp.y - dy * len / 2 - ny * half, lr, 0.0)
-    val back = toScreen(vp.x - dx * len * 0.22, vp.y - dy * len * 0.22, lr, 0.0)
-    val right = toScreen(vp.x - dx * len / 2 + nx * half, vp.y - dy * len / 2 + ny * half, lr, 0.0)
-    if (tip != null && left != null && back != null && right != null) {
-      val car = Path().apply { moveTo(tip.x, tip.y); lineTo(left.x, left.y); lineTo(back.x, back.y); lineTo(right.x, right.y); close() }
-      drawPath(car, Color(0xFF1E88E5))
-      drawPath(car, Color.White, style = Stroke((w * 0.005).toFloat().coerceAtLeast(2f)))
-    }
+  // the vehicle: a blue arrow on its lane, where it really is
+  frame.vehicle?.let { v ->
+    val car = Path().apply { moveTo(v[0], v[1]); lineTo(v[2], v[3]); lineTo(v[4], v[5]); lineTo(v[6], v[7]); close() }
+    drawPath(car, Color(0xFF1E88E5))
+    drawPath(car, Color.White, style = Stroke((w * 0.005).toFloat().coerceAtLeast(2f)))
   }
 }

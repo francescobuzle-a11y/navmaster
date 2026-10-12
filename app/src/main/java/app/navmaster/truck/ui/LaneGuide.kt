@@ -93,7 +93,8 @@ fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier, vehicleLane: Int?
             if (nearest == null) plan.hint else "Spostati " + (if (nearest > vehicleLane!!) "a destra" else "a sinistra")
           } else plan.hint
           if (hint.isNotEmpty()) {
-            Text(hint, color = if (wrong) NmAmber else Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 2,
+            // one line always: the bar keeps its height, nothing under it jumps
+            Text(hint, color = if (wrong) NmAmber else Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, lineHeight = 20.sp)
           }
         }
