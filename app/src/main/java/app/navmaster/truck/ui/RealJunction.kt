@@ -134,7 +134,7 @@ internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, night: Boo
   if (!night && hz > h * 0.10) {
     for ((cxr, cyr, rr) in listOf(Triple(0.16, 0.40, 0.07), Triple(0.55, 0.25, 0.09), Triple(0.84, 0.45, 0.06))) {
       val x0 = (w * cxr).toFloat()
-      val y0 = (hz * cyr)
+      val y0 = (hz * cyr).toFloat()
       val r = (w * rr).toFloat()
       drawOval(Color(0xE6FFFFFF), Offset(x0 - r, y0 - r * 0.35f), Size(r * 2, r * 0.7f))
       drawOval(Color(0xE6FFFFFF), Offset(x0 - r * 0.55f, y0 - r * 0.6f), Size(r * 1.1f, r * 0.8f))
