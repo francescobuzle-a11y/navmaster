@@ -208,8 +208,13 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       }
     }
   }
-  Card("Calcolo online") {
-    ToggleRow("Con internet usa openrouteservice",
+  Card(if (AppGraph.ONLINE_ROUTING) "Calcolo online" else "Calcolo del percorso") {
+    if (!AppGraph.ONLINE_ROUTING) {
+      Caption("Il percorso lo calcola sempre GraphHopper sul tablet, con le regole di openrouteservice e le misure del mezzo: " +
+          "servono le mappe dei Paesi del viaggio («Mappe d'Europa»). Il calcolo online è spento; in futuro arriverà dal server NavMaster.",
+          color = Nm.Text, lines = 5)
+      Spacer(Modifier.height(6.dp))
+    } else ToggleRow("Con internet usa openrouteservice",
         if (AppGraph.ors.key.isBlank()) "Non attivo: manca la chiave del servizio nell'app"
         else "Percorso calcolato online con le misure del mezzo (scheda ORS); senza rete GraphHopper sul tablet. " +
             "Dove la mappa non è scaricata guida online", s.onlineRouting) { v ->
@@ -218,11 +223,11 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     ToggleRow("Mappa online dove non è scaricata", "OpenFreeMap, gratuita: si vede la mappa anche nei Paesi non scaricati (usa dati)", s.onlineMap) { v ->
       set { it.copy(onlineMap = v) }
     }
-    ToggleRow("Dati leggeri per la guida online", "Limiti del mezzo, autovelox, Tutor, velocità e corsie dei Paesi non scaricati " +
+    if (AppGraph.ONLINE_ROUTING) ToggleRow("Dati leggeri per la guida online", "Limiti del mezzo, autovelox, Tutor, velocità e corsie dei Paesi non scaricati " +
         "(poche decine di MB per Paese, anche con i dati mobili): la guida online è come quella offline", s.onlineLite) { v ->
       set { it.copy(onlineLite = v) }
     }
-    if (s.onlineLite) {
+    if (s.onlineLite && AppGraph.ONLINE_ROUTING) {
       ToggleRow("Anche i punti di interesse", "Aree camper, campeggi, distributori, parcheggi per camion nei Paesi non scaricati " +
           "(circa 100 MB per Paese in più)", s.onlineLitePoi) { v ->
         set { it.copy(onlineLitePoi = v) }

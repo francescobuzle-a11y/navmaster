@@ -96,10 +96,17 @@ object AppGraph {
   fun findRoute(geometry: List<GeographicCoordinate>): Route? =
       recent.firstOrNull { it.geometry.size == geometry.size && it.geometry.firstOrNull() == geometry.firstOrNull() && it.geometry.lastOrNull() == geometry.lastOrNull() }
 
-  /** openrouteservice online (with a key built into the app), see OrsRouting. */
-  val ors: OrsRouting by lazy { OrsRouting(app) { settings.settings.value.onlineRouting } }
+  /**
+   * The route computed online. Off (12/10/2026, owner's choice): every route is computed by
+   * GraphHopper on the tablet with openrouteservice's rules; openrouteservice itself is not used.
+   * One day: NavMaster's own server with the same GraphHopper and rules.
+   */
+  const val ONLINE_ROUTING = false
 
-  val routes by lazy { OfflineRouteProvider(gh, { profiles.garage.value }, { trip.value }, ors) { remember(it) } }
+  /** openrouteservice online (with a key built into the app), see OrsRouting; not used while ONLINE_ROUTING is off. */
+  val ors: OrsRouting by lazy { OrsRouting(app) { ONLINE_ROUTING && settings.settings.value.onlineRouting } }
+
+  val routes by lazy { OfflineRouteProvider(gh, { profiles.garage.value }, { trip.value }, ors.takeIf { ONLINE_ROUTING }) { remember(it) } }
 
   /** The simulated drive (its speed can be changed while it runs). */
   val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }

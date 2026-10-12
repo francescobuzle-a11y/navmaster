@@ -290,10 +290,12 @@ fun WelcomeScreen(here: CountryInfo?, onOnline: () -> Unit = {}, onChooseOther: 
       Spacer(Modifier.height(10.dp))
       ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v -> AppGraph.settings.update { it.copy(downloadWifiOnly = v) } }
       BigButton("Tutti i Paesi d'Europa", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.Public, BtnStyle.SECONDARY, onClick = onChooseOther)
-      BigButton("Usa subito online, senza scaricare", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST, onClick = onOnline)
-      Caption("Con internet: mappa e percorso online, e l'app scarica da sola i dati leggeri del Paese (limiti del mezzo, autovelox, " +
-          "Tutor, velocità e corsie" + (here?.let { h -> ", circa ${gb(AppGraph.regions.liteSize(h))}" } ?: "") +
-          "). Le mappe complete per guidare senza rete si scaricano dopo, da «Mappe d'Europa».", size = 13, lines = 5)
+      if (app.navmaster.truck.AppGraph.ONLINE_ROUTING) {
+        BigButton("Usa subito online, senza scaricare", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST, onClick = onOnline)
+        Caption("Con internet: mappa e percorso online, e l'app scarica da sola i dati leggeri del Paese (limiti del mezzo, autovelox, " +
+            "Tutor, velocità e corsie" + (here?.let { h -> ", circa ${gb(AppGraph.regions.liteSize(h))}" } ?: "") +
+            "). Le mappe complete per guidare senza rete si scaricano dopo, da «Mappe d'Europa».", size = 13, lines = 5)
+      }
      }
     }
   }

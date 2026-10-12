@@ -198,7 +198,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   }
   // the light packages of the country where the vehicle is and of the destination's (guidance online)
   LaunchedEffect(settings.onlineLite, settings.onlineLitePoi, here?.id, destCountry?.id, installed) {
-    if (!settings.onlineLite) return@LaunchedEffect
+    if (!settings.onlineLite || !AppGraph.ONLINE_ROUTING) return@LaunchedEffect
     here?.let { AppGraph.regions.ensureLite(it.id, it.name) }
     destCountry?.let { AppGraph.regions.ensureLite(it.id, it.name) }
   }
@@ -571,7 +571,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       )
     }
 
-    if (installed.isEmpty() && !settings.onlineWithoutMaps && sheet != Sheet.REGIONS) {
+    if (installed.isEmpty() && (!settings.onlineWithoutMaps || !AppGraph.ONLINE_ROUTING) && sheet != Sheet.REGIONS) {
       WelcomeScreen(here, onOnline = { AppGraph.settings.update { it.copy(onlineWithoutMaps = true) } }) { sheet = Sheet.REGIONS }
     }
 

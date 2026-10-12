@@ -108,6 +108,14 @@ class GhRouting(private val context: Context, private val regions: RegionManager
   /** [routes], with [problem] said for every case without a route. */
   private fun routesIn(points: List<DoubleArray>, headings: List<Double>, spec: TruckSpec, maxPaths: Int): List<GhEngine.Result>? {
     val first = points.firstOrNull() ?: return null
+    // a point in a country whose map is not on the tablet: said by name (the route is computed only on the tablet)
+    val missing = points.filter { regions.regionAt(it[0], it[1]) == null }
+        .mapNotNull { runCatching { app.navmaster.truck.AppGraph.catalog.countryAt(it[0], it[1])?.name }.getOrNull() ?: "un Paese fuori dall'elenco" }
+        .distinct()
+    if (missing.isNotEmpty()) {
+      problem = "manca la mappa di ${missing.joinToString(", ")}: scaricala in «Mappe d'Europa»"
+      return null
+    }
     val e = runCatching { engineAt(first[0], first[1]) }.onFailure {
       Log.w(TAG, "GraphHopper not available: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it)
       if (problem == null) problem = "il grafo GraphHopper non si apre (${it.javaClass.simpleName}: ${it.message?.take(80)})"

@@ -196,6 +196,7 @@ class OfflineRouteProvider(
         }
         val why = problem ?: ghNote ?: "GraphHopper non ha trovato un percorso"
         val onlineWhy = when {
+          ors == null -> ""
           !online -> " Online non provato: $offlineWhy."
           orsAnswered -> ""
           else -> " Online: openrouteservice non ha risposto (${ors?.note?.take(120) ?: "errore"})."
