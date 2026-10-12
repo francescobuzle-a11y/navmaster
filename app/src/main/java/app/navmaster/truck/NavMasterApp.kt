@@ -8,6 +8,7 @@ import app.navmaster.truck.live.HereGuard
 import app.navmaster.truck.live.TomTomGuard
 import app.navmaster.truck.location.SmartLocationProvider
 import app.navmaster.truck.poi.PoiIndex
+import app.navmaster.truck.data.RoadsIndex
 import app.navmaster.truck.routing.CriticalityFinder
 import app.navmaster.truck.routing.GhRouting
 import app.navmaster.truck.routing.OfflineRouteProvider
@@ -71,7 +72,7 @@ object AppGraph {
   val criticalities by lazy { CriticalityFinder(regions) }
 
   /** The roads of the light packages, for the guidance online without the graph (OrsGuide). */
-  val roads by lazy { app.navmaster.truck.data.RoadsIndex(regions) }
+  val roads by lazy { RoadsIndex(regions) }
   val recents by lazy { RecentStore(app) }
 
   /** Choices of the trip being driven (tolls, points to avoid): recalculations keep them. */
