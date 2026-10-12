@@ -103,6 +103,7 @@ class OfflineRouteProvider(
         Log.i(TAG, "route ${vehicle.name} tolls=${!options.avoidTolls} alt=${options.alternates} more=${options.moreRoutes} " +
             "avoid=${options.excludePolygons.size} points=${stops.points.size} for $spec")
         note = null
+        directWithoutRoads = false
         refused = null
         orsAnswered = false
         softWhy = null
@@ -160,8 +161,10 @@ class OfflineRouteProvider(
               .onFailure { Log.w(TAG, "openrouteservice guidance failed: $it", it) }
               .getOrNull()?.takeIf { it.isNotEmpty() }
           if (direct != null) {
-            note = "Guida online di openrouteservice: " + (problem?.let { "$it. " } ?: "") +
-                "Senza la mappa scaricata mancano corsie, limiti e punti difficili della strada."
+            note = if (directMatched) "Guida online: percorso di openrouteservice con limiti, corsie e velocità dei dati leggeri del Paese."
+                else "Guida online di openrouteservice: " + (problem?.let { "$it. " } ?: "") +
+                    "I dati leggeri del Paese (limiti, corsie, velocità) si stanno scaricando o non sono ancora pronti: il percorso si aggiorna da solo quando arrivano."
+            directWithoutRoads = !directMatched
             mark(direct, "ORS")
             return@withContext direct.also(onRoutes)
           }
@@ -176,6 +179,12 @@ class OfflineRouteProvider(
   @Volatile private var orsAnswered = false
   // the first limit passed by the soft route
   @Volatile private var softWhy: String? = null
+  // the route guided online was matched on the roads of the light packages
+  @Volatile private var directMatched = false
+
+  /** The last routes were guided online without the light package of their countries (still downloading). */
+  @Volatile var directWithoutRoads = false
+    private set
 
   /**
    * openrouteservice's route guided by its own instructions (OrsGuide), for the places without a
@@ -201,13 +210,37 @@ class OfflineRouteProvider(
     val answer = text
     if (answer == null || n != s.points.size) return null
     val out = mutableListOf<Route>()
+    directMatched = false
+    // the roads of the light packages (speed limits, lanes, way ids) and the countries
+    val roads = app.navmaster.truck.AppGraph.roads
+    val heavy = spec.hgv
+    val countryOf = { lat: Double, lon: Double -> app.navmaster.truck.AppGraph.catalog.countryAt(lat, lon)?.iso?.uppercase() }
     for (i in 0 until 3) {
-      val osrm = runCatching { OrsGuide.osrm(answer, i) }.onFailure { Log.w(TAG, "openrouteservice guidance not written: $it") }.getOrNull() ?: break
-      val route = runCatching { parser.parseResponse(osrm.encodeToByteArray()).firstOrNull() }
+      val g = runCatching { OrsGuide.build(answer, i, { line -> roads.along(line) }, heavy, countryOf) }
+          .onFailure { Log.w(TAG, "openrouteservice guidance not written: $it") }.getOrNull() ?: break
+      val route = runCatching { parser.parseResponse(g.osrm.encodeToByteArray()).firstOrNull() }
           .onFailure { Log.w(TAG, "openrouteservice guidance not readable: $it") }.getOrNull() ?: break
-      Log.i(TAG, String.format(java.util.Locale.US, "route guided by openrouteservice: %.1f km, %d steps", route.distance / 1000, route.steps.size))
+      g.attributes?.let { gh.remember(route, it) }
+      if (g.matched > 0) directMatched = true
+      Log.i(TAG, String.format(java.util.Locale.US, "route guided by openrouteservice: %.1f km, %d steps, %d pieces on known roads",
+          route.distance / 1000, route.steps.size, g.matched))
       out += route
     }
+    // the light packages of the countries of the trip, for the next routes (and the recalculations)
+    runCatching {
+      val line = out.firstOrNull()?.geometry ?: emptyList()
+      val graph = app.navmaster.truck.AppGraph
+      var last: String? = null
+      var along = 0.0
+      for (k in line.indices) {
+        if (k > 0) along += app.navmaster.truck.core.Geo.dist(line[k - 1], line[k])
+        if (k != 0 && k != line.size - 1 && along < 20_000) continue
+        along = 0.0
+        val c = graph.catalog.countryAt(line[k].lat, line[k].lng) ?: continue
+        if (c.id != last) graph.regions.ensureLite(c.id, c.name)
+        last = c.id
+      }
+    }.onFailure { Log.w(TAG, "light packages of the trip: $it") }
     return out.takeIf { it.isNotEmpty() }
   }
 

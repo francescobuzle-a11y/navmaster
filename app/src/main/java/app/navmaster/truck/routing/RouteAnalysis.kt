@@ -163,6 +163,12 @@ class RouteAnalysis(
     }
   }
 
+  /**
+   * Only some roads of the route have their OSM way (a route guided online, matched on the roads of
+   * the light package): a limit on another way is matched by distance where the way is not known.
+   */
+  var partialWays = false
+
   /** OSM ways the route drives on: what lets a mapped limit or difficulty be matched exactly. */
   val wayIds: Set<Long> = edges.mapNotNullTo(HashSet<Long>()) { it.wayId.takeIf { id -> id > 0 } }
 
@@ -303,6 +309,7 @@ class RouteAnalysis(
           ?: return RouteAnalysis(route, emptyList())
       val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
       a.junctionShapes = p.shapes
+      a.partialWays = p.partial
       Log.i(TAG, "GraphHopper roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
           "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
           "junctions ${p.junctions.size}, shapes ${p.shapes.size}")
@@ -310,7 +317,7 @@ class RouteAnalysis(
     }
 
     private class Parsed(val edges: List<EdgeInfo>, val nodes: List<RouteNode>, val junctions: DoubleArray,
-                         val shapes: List<JunctionShape> = emptyList())
+                         val shapes: List<JunctionShape> = emptyList(), val partial: Boolean = false)
 
     private fun parse(raw: String): Parsed {
       val none = Parsed(emptyList(), emptyList(), DoubleArray(0))
@@ -373,7 +380,7 @@ class RouteAnalysis(
             sign = sign,
         )
       }
-      return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes)
+      return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes, root["partial_ways"]?.jsonPrimitive?.booleanOrNull == true)
     }
 
     private val NODE_TYPES = setOf("toll_booth", "toll_gantry", "border_control")

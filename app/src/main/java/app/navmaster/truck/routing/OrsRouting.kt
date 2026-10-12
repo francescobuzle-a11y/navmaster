@@ -151,6 +151,8 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
         "instructions" to JsonPrimitive(true),
         "language" to JsonPrimitive("it"),
         "maneuvers" to JsonPrimitive(true),
+        // tolls, motorway / tunnel / ferry and kind of road of every stretch (the roads of the route without the graph)
+        "extra_info" to JsonArray(listOf(JsonPrimitive("tollways"), JsonPrimitive("waycategory"), JsonPrimitive("waytype"))),
         "geometry" to JsonPrimitive(true),
     )
     if (options.isNotEmpty()) o["options"] = JsonObject(options)

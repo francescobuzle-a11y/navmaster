@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -211,6 +212,16 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     // everything that has to follow the vehicle while driving
     viewModelScope.launch { super.navigationUiState.collect { onNavUpdate(it) } }
+    // a light package arrived for a trip guided online without it: the route again, with the
+    // limits, speed limits and lanes of the country
+    viewModelScope.launch {
+      AppGraph.regions.lite.drop(1).collect {
+        if (!AppGraph.routes.directWithoutRoads) return@collect
+        Log.i(TAG, "light package arrived: route again")
+        if (navigationUiState.value.isNavigating()) recalcFromHere("Dati del Paese scaricati: aggiorno limiti e corsie.")
+        else if (_plan.value.variants.isNotEmpty() && !_plan.value.computing) planRoutes()
+      }
+    }
     // the lane the vehicle is in, from where the satellite fixes fall across the route
     viewModelScope.launch {
       AppGraph.smartLocation.onRoute.collect { f ->

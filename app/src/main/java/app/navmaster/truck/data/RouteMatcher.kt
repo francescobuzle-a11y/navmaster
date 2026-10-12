@@ -106,13 +106,14 @@ class RouteMatcher(val route: List<GeographicCoordinate>, reachCells: Int = 1) {
   }
 }
 
-/** Opens the same database of every installed country once, read only. */
+/** Opens the same database of every country with data on the tablet once, read only. */
 class RegionDbs(private val regions: RegionManager, private val file: (InstalledRegion) -> File) {
   private val open = HashMap<String, SQLiteDatabase>()
 
   @Synchronized
   fun all(): List<Pair<InstalledRegion, SQLiteDatabase>> {
-    val installed = regions.installed.value
+    // the full packages and the light ones (limiti.sqlite of the countries guided online)
+    val installed = regions.withData()
     val wanted = installed.map { file(it).absolutePath }.toSet()
     for (k in open.keys.toList()) if (k !in wanted) open.remove(k)?.close()
     return installed.mapNotNull { r ->

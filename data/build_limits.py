@@ -530,7 +530,33 @@ def sections(dst):
                 os.remove(f)
 
 
+def roads(dst):
+    """The roads for the guidance online without the map (build_roads.py): from the region extract
+    next to it, with osmium (as the signs). Without them the file is complete anyway."""
+    import os
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.exists("region.osm.pbf"):
+        print("roads: no region.osm.pbf here, skipped")
+        return
+    try:
+        subprocess.run(["osmium", "tags-filter", "region.osm.pbf",
+                        "w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link",
+                        "w/maxspeed", "w/maxspeed:forward", "w/maxspeed:backward", "w/turn:lanes", "w/turn:lanes:forward",
+                        "w/turn:lanes:backward", "-o", "roads.osm.pbf", "--overwrite"], check=True)
+        subprocess.run(["osmium", "export", "roads.osm.pbf", "-f", "geojsonseq", "--add-unique-id=type_id",
+                        "--format-option", "print_record_separator=false", "-o", "roads.geojsonseq", "--overwrite"], check=True)
+        subprocess.run([sys.executable, os.path.join(here, "build_roads.py"), "roads.geojsonseq", dst], check=True)
+    except Exception as ex:
+        print(f"roads: skipped ({ex})")
+    finally:
+        for f in ("roads.osm.pbf", "roads.geojsonseq"):
+            if os.path.exists(f):
+                os.remove(f)
+
+
 if __name__ == "__main__":
     main()
     signs(sys.argv[2])
     sections(sys.argv[2])
+    roads(sys.argv[2])

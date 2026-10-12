@@ -72,7 +72,7 @@ sealed class DownloadState {
   data object Done : DownloadState()
 }
 
-private data class Job(val id: String, val label: String)
+private data class Job(val id: String, val label: String, val lite: Boolean = false)
 
 /**
  * Offline packages, one folder per country under the app's external files. They are published on
@@ -91,6 +91,18 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   private val _installed = MutableStateFlow(scan())
   val installed: StateFlow<List<InstalledRegion>> = _installed.asStateFlow()
   private val queue = Channel<Job>(Channel.UNLIMITED)
+
+  /**
+   * The light packages: only limiti.sqlite (limits, speed cameras, Tutor, direction signs and the
+   * roads with their speed limits and lanes) and valichi.json, a few tens of MB, for the countries
+   * without the full package. With them the guidance online (map from the internet, route of
+   * openrouteservice) has what the offline one has. Downloaded by themselves, also on mobile data,
+   * for the country where the vehicle is and the ones of the trip.
+   */
+  val liteRoot: File = File(context.getExternalFilesDir(null), "regions-lite").apply { mkdirs() }
+  private val _lite = MutableStateFlow(scanLite())
+  val lite: StateFlow<List<InstalledRegion>> = _lite.asStateFlow()
+  private val liteQueue = Channel<Job>(Channel.UNLIMITED)
 
   /** Bumped when routing data change, so the routing engine reloads. */
   private val _version = MutableStateFlow(0)
@@ -114,6 +126,17 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
           Log.i(TAG, "removed ${old.size} old system downloads")
         }
       }.onFailure { Log.w(TAG, "old downloads: $it") }
+      launch {
+        for (job in liteQueue) {
+          try {
+            doDownload(job)
+            setState(liteKey(job.id), DownloadState.Done)
+          } catch (e: Exception) {
+            Log.w(TAG, "light package ${job.id} failed: $e")
+            setState(liteKey(job.id), DownloadState.Failed(friendly(e)))
+          }
+        }
+      }
       for (job in queue) {
         try {
           doDownload(job)
@@ -128,8 +151,57 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
 
   fun refresh() {
     _installed.value = scan()
+    // a country downloaded in full does not need its light package any more
+    for (l in scanLite()) if (_installed.value.any { it.id == l.id }) runCatching { l.dir.deleteRecursively() }
+    _lite.value = scanLite()
     _version.value++
   }
+
+  private fun scanLite(): List<InstalledRegion> =
+      (liteRoot.listFiles() ?: emptyArray())
+          .filter { it.isDirectory && !it.name.startsWith(".") }
+          .mapNotNull { dir ->
+            val mf = File(dir, "manifest.json")
+            if (!mf.exists() || !File(dir, "limiti.sqlite").exists()) return@mapNotNull null
+            runCatching { InstalledRegion(dir.name, json.decodeFromString(Manifest.serializer(), mf.readText()), dir) }.getOrNull()
+          }
+
+  /** The countries with data on the tablet: the full packages, and the light ones of the others. */
+  fun withData(): List<InstalledRegion> {
+    val full = _installed.value
+    return full + _lite.value.filter { l -> full.none { it.id == l.id } }
+  }
+
+  /** The key of a light package's download state. */
+  fun liteKey(id: String) = "lite:$id"
+
+  /**
+   * The light package of country [id] is on the tablet, or is brought down now (once, and again
+   * when the data on GitHub are newer): nothing to do for a country downloaded in full.
+   */
+  fun ensureLite(id: String, label: String) {
+    if (id == "test" || _installed.value.any { it.id == id }) return
+    val c = catalog.catalog.value?.countries?.firstOrNull { it.id == id }
+    if (c != null && !c.available) return
+    val have = _lite.value.firstOrNull { it.id == id }
+    val newest = c?.built
+    val poiMissing = have != null && "poi.sqlite" in liteFiles() && !have.poi.exists()
+    if (have != null && !poiMissing && (newest == null || newest <= have.manifest.built)) return
+    when (_states.value[liteKey(id)]) {
+      is DownloadState.Running, is DownloadState.Queued -> return
+      is DownloadState.Failed -> if (have != null && !poiMissing) return
+      else -> {}
+    }
+    setState(liteKey(id), DownloadState.Queued)
+    liteQueue.trySend(Job(id, label, lite = true))
+  }
+
+  /** What a light package brings down (MB), from the catalog. */
+  fun liteSize(c: CountryInfo): Long = liteFiles().sumOf { c.files[it] ?: 0L }
+
+  /** The files of a light package: limits and crossings, and the places of interest when chosen. */
+  fun liteFiles(): Set<String> =
+      if (app.navmaster.truck.AppGraph.settings.settings.value.onlineLitePoi) LITE_FILES + "poi.sqlite" else LITE_FILES
 
   private fun scan(): List<InstalledRegion> =
       (root.listFiles() ?: emptyArray())
@@ -193,11 +265,12 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   }
 
   /** Why downloading has to wait now (null: it can go on). */
-  private fun blocked(): String? {
+  private fun blocked(lite: Boolean = false): String? {
     val cm = context.getSystemService(ConnectivityManager::class.java)
     val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
     if (caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return "In attesa della connessione a internet"
-    if (app.navmaster.truck.AppGraph.settings.settings.value.downloadWifiOnly && cm.isActiveNetworkMetered) {
+    // the light packages are small and needed to drive now: also on mobile data
+    if (!lite && app.navmaster.truck.AppGraph.settings.settings.value.downloadWifiOnly && cm.isActiveNetworkMetered) {
       return "In attesa del Wi-Fi: disattiva «Solo con Wi-Fi» per scaricare con i dati"
     }
     return null
@@ -237,7 +310,9 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
 
   private suspend fun doDownload(job: Job) {
     val id = job.id
-    setState(id, DownloadState.Running(0, 0, "Lettura dell'elenco file"))
+    val stateKey = if (job.lite) liteKey(id) else id
+    fun put(s: DownloadState) = setState(stateKey, s)
+    put(DownloadState.Running(0, 0, "Lettura dell'elenco file"))
     val base = "$RELEASES/dati-$id"
     val manifestText =
         OkHttpClient().newCall(Request.Builder().url("$base/manifest.json").build()).execute().use {
@@ -245,7 +320,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
           it.body.string()
         }
     val manifest = json.decodeFromString(Manifest.serializer(), manifestText)
-    val dir = File(root, id).apply { mkdirs() }
+    val dir = File(if (job.lite) liteRoot else root, id).apply { mkdirs() }
     // an update of a country already on the tablet: only the files that changed (same name, other
     // checksum) or are missing are brought down, e.g. only the GraphHopper graph
     val prev = File(dir, "manifest.json").takeIf { it.exists() }
@@ -267,7 +342,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     fun skipped(f: PackageFile) = (f.file == GhRouting.PACKAGE_TRUCK || f.file == GhRouting.PACKAGE_CAR) && f.file !in ghWanted
     // the packages made before GraphHopper alone (until they are rebuilt) still list the old
     // routing graph (percorsi.tar): never downloaded
-    val files = manifest.files.filter { it.file != OLD_ROUTING_FILE && !skipped(it) && !unchanged(it) }
+    val files = manifest.files.filter { it.file != OLD_ROUTING_FILE && !skipped(it) && !unchanged(it) && (!job.lite || it.file in liteFiles()) }
     if (prev != null) Log.i(TAG, "update $id: ${files.joinToString { it.file }.ifEmpty { "nothing changed" }}")
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } }
     val total = parts.sumOf { it.second.size }
@@ -316,26 +391,26 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     val speed = Speed()
     val downloader = FastDownloader(connections = 6) {
       while (true) {
-        val why = blocked()
+        val why = blocked(job.lite)
         waiting.set(why)
         if (why == null) break
         delay(2000)
       }
     }
     val items = parts.map { (url, p) -> FastDownloader.Item(url, p.size, p.sha256, File(tmp, p.name)) }
-    downloader.fetch(items) { got -> setState(id, DownloadState.Running(got, total, waiting.get() ?: speed.text(got, total))) }
+    downloader.fetch(items) { got -> put(DownloadState.Running(got, total, waiting.get() ?: speed.text(got, total))) }
     val secs = (System.currentTimeMillis() - started) / 1000.0
     Log.i(TAG, String.format(Locale.US, "download %s: %d MB in %.0f s (%.1f MB/s)", id, total / 1_000_000, secs, total / 1e6 / secs.coerceAtLeast(0.1)))
 
     // join the parts into the final files
     for (f in files) {
-      setState(id, DownloadState.Running(total, total, "Preparazione ${f.file}"))
+      put(DownloadState.Running(total, total, "Preparazione ${f.file}"))
       join(f.parts.map { File(tmp, it.name) }, File(dir, f.file))
     }
     // the GraphHopper data come packed: unpacked now, once, not at the first route
     val ghFiles = files.filter { it.file in GhRouting.PACKAGES }
     if (ghFiles.isNotEmpty()) {
-      setState(id, DownloadState.Running(total, total, "Installazione calcolo percorsi GraphHopper"))
+      put(DownloadState.Running(total, total, "Installazione calcolo percorsi GraphHopper"))
       // the graph in use is closed before it is replaced
       runCatching { app.navmaster.truck.AppGraph.gh.reset() }
       val gh = GhRouting.ready(dir)
@@ -399,5 +474,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     const val RELEASES = "https://github.com/francescobuzle-a11y/navmaster/releases/download"
     /** The routing graph of the versions before GraphHopper alone, never downloaded nor kept. */
     const val OLD_ROUTING_FILE = "percorsi.tar"
+    /** The files of a light package (the guidance online without the map). */
+    val LITE_FILES = setOf("limiti.sqlite", "valichi.json")
   }
 }

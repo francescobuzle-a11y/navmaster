@@ -69,6 +69,9 @@ object AppGraph {
   val poi by lazy { PoiIndex(regions) }
   val addresses by lazy { AddressIndex(regions) }
   val criticalities by lazy { CriticalityFinder(regions) }
+
+  /** The roads of the light packages, for the guidance online without the graph (OrsGuide). */
+  val roads by lazy { app.navmaster.truck.data.RoadsIndex(regions) }
   val recents by lazy { RecentStore(app) }
 
   /** Choices of the trip being driven (tolls, points to avoid): recalculations keep them. */

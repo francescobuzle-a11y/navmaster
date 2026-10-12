@@ -207,6 +207,8 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
                 ghUpdate -> " · manca il grafo GraphHopper"
                 else -> ""
               }
+              c.available && AppGraph.regions.lite.value.any { it.id == c.id } ->
+                "${gb(size)} · dati del ${c.built} · guida online pronta (dati leggeri ${gb(AppGraph.regions.liteSize(c))})"
               c.available -> "${gb(size)} · dati del ${c.built}"
               else -> "In preparazione"
             },
@@ -289,7 +291,9 @@ fun WelcomeScreen(here: CountryInfo?, onOnline: () -> Unit = {}, onChooseOther: 
       ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v -> AppGraph.settings.update { it.copy(downloadWifiOnly = v) } }
       BigButton("Tutti i Paesi d'Europa", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.Public, BtnStyle.SECONDARY, onClick = onChooseOther)
       BigButton("Usa subito online, senza scaricare", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST, onClick = onOnline)
-      Caption("Con internet: mappa, percorso e guida online. Le mappe si possono scaricare dopo, da «Mappe d'Europa».", size = 13, lines = 3)
+      Caption("Con internet: mappa e percorso online, e l'app scarica da sola i dati leggeri del Paese (limiti del mezzo, autovelox, " +
+          "Tutor, velocità e corsie" + (here?.let { h -> ", circa ${gb(AppGraph.regions.liteSize(h))}" } ?: "") +
+          "). Le mappe complete per guidare senza rete si scaricano dopo, da «Mappe d'Europa».", size = 13, lines = 5)
      }
     }
   }

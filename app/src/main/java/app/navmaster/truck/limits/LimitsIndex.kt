@@ -133,7 +133,9 @@ class LimitsIndex(regions: RegionManager) {
               val wayId = osm.takeIf { it.startsWith("w") }?.substring(1)?.toLongOrNull()
               val lo: Double
               val p: GeographicCoordinate
-              if (wayId != null && ways.isNotEmpty() && a != null) {
+              val byWay = wayId != null && ways.isNotEmpty() && a != null &&
+                  (wayId in ways || !a.partialWays || (m.span(pts, 9.0)?.let { sp -> (a.edgeAt(sp.first)?.wayId ?: 0L) > 0 } ?: true))
+              if (byWay && wayId != null && a != null) {
                 if (wayId !in ways) {
                   if (m.span(pts, 9.0) != null) elsewhere++
                   continue
@@ -276,7 +278,7 @@ class LimitsIndex(regions: RegionManager) {
             val (d, along) = m.nearest(p) ?: continue
             if (d > 15) continue
             val wayId = c.getString(1)?.removePrefix("w")?.toLongOrNull() ?: -1L
-            if (wayId > 0 && a.wayIds.isNotEmpty() && wayId !in a.wayIds) continue
+            if (wayId > 0 && a.wayIds.isNotEmpty() && !a.partialWays && wayId !in a.wayIds) continue
             val routeBrg = app.navmaster.truck.core.Geo.bearing(a.pointAt((along - 25).coerceAtLeast(0.0)), a.pointAt(along))
             val diff = abs(((c.getDouble(4) - routeBrg + 540.0) % 360.0) - 180.0)
             if (diff > 50) continue

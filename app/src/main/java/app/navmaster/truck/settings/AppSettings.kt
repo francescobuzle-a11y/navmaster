@@ -147,6 +147,13 @@ data class Settings(
     val roadDifficulties: Boolean = false,
     /** Where no map is downloaded, the map from the internet (OpenFreeMap, free, no key). */
     val onlineMap: Boolean = true,
+    /**
+     * The light package (limits, speed cameras, speed limits, lanes: tens of MB) of the countries
+     * without the full map, downloaded by itself for the guidance online.
+     */
+    val onlineLite: Boolean = true,
+    /** The places of interest (camper areas, campsites, fuel, parking…) in the light packages too (about 100 MB per country). */
+    val onlineLitePoi: Boolean = false,
     /** The driver chose to start without downloading any map (online guidance). */
     val onlineWithoutMaps: Boolean = false,
     val voiceWarnings: Boolean = true,

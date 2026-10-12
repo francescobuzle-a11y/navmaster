@@ -200,6 +200,16 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     ToggleRow("Mappa online dove non è scaricata", "OpenFreeMap, gratuita: si vede la mappa anche nei Paesi non scaricati (usa dati)", s.onlineMap) { v ->
       set { it.copy(onlineMap = v) }
     }
+    ToggleRow("Dati leggeri per la guida online", "Limiti del mezzo, autovelox, Tutor, velocità e corsie dei Paesi non scaricati " +
+        "(poche decine di MB per Paese, anche con i dati mobili): la guida online è come quella offline", s.onlineLite) { v ->
+      set { it.copy(onlineLite = v) }
+    }
+    if (s.onlineLite) {
+      ToggleRow("Anche i punti di interesse", "Aree camper, campeggi, distributori, parcheggi per camion nei Paesi non scaricati " +
+          "(circa 100 MB per Paese in più)", s.onlineLitePoi) { v ->
+        set { it.copy(onlineLitePoi = v) }
+      }
+    }
   }
   Card("Strade a pagamento") {
     Pills { for (p in TollPolicy.entries) Pill(p.label, s.tollPolicy == p) { set { it.copy(tollPolicy = p) } } }

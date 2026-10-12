@@ -111,7 +111,7 @@ class CriticalityFinder(regions: RegionManager) {
     val seen = HashSet<Long>()
     // with the graph's way ids a mapped road is matched exactly: a road passing under a bridge of
     // the route, or running right next to it, is not taken for the road the route is on
-    val exact = a.wayIds.isNotEmpty()
+    val exact = a.wayIds.isNotEmpty() && !a.partialWays
     var skipped = 0
     for (r in rows) {
       if (!seen.add(r.id)) continue

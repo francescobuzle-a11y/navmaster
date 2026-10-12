@@ -196,6 +196,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     val withMap = installed.filter { it.map.exists() }.map { it.id }.toSet()
     settings.onlineMap && (withMap.isEmpty() || (here != null && here.id !in withMap) || (destCountry != null && destCountry.id !in withMap))
   }
+  // the light packages of the country where the vehicle is and of the destination's (guidance online)
+  LaunchedEffect(settings.onlineLite, settings.onlineLitePoi, here?.id, destCountry?.id, installed) {
+    if (!settings.onlineLite) return@LaunchedEffect
+    here?.let { AppGraph.regions.ensureLite(it.id, it.name) }
+    destCountry?.let { AppGraph.regions.ensureLite(it.id, it.name) }
+  }
   val styleUri = remember(installed, night, satellite, trafficTiles, onlineMap) {
     MapStyles.styleUri(context, installed, night, satellite, trafficTiles, onlineMap)
   }
