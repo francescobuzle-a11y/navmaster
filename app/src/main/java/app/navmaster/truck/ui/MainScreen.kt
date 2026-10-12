@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -826,7 +827,7 @@ private fun NavigatingOverlay(
               // touch: the choice of what to report; long press: police (or a danger) at once, undoable
               Modifier.size(56.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.Amber).border(1.dp, Nm.Line, CircleShape)
                   .pointerInput(Unit) {
-                    androidx.compose.foundation.gestures.detectTapGestures(onTap = { onReport() }, onLongPress = { onQuickReport() })
+                    detectTapGestures(onTap = { onReport() }, onLongPress = { onQuickReport() })
                   },
               contentAlignment = Alignment.Center,
           ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
