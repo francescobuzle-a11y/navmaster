@@ -45,6 +45,15 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
   @Volatile var note: String? = null
     private set
 
+  /**
+   * The last answer of openrouteservice (GeoJSON with its Italian instructions) and the number of
+   * points asked: its own guidance (OrsGuide) when the tablet has no map of the way.
+   */
+  @Volatile var lastText: String? = null
+    private set
+  @Volatile var lastPoints: Int = 0
+    private set
+
   val key: String
     get() = app.navmaster.truck.live.ApiKeys.ors(app.navmaster.truck.AppGraph.settings.settings.value)
 
@@ -89,6 +98,8 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
           }
           else -> parse(text, points.size).also {
             note = null
+            lastText = text
+            lastPoints = points.size
             Log.i(TAG, "openrouteservice $profile: ${it?.size ?: 0} routes in ${SystemClock.elapsedRealtime() - started} ms " +
                 it?.joinToString { r -> String.format(java.util.Locale.US, "%.1f km/%d min", r.distanceM / 1000, r.timeMs / 60000) })
           }
@@ -108,7 +119,7 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
     if (s.avoidFerries) avoid += JsonPrimitive("ferries")
     if (avoid.isNotEmpty()) options["avoid_features"] = JsonArray(avoid)
     if (s.hgv) {
-      options["vehicle_type"] = JsonPrimitive(s.vehicleType.ifBlank { "hgv" })
+      if (s.vehicleType != "none") options["vehicle_type"] = JsonPrimitive(s.vehicleType.ifBlank { "hgv" })
       val r = mutableMapOf<String, JsonElement>()
       if (s.heightM > 0) r["height"] = JsonPrimitive(s.heightM)
       if (s.widthM > 0) r["width"] = JsonPrimitive(s.widthM)
@@ -135,7 +146,11 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
           else -> "fastest"
         }),
         "units" to JsonPrimitive("m"),
-        "instructions" to JsonPrimitive(false),
+        // the instructions (in Italian, with the manoeuvres' bearings) guide the route by themselves
+        // where the tablet has no map of the way (OrsGuide)
+        "instructions" to JsonPrimitive(true),
+        "language" to JsonPrimitive("it"),
+        "maneuvers" to JsonPrimitive(true),
         "geometry" to JsonPrimitive(true),
     )
     if (options.isNotEmpty()) o["options"] = JsonObject(options)

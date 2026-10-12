@@ -35,6 +35,22 @@ public final class GhCross {
     public String hw = "", ref = "", name = "";
     /** Direction of travel there into the neighbour, degrees; NaN where the road is one-way the other way. */
     public double ab = Double.NaN;
+    /** Direction of travel there coming back from the neighbour (NaN when one-way into it). */
+    public double ba = Double.NaN;
+
+    /** The same crossing seen from the neighbour's side: into this country. */
+    public Crossing reversed(String from) {
+      Crossing x = new Crossing();
+      x.to = from;
+      x.lat = lat;
+      x.lon = lon;
+      x.hw = hw;
+      x.ref = ref;
+      x.name = name;
+      x.ab = ba;
+      x.ba = ab;
+      return x;
+    }
 
     @Override
     public String toString() {
@@ -72,8 +88,15 @@ public final class GhCross {
   /** Chains of countries tried. */
   static final int CHAINS = 2;
 
-  /** The border crossings of a country, from its valichi.json. */
+  /** The border crossings of a country, from its valichi.json (also the ones only usable coming back, [all]). */
   public static List<Crossing> read(File valichi) {
+    List<Crossing> out = new ArrayList<>();
+    for (Crossing x : readAll(valichi)) if (!Double.isNaN(x.ab)) out.add(x);
+    return out;
+  }
+
+  /** Every crossing of valichi.json, both directions of travel (ab and ba). */
+  public static List<Crossing> readAll(File valichi) {
     List<Crossing> out = new ArrayList<>();
     try {
       JsonNode root = new ObjectMapper().readTree(valichi);
@@ -86,7 +109,8 @@ public final class GhCross {
         x.ref = c.path("ref").asText("");
         x.name = c.path("name").asText("");
         x.ab = c.path("ab").isNumber() ? c.path("ab").asDouble() : Double.NaN;
-        if (!x.to.isEmpty() && !Double.isNaN(x.ab)) out.add(x);
+        x.ba = c.path("ba").isNumber() ? c.path("ba").asDouble() : Double.NaN;
+        if (!x.to.isEmpty() && !(Double.isNaN(x.ab) && Double.isNaN(x.ba))) out.add(x);
       }
     } catch (Exception e) {
       // no crossings: the country is reached only when its graph covers the whole trip

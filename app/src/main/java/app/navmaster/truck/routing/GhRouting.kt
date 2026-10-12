@@ -108,11 +108,10 @@ class GhRouting(private val context: Context, private val regions: RegionManager
       return null
     }
     val graphs = object : GhCross.Graphs {
-      override fun has(country: String): Boolean {
-        val region = regions.installed.value.firstOrNull { it.id == country } ?: return false
-        return state(region.dir, emptyList()).let { it == GhState.READY || it == GhState.PARTIAL } &&
-            GhEngine.hasLandmarks(File(region.dir, "gh"), GhEngine.profileFor(spec))
-      }
+      // asked once per crossing: the answer of each country kept for this trip
+      private val known = HashMap<String, Boolean>()
+
+      override fun has(country: String): Boolean = known.getOrPut(country) { whyNot(country, spec) == null }
 
       override fun engine(country: String): GhEngine? =
           runCatching { engineFor(country) }.onFailure { Log.w(TAG, "GraphHopper of $country not open: $it") }.getOrNull()
@@ -121,7 +120,9 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     }
     val trip = GhCross.route(graphs, points, ids.map { it!! }, headings.firstOrNull() ?: Double.NaN, spec)
     if (trip.error != null || trip.whole == null) {
-      problem = "percorso tra Paesi: ${trip.error}"
+      // the countries of the trip that cannot be used, said plainly ("Italia: grafo da aggiornare")
+      val why = ids.filterNotNull().distinct().mapNotNull { whyNot(it, spec) }
+      problem = if (why.isNotEmpty()) "percorso tra Paesi: " + why.joinToString("; ") else "percorso tra Paesi: ${trip.error}"
       Log.w(TAG, "GraphHopper across countries: ${trip.error} (${trip.note})")
       return null
     }
@@ -159,13 +160,53 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return e
   }
 
-  /** The border crossings of the country [id] (valichi.json in its package), empty when not there. */
-  private fun crossingsOf(id: String): List<GhCross.Crossing> = synchronized(crossingCache) {
-    crossingCache.getOrPut(id) {
-      val region = regions.installed.value.firstOrNull { it.id == id }
-      val f = region?.let { File(it.dir, "valichi.json") }
-      if (f != null && f.exists()) GhCross.read(f) else emptyList()
+  /**
+   * Why the graph of [country] cannot be used for [spec] in a trip abroad, in words for the
+   * driver, or null when it can. A graph that arrived packed is unpacked first.
+   */
+  private fun whyNot(country: String, spec: TruckSpec): String? {
+    val region = regions.installed.value.firstOrNull { it.id == country }
+        ?: return "${countryName(country)}: mappa non scaricata"
+    runCatching { ready(region.dir) }
+    return when (state(region.dir, emptyList())) {
+      GhState.MISSING -> "${region.label}: manca il calcolo percorsi (in «Mappe d'Europa» tocca «Aggiorna»)"
+      GhState.OLD -> "${region.label}: calcolo percorsi di una versione vecchia (in «Mappe d'Europa» tocca «Aggiorna»)"
+      else -> if (GhEngine.hasLandmarks(File(region.dir, "gh"), GhEngine.profileFor(spec))) null
+          else "${region.label}: mancano i dati per ${if (spec.hgv) "i camion" else "camper, bus e auto"} (in «Mappe d'Europa» scegli i mezzi e tocca «Aggiorna»)"
     }
+  }
+
+  private fun countryName(id: String): String = id.replaceFirstChar { it.uppercase() }.replace('-', ' ')
+
+  /**
+   * The border crossings of the country [id]: its own (valichi.json in its package) and the ones
+   * the neighbours downloaded list towards it, seen the other way (so a country whose list is
+   * missing or older is still reached). Kept only when some were found.
+   */
+  private fun crossingsOf(id: String): List<GhCross.Crossing> {
+    val key = id + ":" + regions.version.value
+    synchronized(crossingCache) { crossingCache[key] }?.let { return it }
+    val installed = regions.installed.value
+    val out = ArrayList<GhCross.Crossing>()
+    val seen = HashSet<String>()
+    fun add(c: GhCross.Crossing) {
+      if (c.ab.isNaN() || c.to == id) return
+      val k = "${c.to}:${"%.4f".format(java.util.Locale.ROOT, c.lat)}:${"%.4f".format(java.util.Locale.ROOT, c.lon)}:${c.ab.toInt()}"
+      if (seen.add(k)) out += c
+    }
+    installed.firstOrNull { it.id == id }?.let { r ->
+      val f = File(r.dir, "valichi.json")
+      if (f.exists()) runCatching { GhCross.read(f) }.getOrNull()?.forEach(::add)
+    }
+    for (r in installed) {
+      if (r.id == id) continue
+      val f = File(r.dir, "valichi.json")
+      if (!f.exists()) continue
+      runCatching { GhCross.readAll(f) }.getOrNull()?.forEach { c -> if (c.to == id) add(c.reversed(r.id)) }
+    }
+    Log.i(TAG, "crossings of $id: ${out.size} (${out.groupingBy { it.to }.eachCount()})")
+    if (out.isNotEmpty()) synchronized(crossingCache) { crossingCache[key] = out }
+    return out
   }
 
   /**

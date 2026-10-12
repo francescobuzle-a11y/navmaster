@@ -256,7 +256,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
 
 /** First start without maps: suggest the country where the driver is. */
 @Composable
-fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
+fun WelcomeScreen(here: CountryInfo?, onOnline: () -> Unit = {}, onChooseOther: () -> Unit) {
   val states by AppGraph.regions.states.collectAsState()
   val settings by AppGraph.settings.settings.collectAsState()
   LaunchedEffect(Unit) { AppGraph.catalog.refresh() }
@@ -288,6 +288,8 @@ fun WelcomeScreen(here: CountryInfo?, onChooseOther: () -> Unit) {
       Spacer(Modifier.height(10.dp))
       ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v -> AppGraph.settings.update { it.copy(downloadWifiOnly = v) } }
       BigButton("Tutti i Paesi d'Europa", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.Public, BtnStyle.SECONDARY, onClick = onChooseOther)
+      BigButton("Usa subito online, senza scaricare", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST, onClick = onOnline)
+      Caption("Con internet: mappa, percorso e guida online. Le mappe si possono scaricare dopo, da «Mappe d'Europa».", size = 13, lines = 3)
      }
     }
   }

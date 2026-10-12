@@ -135,11 +135,12 @@ fun LaneAssist(lanes: List<LaneInfo>) {
 
 /**
  * Next height / weight / width / length limit or ban on the route. The round sign carries the value;
- * red with "NON PASSI" when this vehicle does not fit — the core safety warning of the project.
+ * amber, with the vehicle's own measure next to it, when the limit is under the vehicle's: a notice
+ * to look at the signs, never an alarm (the data of the map can be wrong or old).
  */
 @Composable
 fun RestrictionBanner(limit: RouteLimit, distanceM: Double, vehicleValue: String?, modifier: Modifier = Modifier) {
-  val bg = if (limit.blocking) Color(0xF2B71C1C) else NmPanel
+  val bg = if (limit.blocking) Color(0xF2B26A00) else NmPanel
   Row(
       modifier.shadow(6.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)).background(bg).padding(6.dp),
       verticalAlignment = Alignment.CenterVertically,
@@ -148,7 +149,7 @@ fun RestrictionBanner(limit: RouteLimit, distanceM: Double, vehicleValue: String
     Spacer(Modifier.width(10.dp))
     Column(Modifier.padding(end = 12.dp)) {
       Text(
-          if (limit.blocking) "NON PASSI · ${limit.label}" else limit.label,
+          if (limit.blocking) "${limit.label} · verifica la segnaletica" else limit.label,
           color = if (limit.blocking) Color.White else Color(0xFFBFC7CC),
           fontSize = 14.sp,
           fontWeight = FontWeight.Bold,
@@ -161,7 +162,7 @@ fun RestrictionBanner(limit: RouteLimit, distanceM: Double, vehicleValue: String
             fontWeight = FontWeight.Bold,
         )
         if (limit.blocking && vehicleValue != null) {
-          Text("  il mezzo: $vehicleValue", color = Color(0xFFFFE0E0), fontSize = 14.sp, modifier = Modifier.padding(bottom = 3.dp))
+          Text("  il tuo mezzo: $vehicleValue", color = Color(0xFFFFF3E0), fontSize = 14.sp, modifier = Modifier.padding(bottom = 3.dp))
         }
       }
       limit.conditional?.let { Text(it, color = Color(0xFFFFE082), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }

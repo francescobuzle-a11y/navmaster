@@ -23,7 +23,13 @@ import uniffi.ferrostar.createOsrmResponseParser
  *     of them on the tablet's graph and checks it against the vehicle's measures and loads (a route
  *     of driving-car knows nothing of a camper's 3.2 m): a route that passes a limit is not offered;
  *  1. otherwise, or when no route of openrouteservice is left: GraphHopper's own routes on the
- *     tablet, computed with openrouteservice's rules (NmImport, OrsWeighting).
+ *     tablet, computed with openrouteservice's rules (NmImport, OrsWeighting);
+ *  2. when no road respects every limit of the vehicle: the route passing the fewest of them (the
+ *     limits as a strong penalty, TruckSpec.soft), with a calm warning: never no route because of
+ *     the vehicle's measures;
+ *  3. openrouteservice's route refused for a limit, offered with the warning;
+ *  4. online without the map of the way on the tablet (a country not downloaded, or no map at
+ *     all): openrouteservice's route guided by its own Italian instructions (OrsGuide).
  *
  * The guidance (manoeuvres, Italian voice, banners, lanes, speed limits) always comes from
  * GraphHopper's graph (GhGuide), as an OSRM answer read by Ferrostar's parser. Ferrostar also calls
@@ -97,15 +103,19 @@ class OfflineRouteProvider(
         Log.i(TAG, "route ${vehicle.name} tolls=${!options.avoidTolls} alt=${options.alternates} more=${options.moreRoutes} " +
             "avoid=${options.excludePolygons.size} points=${stops.points.size} for $spec")
         note = null
+        refused = null
+        orsAnswered = false
+        softWhy = null
         // 0. online: openrouteservice's routes, followed and checked by GraphHopper; not for the
         //    "more routes" the driver asks for (GraphHopper's alternatives)
-        if (!options.moreRoutes && ors != null && ors.available()) {
-          val online = runCatching { orsRoutes(stops, spec, options) }
+        val online = ors != null && ors.available()
+        if (!options.moreRoutes && online) {
+          val found = runCatching { orsRoutes(stops, spec, options) }
               .onFailure { Log.w(TAG, "openrouteservice route failed: $it", it) }
               .getOrNull()?.takeIf { it.isNotEmpty() }
-          if (online != null) {
-            mark(online, "ORS")
-            return@withContext online.also(onRoutes)
+          if (found != null) {
+            mark(found, "ORS")
+            return@withContext found.also(onRoutes)
           }
         }
         // 1. GraphHopper on the tablet, with openrouteservice's rules
@@ -121,12 +131,90 @@ class OfflineRouteProvider(
           mark(local, "GH")
           return@withContext local.also(onRoutes)
         }
-        throw IllegalStateException("Nessun percorso: ${gh.problem ?: ghNote ?: "GraphHopper non ha trovato un percorso"}")
+        val problem = gh.problem
+        // 2. no road respects every limit of the vehicle: the route that passes the fewest of them
+        //    (the limits as a strong penalty), never no route at all because of the measures
+        if (problem == null) {
+          val soft = spec.copy().apply { this.soft = true }
+          val relaxed = runCatching { ghRoutes(stops, soft, 0, checkWith = spec) }
+              .onFailure { Log.w(TAG, "GraphHopper soft route failed: $it", it) }
+              .getOrNull()?.takeIf { it.isNotEmpty() }
+          if (relaxed != null) {
+            note = "Nessuna strada rispetta tutte le misure del mezzo: è il percorso con meno limiti" +
+                (softWhy?.let { " (segnalato: $it)" } ?: "") + ". Verifica la segnaletica sul posto."
+            mark(relaxed, "GH")
+            return@withContext relaxed.also(onRoutes)
+          }
+        }
+        // 3. openrouteservice's route refused for a limit: offered all the same, with the warning
+        refused?.let { (f, why) ->
+          ghGuide(f, stops, spec)?.let { r ->
+            note = "Sul percorso è segnalato un limite del mezzo ($why): verifica la segnaletica sul posto."
+            mark(listOf(r), "ORS")
+            return@withContext listOf(r).also(onRoutes)
+          }
+        }
+        // 4. online, without the map of the way on the tablet: openrouteservice's own guidance
+        if (online) {
+          val direct = runCatching { orsDirect(stops, spec, options) }
+              .onFailure { Log.w(TAG, "openrouteservice guidance failed: $it", it) }
+              .getOrNull()?.takeIf { it.isNotEmpty() }
+          if (direct != null) {
+            note = "Guida online di openrouteservice: " + (problem?.let { "$it. " } ?: "") +
+                "Senza la mappa scaricata mancano corsie, limiti e punti difficili della strada."
+            mark(direct, "ORS")
+            return@withContext direct.also(onRoutes)
+          }
+        }
+        val why = problem ?: ghNote ?: "GraphHopper non ha trovato un percorso"
+        throw IllegalStateException("Nessun percorso: $why" + if (!online) ". Collegati a internet per la guida online." else "")
       }
 
+  // openrouteservice's best route followed on the graph but refused for a limit (route, why)
+  @Volatile private var refused: Pair<GhEngine.Result, String>? = null
+  // openrouteservice answered this time (its instructions can guide the route)
+  @Volatile private var orsAnswered = false
+  // the first limit passed by the soft route
+  @Volatile private var softWhy: String? = null
+
+  /**
+   * openrouteservice's route guided by its own instructions (OrsGuide), for the places without a
+   * map on the tablet. A camper with real measures asks for the lorry profile with them (the car
+   * profile knows no heights or weights), and falls back to the car one.
+   */
+  private fun orsDirect(s: Stops, spec: TruckSpec, options: TripOptions): List<Route>? {
+    val o = ors ?: return null
+    val big = spec.heightM > 3.0 || spec.weightT > 3.5 || spec.widthM > 2.35 || spec.lengthM > 8.0
+    var text: String? = null
+    var n = 0
+    if (!spec.hgv && big) {
+      val asLorry = spec.copy().apply { hgv = true; vehicleType = "none" }
+      if (o.routes(s.points, asLorry, 0) != null) { text = o.lastText; n = o.lastPoints }
+    }
+    if (text == null) {
+      if (!orsAnswered || o.lastPoints != s.points.size) {
+        if (o.routes(s.points, spec, options.alternates.coerceAtLeast(0)) == null) return null
+      }
+      text = o.lastText
+      n = o.lastPoints
+    }
+    val answer = text
+    if (answer == null || n != s.points.size) return null
+    val out = mutableListOf<Route>()
+    for (i in 0 until 3) {
+      val osrm = runCatching { OrsGuide.osrm(answer, i) }.onFailure { Log.w(TAG, "openrouteservice guidance not written: $it") }.getOrNull() ?: break
+      val route = runCatching { parser.parseResponse(osrm.encodeToByteArray()).firstOrNull() }
+          .onFailure { Log.w(TAG, "openrouteservice guidance not readable: $it") }.getOrNull() ?: break
+      Log.i(TAG, String.format(java.util.Locale.US, "route guided by openrouteservice: %.1f km, %d steps", route.distance / 1000, route.steps.size))
+      out += route
+    }
+    return out.takeIf { it.isNotEmpty() }
+  }
+
   /** GraphHopper's routes through the stops (with alternatives when asked), each guided from its graph; null when none. */
-  private fun ghRoutes(s: Stops, spec: TruckSpec, alternates: Int): List<Route>? {
+  private fun ghRoutes(s: Stops, spec: TruckSpec, alternates: Int, checkWith: TruckSpec? = null): List<Route>? {
     val found = gh.routes(s.points, s.headings, spec, 1 + alternates) ?: return null
+    if (checkWith != null) softWhy = found.firstOrNull()?.takeIf { it.ok() }?.let { gh.closedOn(it, checkWith) }
     found.firstOrNull()?.note?.let { Log.i(TAG, "GraphHopper $it") }
     val ok = found.filter { it.ok() }
     if (ok.isEmpty()) {
@@ -138,7 +226,7 @@ class OfflineRouteProvider(
     for ((n, r) in ok.withIndex()) {
       Log.i(TAG, String.format(java.util.Locale.US, "GraphHopper route %d/%d: %.1f km, %d min, %d points in %d ms",
           n + 1, ok.size, r.distanceM / 1000, r.timeMs / 60000, r.lat.size, r.computeMs))
-      val guided = ghGuide(r, s, spec)
+      val guided = ghGuide(r, s, checkWith ?: spec)
       if (guided != null) out += guided
       else if (n == 0) {
         ghNote = "la guida del percorso non è stata calcolata (grafo da aggiornare?)"
@@ -181,6 +269,7 @@ class OfflineRouteProvider(
    */
   private fun orsRoutes(s: Stops, spec: TruckSpec, options: TripOptions): List<Route>? {
     val found = ors?.routes(s.points, spec, options.alternates.coerceAtLeast(0)) ?: return null
+    orsAnswered = true
     val out = mutableListOf<Route>()
     for ((n, r) in found.withIndex()) {
       Log.i(TAG, String.format(java.util.Locale.US, "openrouteservice route %d/%d: %.1f km, %d min, %d points",
@@ -199,7 +288,8 @@ class OfflineRouteProvider(
       if (closed != null) {
         Log.w(TAG, "openrouteservice's route ${n + 1} refused: $closed")
         if (n == 0) {
-          note = "Il percorso di openrouteservice passava da $closed: calcolato sul tablet rispettando i limiti del mezzo"
+          // computed on the tablet with the vehicle's limits; kept in case no other road is left
+          refused = f to closed
           return null
         }
         continue

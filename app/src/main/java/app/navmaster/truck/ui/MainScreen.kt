@@ -187,7 +187,18 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var countryHintClosed by remember { mutableStateOf(false) }
   val trafficTiles = if (settings.liveTraffic && settings.trafficOnMap && app.navmaster.truck.live.ApiKeys.tomtom(settings).isNotBlank())
     app.navmaster.truck.live.TrafficFeeds.tomtomFlowTiles(app.navmaster.truck.live.ApiKeys.tomtom(settings), night) else null
-  val styleUri = remember(installed, night, satellite, trafficTiles) { MapStyles.styleUri(context, installed, night, satellite, trafficTiles) }
+  // the map from the internet where the vehicle or the destination is in a country not downloaded
+  val destination = plan.stops.lastOrNull()?.coordinate
+  val destCountry = remember(destination?.let { (it.lat * 20).toInt() to (it.lng * 20).toInt() }) {
+    destination?.let { AppGraph.catalog.countryAt(it.lat, it.lng) }
+  }
+  val onlineMap = remember(settings.onlineMap, installed, here?.id, destCountry?.id) {
+    val withMap = installed.filter { it.map.exists() }.map { it.id }.toSet()
+    settings.onlineMap && (withMap.isEmpty() || (here != null && here.id !in withMap) || (destCountry != null && destCountry.id !in withMap))
+  }
+  val styleUri = remember(installed, night, satellite, trafficTiles, onlineMap) {
+    MapStyles.styleUri(context, installed, night, satellite, trafficTiles, onlineMap)
+  }
 
   // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible. Near a
   // turn in town it comes closer and leans a little more, smoothly, and goes back after it
@@ -290,7 +301,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val nextLimitDist = nextLimit?.let { it.alongM - traveled }
   val nextCrit = nav.criticalities.firstOrNull { it.severity != Severity.INFO && it.endM - traveled > -10 && it.startM - traveled < 3000 }
 
-  // spoken warning for a limit the vehicle cannot pass, at 3 km and at 800 m
+  // spoken notice (calm, no alarm) for a limit over the vehicle's measures, at 3 km and at 800 m
   val spoken = remember { mutableSetOf<String>() }
   LaunchedEffect(nextLimit, nextLimitDist?.let { (it / 100).roundToInt() }) {
     val l = nextLimit ?: return@LaunchedEffect
@@ -300,8 +311,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       val key = "${l.lat},${l.lon},$at"
       if (d <= at && d > at - 400 && key !in spoken) {
         spoken += key
-        vm.say("Attenzione: tra ${app.navmaster.truck.nav.SpeechIt.distance(d)}, ${l.label} ${l.signValue ?: ""}. " +
-            "Il mezzo non passa, verificare la segnaletica." + (if (l.ver == "dubbio") " Il dato è da verificare." else ""))
+        vm.say("Tra ${app.navmaster.truck.nav.SpeechIt.distance(d)} è segnalato: ${l.label} ${l.signValue ?: ""}. " +
+            "Verifica la segnaletica." + (if (l.ver == "dubbio") " Il dato è da confermare." else ""))
       }
     }
   }
@@ -554,8 +565,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       )
     }
 
-    if (installed.isEmpty() && sheet != Sheet.REGIONS) {
-      WelcomeScreen(here) { sheet = Sheet.REGIONS }
+    if (installed.isEmpty() && !settings.onlineWithoutMaps && sheet != Sheet.REGIONS) {
+      WelcomeScreen(here, onOnline = { AppGraph.settings.update { it.copy(onlineWithoutMaps = true) } }) { sheet = Sheet.REGIONS }
     }
 
     when (sheet) {

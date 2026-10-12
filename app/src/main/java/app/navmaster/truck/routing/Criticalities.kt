@@ -91,6 +91,8 @@ class CriticalityFinder(regions: RegionManager) {
     val out = mutableListOf<Criticality>()
     val line = a.route.geometry
     val heavy = v.type != VehicleType.FURGONE && (v.type != VehicleType.CAMPER || v.lengthM > 8)
+    // narrow roads, tight curves, ramps and turns: only when the driver wants them (Settings)
+    val difficulties = runCatching { app.navmaster.truck.AppGraph.settings.settings.value.roadDifficulties }.getOrDefault(false)
     fun headingAt(along: Double): Double = Geo.bearing(a.pointAt((along - 10).coerceAtLeast(0.0)), a.pointAt(along + 10))
 
     // 1. mapped difficulties
@@ -126,7 +128,7 @@ class CriticalityFinder(regions: RegionManager) {
     }
 
     // 2. exit ramps with the swept path of this vehicle
-    if (heavy) {
+    if (heavy && difficulties) {
       for ((span, edges) in a.ramps) {
         if (out.any { it.kind == CritKind.RAMP && it.startM < span.endM && it.endM > span.startM }) continue
         if (span.length < 25 || System.currentTimeMillis() > deadline) continue
@@ -150,7 +152,7 @@ class CriticalityFinder(regions: RegionManager) {
     }
 
     // 3. junctions: turns of 50 degrees or more on ordinary roads
-    if (heavy && v.lengthM >= 9.0) {
+    if (heavy && difficulties && v.lengthM >= 9.0) {
       var along = 0.0
       val steps = a.route.steps
       for ((i, step) in steps.withIndex()) {
@@ -211,9 +213,10 @@ class CriticalityFinder(regions: RegionManager) {
         else -> null
       }
       if (l.blocking) {
-        out += Criticality("limit:${l.kind}:${l.alongM.toLong()}", CritKind.LIMIT, Severity.CRITICAL,
+        // a notice, not an alarm: the map's data can be wrong or old, the signs on the road decide
+        out += Criticality("limit:${l.kind}:${l.alongM.toLong()}", CritKind.LIMIT, Severity.WARN,
             "${l.label} ${l.signValue ?: ""}".trim(),
-            (l.name?.let { "$it: " } ?: "") + "il mezzo non rispetta questo limite." + (l.conditional?.let { " ($it)" } ?: ""),
+            (l.name?.let { "$it: " } ?: "") + "limite segnalato sotto le misure del mezzo, verifica la segnaletica." + (l.conditional?.let { " ($it)" } ?: ""),
             l.alongM, l.alongM + 10, l.lat, l.lon, headingAt(l.alongM), osm = l.osm, limitKind = l.kind)
       } else if (margin != null && margin >= 0 && margin < (if (l.kind == "maxweight") 1.0 else 0.15)) {
         out += Criticality("margin:${l.kind}:${l.alongM.toLong()}", CritKind.LIMIT, Severity.WARN,
@@ -243,7 +246,7 @@ class CriticalityFinder(regions: RegionManager) {
       }
     }
 
-    val sorted = out.sortedBy { it.startM }
+    val sorted = (if (difficulties) out else out.filter { it.kind !in DIFFICULTIES }).sortedBy { it.startM }
     Log.i("NavMasterCrit", "criticalities: ${sorted.size} (${sorted.count { it.severity == Severity.CRITICAL }} critical) " +
         "from ${rows.size} rows in ${System.currentTimeMillis() - started} ms, $skipped near the route but on other roads, " +
         "${a.junctions.size} junctions")
@@ -406,6 +409,8 @@ class CriticalityFinder(regions: RegionManager) {
   }
 
   companion object {
+    /** The road difficulties estimated from the map, shown only when the driver asks for them. */
+    val DIFFICULTIES = setOf(CritKind.NARROW, CritKind.CURVE, CritKind.RAMP, CritKind.JUNCTION)
     fun dirOf(bearingDeg: Double): XY {
       val r = Math.toRadians(bearingDeg)
       return XY(kotlin.math.sin(r), kotlin.math.cos(r))

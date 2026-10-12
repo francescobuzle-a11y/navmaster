@@ -46,6 +46,11 @@ public final class TruckSpec {
   public int route = 0;
   /** Roads (edge ids) made twice as costly: those of the routes already found, to find another one. */
   public com.carrotsearch.hppc.IntHashSet penalized = null;
+  /**
+   * The vehicle's limits as a strong penalty instead of a barrier: used only when no road at all
+   * respects them, so the driver always gets the route that passes the fewest limits.
+   */
+  public boolean soft = false;
   /** Zones to avoid: each one a closed ring of [lat, lon]. */
   public final List<double[][]> avoidZones = new ArrayList<>();
 
@@ -58,6 +63,7 @@ public final class TruckSpec {
     t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest; t.route = route;
     t.avoidZones.addAll(avoidZones);
     t.penalized = penalized;
+    t.soft = soft;
     return t;
   }
 
@@ -65,6 +71,6 @@ public final class TruckSpec {
   public String toString() {
     return "TruckSpec{hgv=" + hgv + (hgv && !"hgv".equals(vehicleType) ? "/" + vehicleType : "") + ", h=" + heightM + ", w=" + widthM + ", l=" + lengthM + ", t=" + weightT +
         ", axle=" + axleLoadT + ", hazmat=" + hazmat + (tunnelCode != 0 ? "/" + tunnelCode : "") + (hazmatWater ? "/water" : "") + ", v=" + topSpeedKmh + ", route=" + route + ", tolls=" + !avoidTolls +
-        ", ferries=" + !avoidFerries + ", unpaved=" + !avoidUnpaved + ", zones=" + avoidZones.size() + "}";
+        ", ferries=" + !avoidFerries + ", unpaved=" + !avoidUnpaved + ", zones=" + avoidZones.size() + (soft ? ", soft" : "") + "}";
   }
 }

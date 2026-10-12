@@ -193,8 +193,12 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Calcolo online") {
     ToggleRow("Con internet usa openrouteservice",
         if (AppGraph.ors.key.isBlank()) "Non attivo: manca la chiave del servizio nell'app"
-        else "Percorso calcolato online con le misure del mezzo (scheda ORS); senza rete GraphHopper sul tablet", s.onlineRouting) { v ->
+        else "Percorso calcolato online con le misure del mezzo (scheda ORS); senza rete GraphHopper sul tablet. " +
+            "Dove la mappa non è scaricata guida online", s.onlineRouting) { v ->
       set { it.copy(onlineRouting = v) }
+    }
+    ToggleRow("Mappa online dove non è scaricata", "OpenFreeMap, gratuita: si vede la mappa anche nei Paesi non scaricati (usa dati)", s.onlineMap) { v ->
+      set { it.copy(onlineMap = v) }
     }
   }
   Card("Strade a pagamento") {
@@ -206,9 +210,15 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       }
     }
   }
-  Card("Svincoli") {
-    ToggleRow("Chiedimi prima degli svincoli stretti", "Ti propone l'uscita successiva se la curva è troppo stretta per il mezzo", s.askTightRamps) { v ->
-      set { it.copy(askTightRamps = v) }
+  Card("Strade strette e curve") {
+    ToggleRow("Avvisi su strade strette e curve", "Spento: il percorso rispetta già le misure del mezzo, senza avvisi su corsie, " +
+        "curve, svincoli e svolte strette stimati dalla mappa", s.roadDifficulties) { v ->
+      set { it.copy(roadDifficulties = v) }
+    }
+    if (s.roadDifficulties) {
+      ToggleRow("Chiedimi prima degli svincoli stretti", "Ti propone l'uscita successiva se la curva è troppo stretta per il mezzo", s.askTightRamps) { v ->
+        set { it.copy(askTightRamps = v) }
+      }
     }
   }
 }

@@ -1846,7 +1846,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     return when {
       "non installate" in m -> m
       "171" in m || "No suitable edges" in m -> "Nessuna strada percorribile vicino alla partenza o alla destinazione"
-      "442" in m || "No path" in m -> "Nessun percorso compatibile con le misure del mezzo, o manca la mappa di un Paese attraversato"
+      "442" in m || "No path" in m -> "Nessun collegamento stradale trovato: forse manca la mappa di un Paese attraversato (collegati a internet per la guida online)"
       else -> "Calcolo non riuscito: $m"
     }
   }

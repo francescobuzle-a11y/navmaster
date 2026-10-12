@@ -140,6 +140,15 @@ data class Settings(
     /** Minutes more the driver accepts to save the toll (below this the app suggests it). */
     val tollMaxExtraMin: Int = 5,
     val askTightRamps: Boolean = true,
+    /**
+     * Warnings about narrow roads, tight curves, ramps and turns (estimated from the map): off by
+     * default, the route already respects the measures of the vehicle.
+     */
+    val roadDifficulties: Boolean = false,
+    /** Where no map is downloaded, the map from the internet (OpenFreeMap, free, no key). */
+    val onlineMap: Boolean = true,
+    /** The driver chose to start without downloading any map (online guidance). */
+    val onlineWithoutMaps: Boolean = false,
     val voiceWarnings: Boolean = true,
     val voiceLevel: VoiceLevel = VoiceLevel.ESSENTIAL,
     /** The picture of the junction with lanes and direction signs, at exits and complex turns. */

@@ -35,17 +35,29 @@ object MapStyles {
         NightMode.AUTO -> now.hour >= 20 || now.hour < 7
       }
 
-  /** [traffic]: tile address of the traffic colours drawn over the roads (TomTom, with the driver's key). */
-  fun styleUri(context: Context, regions: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String? = null): String {
+  /**
+   * The map from the internet where no map is downloaded: OpenFreeMap (free, no key, no limit on
+   * requests; the same OpenMapTiles schema as the downloaded maps, so the same style draws it).
+   */
+  const val ONLINE_TILES = "https://tiles.openfreemap.org/planet"
+  const val ONLINE_ATTRIBUTION = "OpenFreeMap © OpenMapTiles · Dati © OpenStreetMap contributors"
+
+  /**
+   * [traffic]: tile address of the traffic colours drawn over the roads (TomTom, with the driver's key).
+   * [online]: the map from the internet too, under the downloaded ones (where the vehicle or the
+   * trip is in a country not downloaded).
+   */
+  fun styleUri(context: Context, regions: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String? = null, online: Boolean = false): String {
     val maps = regions.filter { it.map.exists() }
-    val name = "style-${if (night) "n" else "d"}${if (satellite) "s" else ""}${if (traffic != null) "t" else ""}.json"
+    val name = "style-${if (night) "n" else "d"}${if (satellite) "s" else ""}${if (traffic != null) "t" else ""}${if (online) "o" else ""}.json"
     val out = File(context.filesDir, name)
-    val text = if (maps.isEmpty() && !satellite) EMPTY.replace("{BG}", if (night) "#1B1F24" else "#F2EFE9") else build(context, maps, night, satellite, traffic)
+    val text = if (maps.isEmpty() && !satellite && !online) EMPTY.replace("{BG}", if (night) "#1B1F24" else "#F2EFE9")
+        else build(context, maps, night, satellite, traffic, online)
     if (!out.exists() || out.readText() != text) out.writeText(text)
     return "file://" + out.absolutePath
   }
 
-  private fun build(context: Context, maps: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String?): String {
+  private fun build(context: Context, maps: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String?, online: Boolean = false): String {
     val asset = if (night) "style/style-night.json" else "style/style-day.json"
     val base = json.parseToJsonElement(context.assets.open(asset).bufferedReader().use { it.readText() }).jsonObject
     val omt = base["sources"]?.jsonObject?.get("omt")?.jsonObject
@@ -55,6 +67,9 @@ object MapStyles {
       putJsonObject("sources") {
         maps.forEachIndexed { i, r ->
           if (omt != null) put("omt$i", JsonObject(omt + ("url" to JsonPrimitive("pmtiles://file://" + r.map.absolutePath))))
+        }
+        if (online && omt != null) {
+          put("online", JsonObject(omt + mapOf("url" to JsonPrimitive(ONLINE_TILES), "attribution" to JsonPrimitive(ONLINE_ATTRIBUTION))))
         }
         if (satellite) {
           putJsonObject("sat") {
@@ -101,6 +116,10 @@ object MapStyles {
           }
           // on the satellite view the imagery replaces fields, water and buildings
           if (satellite && (type == "fill" || type == "fill-extrusion")) continue
+          // the map from the internet first: the downloaded ones are drawn over it
+          if (online && omt != null) {
+            add(JsonObject(layer + mapOf("id" to JsonPrimitive("${layer["id"]?.jsonPrimitive?.contentOrNull}-online"), "source" to JsonPrimitive("online"))))
+          }
           maps.forEachIndexed { i, _ ->
             add(JsonObject(layer + mapOf("id" to JsonPrimitive("${layer["id"]?.jsonPrimitive?.contentOrNull}-$i"), "source" to JsonPrimitive("omt$i"))))
           }

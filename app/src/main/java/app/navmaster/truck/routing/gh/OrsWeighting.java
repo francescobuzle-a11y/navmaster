@@ -62,6 +62,8 @@ public final class OrsWeighting implements Weighting {
   static final double SPEED_CONV = 3.6;
   /** Parameters.Routing.DEFAULT_HEADING_PENALTY. */
   static final double HEADING_PENALTY = 300;
+  /** A road over the vehicle's limits in the soft mode (TruckSpec.soft): its time x 10 plus half an hour (30 km for the shortest). */
+  static final double SOFT_FACTOR = 10, SOFT_PENALTY_S = 1800, SOFT_PENALTY_M = 30_000;
   /** LimitedAccessWeighting's factors for motor vehicles. */
   static final double DESTINATION_FACTOR = 10, PRIVATE_FACTOR = 10, CUSTOMERS_FACTOR = 1.5, SERVICE_FACTOR = 1.2;
   /** openrouteservice does not accept a lower "maximum_speed" (maximum_speed_lower_bound). */
@@ -167,7 +169,11 @@ public final class OrsWeighting implements Weighting {
   @Override
   public double calcEdgeWeight(EdgeIteratorState edge, boolean reverse) {
     if (!(reverse ? edge.getReverse(access) : edge.get(access))) return Double.POSITIVE_INFINITY;
-    if (spec != null && !accept(edge)) return Double.POSITIVE_INFINITY;
+    boolean over = false;
+    if (spec != null && !accept(edge)) {
+      if (!spec.soft) return Double.POSITIVE_INFINITY;
+      over = true;
+    }
     double v = speed(edge, reverse);
     if (v == 0) return Double.POSITIVE_INFINITY;
     double distance = edge.getDistance();
@@ -186,6 +192,9 @@ public final class OrsWeighting implements Weighting {
     }
     w *= limitedAccess(edge);
     if (spec != null && spec.penalized != null && spec.penalized.contains(edge.getEdge())) w *= 2;
+    // a road over the vehicle's limits, when nothing else is left: as a long detour, so the route
+    // passes the fewest of them (and only where there is no other way)
+    if (over) w = w * SOFT_FACTOR + (kind == Kind.SHORTEST ? SOFT_PENALTY_M : SOFT_PENALTY_S);
     return w;
   }
 
