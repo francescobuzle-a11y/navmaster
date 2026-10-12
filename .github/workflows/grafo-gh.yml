@@ -142,7 +142,38 @@ jobs:
         run: |
           TAG="dati-${{ matrix.region }}"
           R="${{ github.repository }}"
-          gh release download "$TAG" -R "$R" -p manifest.json -D old
+          # the manifest of the country; when it is missing (a publication cut off by an error of
+          # GitHub), it is made again from the files of the release, downloaded and checked here
+          if ! gh release download "$TAG" -R "$R" -p manifest.json -D old; then
+            echo "manifest.json missing: made again from the files of the release"
+            mkdir -p old/files
+            for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name' | grep -vE '^(manifest\.json|gh(-camion|-auto)?\.tar\.gz(\.part[0-9]+)?)$' || true); do
+              gh release download "$TAG" -R "$R" -p "$a" -D old/files
+            done
+            REGION="${{ matrix.region }}" python3 - <<'PY'
+          import hashlib, json, os, re, time
+          region = os.environ["REGION"]
+          label = next((c["name"] for c in json.load(open(os.path.join(os.environ["GITHUB_WORKSPACE"], "data/countries.json"))) if c["id"] == region), region)
+          d = "old/files"
+          groups = {}
+          for p in sorted(os.listdir(d)):
+              groups.setdefault(re.sub(r"\.part[0-9]+$", "", p), []).append(p)
+          files = []
+          for n, ps in sorted(groups.items()):
+              parts = []
+              for p in ps:
+                  h = hashlib.sha256()
+                  with open(os.path.join(d, p), "rb") as fh:
+                      for chunk in iter(lambda: fh.read(1 << 20), b""):
+                          h.update(chunk)
+                  parts.append({"name": p, "size": os.path.getsize(os.path.join(d, p)), "sha256": h.hexdigest()})
+              files.append({"file": n, "size": sum(x["size"] for x in parts), "parts": parts})
+          m = {"region": region, "label": label, "built": time.strftime("%Y-%m-%d"), "routing": "graphhopper", "format": 2, "files": files}
+          json.dump(m, open("old/manifest.json", "w"), indent=1)
+          print("manifest made again:", [f["file"] for f in files])
+          PY
+            rm -rf old/files
+          fi
           python3 - <<'PY'
           import hashlib, json, os
           m = json.load(open("old/manifest.json"))
@@ -167,7 +198,14 @@ jobs:
           for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name' | grep -E '^gh(-camion|-auto)?\.tar\.gz(\.part[0-9]+)?$' || true); do
             [ -f "pub/$a" ] || gh release delete-asset "$TAG" "$a" -R "$R" --yes
           done
-          gh release upload "$TAG" pub/* -R "$R" --clobber
+          # GitHub sometimes answers 500 halfway through: tried again, manifest.json last (the
+          # tablet reads it to know what is there, so it goes up only when the files are there)
+          ok=""
+          for t in 1 2 3 4; do
+            if gh release upload "$TAG" $(ls pub/* | grep -v '/manifest\.json$') -R "$R" --clobber && gh release upload "$TAG" pub/manifest.json -R "$R" --clobber; then ok=1; break; fi
+            echo "upload failed (attempt $t), again in $((t * 30)) s"; sleep $((t * 30))
+          done
+          [ -n "$ok" ]
 
   after:
     needs: [plan, graph]
