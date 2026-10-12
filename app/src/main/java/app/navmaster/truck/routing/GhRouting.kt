@@ -211,8 +211,6 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return out
   }
 
-  /** The roads of the graph around a point with their real lanes (the junction view), empty without a graph there. */
-  @Synchronized
   /**
    * The graphs of the countries of [points] are all there, usable for [spec] and built with the
    * strong "more motorway" preference (GhEngine.STRONG_MOTORWAY_MARK): then the route asked "more
@@ -241,6 +239,8 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return runCatching { e.ahead(lat, lon, heading, metres) }.onFailure { Log.w(TAG, "ahead: $it") }.getOrNull()
   }
 
+  /** The roads of the graph around a point with their real lanes (the junction view), empty without a graph there. */
+  @Synchronized
   fun roadsAround(lat: Double, lon: Double, radiusM: Double): List<app.navmaster.truck.routing.gh.GhGuide.Road> {
     val region = regions.regionAt(lat, lon) ?: return emptyList()
     val e = runCatching { engineFor(region.id) }.getOrNull() ?: return emptyList()
