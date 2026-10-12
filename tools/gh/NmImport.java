@@ -414,6 +414,9 @@ public class NmImport {
           return limitUnit(name, 11, 0.1, OrsRules.WEIGHT_TAGS, true);
         case GhEngine.ORS_MAX_AXLE_LOAD:
           return limitUnit(name, 9, 0.1, OrsRules.AXLE_TAGS, true);
+        case GhEngine.STRONG_MOTORWAY_MARK:
+          // never set: its presence tells the tablet the graph's "more motorway" is the strong one
+          return boolUnit(name, w -> false);
         default:
           return std.createImportUnit(name);
       }

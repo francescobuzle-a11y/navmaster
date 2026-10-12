@@ -171,7 +171,9 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return when (state(region.dir, emptyList())) {
       GhState.MISSING -> "${region.label}: manca il calcolo percorsi (in «Mappe d'Europa» tocca «Aggiorna»)"
       GhState.OLD -> "${region.label}: calcolo percorsi di una versione vecchia (in «Mappe d'Europa» tocca «Aggiorna»)"
-      else -> if (GhEngine.hasLandmarks(File(region.dir, "gh"), GhEngine.profileFor(spec))) null
+      else -> if (GhEngine.hasLandmarks(File(region.dir, "gh"), GhEngine.profileFor(spec)) ||
+          (spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest &&
+              GhEngine.hasLandmarks(File(region.dir, "gh"), if (spec.hgv) GhEngine.PROFILE_TRUCK else GhEngine.PROFILE_CAR))) null
           else "${region.label}: mancano i dati per ${if (spec.hgv) "i camion" else "camper, bus e auto"} (in «Mappe d'Europa» scegli i mezzi e tocca «Aggiorna»)"
     }
   }
@@ -211,6 +213,34 @@ class GhRouting(private val context: Context, private val regions: RegionManager
 
   /** The roads of the graph around a point with their real lanes (the junction view), empty without a graph there. */
   @Synchronized
+  /**
+   * The graphs of the countries of [points] are all there, usable for [spec] and built with the
+   * strong "more motorway" preference (GhEngine.STRONG_MOTORWAY_MARK): then the route asked "more
+   * motorway" is computed on the tablet, where that preference lives, rather than online.
+   */
+  @Synchronized
+  fun strongMotorwayFor(points: List<DoubleArray>, spec: TruckSpec): Boolean {
+    if (spec.route != GhEngine.ROUTE_MOTORWAY || spec.shortest) return false
+    val ids = points.map { regions.regionAt(it[0], it[1])?.id ?: return false }.distinct()
+    for (id in ids) {
+      val e = runCatching { engineFor(id) }.getOrNull() ?: return false
+      if (!e.strongMotorway() || !e.ready(GhEngine.profileFor(spec))) return false
+    }
+    return true
+  }
+
+  /**
+   * A point about [metres] ahead of ([lat], [lon]) along the road being driven (direction
+   * [heading]), following the road through its junctions straight on: [lat, lon, bearing there],
+   * or null when the graph is not there or the road ends before.
+   */
+  @Synchronized
+  fun ahead(lat: Double, lon: Double, heading: Double, metres: Double): DoubleArray? {
+    val region = regions.regionAt(lat, lon) ?: return null
+    val e = runCatching { engineFor(region.id) }.getOrNull() ?: return null
+    return runCatching { e.ahead(lat, lon, heading, metres) }.onFailure { Log.w(TAG, "ahead: $it") }.getOrNull()
+  }
+
   fun roadsAround(lat: Double, lon: Double, radiusM: Double): List<app.navmaster.truck.routing.gh.GhGuide.Road> {
     val region = regions.regionAt(lat, lon) ?: return emptyList()
     val e = runCatching { engineFor(region.id) }.getOrNull() ?: return emptyList()
@@ -353,8 +383,8 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     fun hasPackage(regionDir: File, pkg: String): Boolean {
       val dir = File(regionDir, "gh")
       return when (pkg) {
-        PACKAGE_TRUCK -> GhEngine.profilesOf(true).all { GhEngine.hasLandmarks(dir, it) }
-        PACKAGE_CAR -> GhEngine.profilesOf(false).all { GhEngine.hasLandmarks(dir, it) }
+        PACKAGE_TRUCK -> GhEngine.profilesOf(true).all { it in GhEngine.OPTIONAL_PROFILES || GhEngine.hasLandmarks(dir, it) }
+        PACKAGE_CAR -> GhEngine.profilesOf(false).all { it in GhEngine.OPTIONAL_PROFILES || GhEngine.hasLandmarks(dir, it) }
         else -> File(dir, "properties").exists()
       }
     }

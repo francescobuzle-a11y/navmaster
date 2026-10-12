@@ -21,6 +21,10 @@ The official lists used for the speed cameras (fetched on GitHub, only for their
   Spain: radares fijos y de tramo, DGT NAP (DATEX II, CC BY 4.0), to confirm and to add.
 Italy publishes the list of the approved devices (velox.mit.gov.it) without their positions:
 there the cameras stay "osm".
+A speed camera of OpenStreetMap is "doppio" also when it is the device of an enforcement relation
+(type=enforcement, members from/to/device), and "dubbio" when it is a bare point (no speed, no
+direction, no name, no description, no relation) on a motorway or trunk road: those are often old
+mistakes (SOS posts, gantries, cameras long gone); the app announces them only if asked to.
 
 The sections under average speed control (Tutor in Italy, ETVM in France, trajectcontrole…) go in
 their own table «sections» (start and end point in the direction of travel, the limit), from the
@@ -53,6 +57,10 @@ OFFICIAL = {
 # an official camera and OSM's are the same within this distance (the French list gives the
 # positions with 3 to 6 decimals: up to about 100 m off)
 MATCH_M = {"fr": 150, "es": 80}
+# a speed camera with one of these tags was looked at by someone: not a bare point
+CAMERA_INFO_TAGS = ("maxspeed", "maxspeed:hgv", "direction", "camera:direction", "name", "description", "enforcement",
+                    "speed_camera", "speed_camera:type", "maxspeed:type", "ref", "operator", "brand", "note", "camera:type",
+                    "check_date", "survey:date", "start_date", "traffic_sign")
 # the kinds of the French radars, as the driver is told about them
 FR_TYPES = {"ETF": "autovelox", "ETD": "autovelox (per categoria di veicolo)", "ETT": "autovelox", "ETU": "autovelox urbano",
             "ETVM": "controllo della velocità media", "ETFR": "semaforo rosso", "ETPN": "passaggio a livello"}
@@ -214,7 +222,11 @@ def limits_of(tags):
     # not mapped), raw = the direction they face ("forward", "backward" or degrees) when mapped
     if tags.get("highway") == "speed_camera" or tags.get("enforcement") == "maxspeed":
         sp = re.match(r"\s*(\d+)", tags.get("maxspeed") or "")
-        found.append(("speed_camera", float(sp.group(1)) if sp else 0.0, tags.get("direction") or tags.get("camera:direction"), "osm"))
+        # a point that says nothing but "camera" (no speed, direction, name, kind...): checked
+        # against the roads and the relations afterwards (camera_check)
+        bare = not any(k in tags for k in CAMERA_INFO_TAGS)
+        found.append(("speed_camera", float(sp.group(1)) if sp else 0.0, tags.get("direction") or tags.get("camera:direction"),
+                      "osm?" if bare else "osm"))
     if tags.get("motorhome") == "no":
         found.append(("motorhome", 0.0, "no", "osm"))
     if tags.get("bus") == "no" or tags.get("psv") == "no":
@@ -369,7 +381,7 @@ def main():
                 db.executemany("INSERT INTO cells(cell, lid) VALUES (?,?)", [(c, lid) for c in cells])
                 n_lim += 1
                 kinds[kind] = kinds.get(kind, 0) + 1
-                checks[ver] = checks.get(ver, 0) + 1
+                checks["osm" if ver == "osm?" else ver] = checks.get("osm" if ver == "osm?" else ver, 0) + 1
                 if kind == "speed_camera" and len(coords) == 1:
                     cameras.append((coords[0][1], coords[0][0], lid))
     # the official lists of speed cameras: OSM's confirmed, the missing ones added (where the list is kept up to date)
@@ -530,6 +542,128 @@ def sections(dst):
                 os.remove(f)
 
 
+def read_enforcement(opl_path):
+    """From the OPL of the speed cameras, the motorways/trunk roads and the enforcement relations:
+    {camera node id: (lat, lon)}, the set of node ids of motorways and trunk roads, their segments
+    [(lat1, lon1, lat2, lon2)], and {device node id: enforcement type} of the relations."""
+    nodes, cams, ways, rels = {}, {}, [], {}
+    with open(opl_path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split(" ")
+            if not parts or not parts[0]:
+                continue
+            kind, oid = parts[0][0], parts[0][1:]
+            fields = {p[0]: p[1:] for p in parts[1:] if p}
+            if kind == "n":
+                if "x" in fields and "y" in fields and fields["x"]:
+                    nodes[oid] = (float(fields["y"]), float(fields["x"]))
+                if "highway=speed_camera" in fields.get("T", "") and oid in nodes:
+                    cams[oid] = nodes[oid]
+            elif kind == "w":
+                tags = fields.get("T", "")
+                if re.search(r"(^|,)highway=(motorway|trunk)(_link)?(,|$)", tags):
+                    ways.append([r[1:] for r in fields.get("N", "").split(",") if r.startswith("n")])
+            elif kind == "r":
+                tags = {}
+                for kv in fields.get("T", "").split(","):
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        tags[opl_unescape(k)] = opl_unescape(v)
+                if tags.get("type") != "enforcement":
+                    continue
+                for m in fields.get("M", "").split(","):
+                    if "@" in m and len(m) > 1:
+                        ref, role = m.split("@", 1)
+                        if ref[0] == "n" and opl_unescape(role) == "device":
+                            rels[ref[1:]] = tags.get("enforcement") or ""
+    mw_nodes = set()
+    segs = []
+    for w in ways:
+        mw_nodes.update(w)
+        for a, b in zip(w, w[1:]):
+            if a in nodes and b in nodes:
+                segs.append(nodes[a] + nodes[b])
+    return cams, mw_nodes, segs, rels
+
+
+def seg_dist_m(lat, lon, a_lat, a_lon, b_lat, b_lon):
+    """Metres from a point to a segment (flat earth)."""
+    k = math.cos(math.radians(lat))
+    bx = (b_lon - a_lon) * 111320 * k
+    by = (b_lat - a_lat) * 110540
+    px = (lon - a_lon) * 111320 * k
+    py = (lat - a_lat) * 110540
+    l2 = bx * bx + by * by
+    t = 0.0 if l2 <= 0 else max(0.0, min(1.0, (px * bx + py * by) / l2))
+    return math.hypot(px - bx * t, py - by * t)
+
+
+def camera_check(dst):
+    """Every speed camera of OpenStreetMap against the roads and the enforcement relations of the
+    region extract: the device of a relation is confirmed ("doppio", and told what it checks); a
+    bare point ("osm?", see limits_of) on a motorway or trunk road, or within 30 m of one, becomes
+    "dubbio"; every other bare point stays "osm"."""
+    import os
+    import subprocess
+    db = sqlite3.connect(dst)
+    try:
+        if not os.path.exists("region.osm.pbf"):
+            print("camera check: no region.osm.pbf here, bare points kept")
+            db.execute("UPDATE limits SET ver = 'osm' WHERE kind = 'speed_camera' AND ver = 'osm?'")
+            db.commit()
+            return
+        subprocess.run(["osmium", "tags-filter", "region.osm.pbf", "n/highway=speed_camera",
+                        "w/highway=motorway,motorway_link,trunk,trunk_link", "r/type=enforcement",
+                        "-o", "cams.osm.pbf", "--overwrite"], check=True)
+        subprocess.run(["osmium", "cat", "cams.osm.pbf", "-f", "opl", "-o", "cams.opl", "--overwrite"], check=True)
+        cams, mw_nodes, segs, rels = read_enforcement("cams.opl")
+        grid = {}
+        for sg in segs:
+            for c in {cell_id(sg[0], sg[1]), cell_id(sg[2], sg[3])}:
+                grid.setdefault(c, []).append(sg)
+        WHAT = {"average_speed": "controllo della velocità media", "traffic_signals": "semaforo rosso",
+                "mindistance": "distanza di sicurezza", "check": "controllo"}
+        confirmed = doubtful = 0
+        for lid, osm, ver, name in db.execute("SELECT id, osm, ver, name FROM limits WHERE kind = 'speed_camera' AND osm LIKE 'n%'").fetchall():
+            nid = osm[1:]
+            if nid in rels:
+                what = WHAT.get(rels[nid])
+                db.execute("UPDATE limits SET ver = 'doppio', name = COALESCE(?, name) WHERE id = ?", (what, lid))
+                confirmed += 1
+                continue
+            if ver != "osm?":
+                continue
+            pos = cams.get(nid)
+            on_mw = nid in mw_nodes
+            if not on_mw and pos is not None:
+                c0 = cell_id(*pos)
+                for dc in (-100001, -100000, -99999, -1, 0, 1, 99999, 100000, 100001):
+                    for sg in grid.get(c0 + dc, []):
+                        if seg_dist_m(pos[0], pos[1], *sg) <= 30:
+                            on_mw = True
+                            break
+                    if on_mw:
+                        break
+            db.execute("UPDATE limits SET ver = ? WHERE id = ?", ("dubbio" if on_mw else "osm", lid))
+            doubtful += 1 if on_mw else 0
+        db.execute("UPDATE limits SET ver = 'osm' WHERE kind = 'speed_camera' AND ver = 'osm?'")
+        checks = json.loads(db.execute("SELECT value FROM meta WHERE key = 'checks'").fetchone()[0])
+        checks["camera_relation"] = confirmed
+        checks["camera_doubtful"] = doubtful
+        db.execute("UPDATE meta SET value = ? WHERE key = 'checks'", (json.dumps(checks),))
+        db.commit()
+        print(f"camera check: {len(cams)} cameras, {confirmed} devices of {len(rels)} relations confirmed, {doubtful} bare points on motorways marked dubbio")
+    except Exception as ex:
+        print(f"camera check: skipped ({ex})")
+        db.execute("UPDATE limits SET ver = 'osm' WHERE kind = 'speed_camera' AND ver = 'osm?'")
+        db.commit()
+    finally:
+        db.close()
+        for f in ("cams.osm.pbf", "cams.opl"):
+            if os.path.exists(f):
+                os.remove(f)
+
+
 def roads(dst):
     """The roads for the guidance online without the map (build_roads.py): from the region extract
     next to it, with osmium (as the signs). Without them the file is complete anyway."""
@@ -559,4 +693,5 @@ if __name__ == "__main__":
     main()
     signs(sys.argv[2])
     sections(sys.argv[2])
+    camera_check(sys.argv[2])
     roads(sys.argv[2])

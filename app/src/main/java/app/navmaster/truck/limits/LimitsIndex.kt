@@ -52,8 +52,9 @@ data class RouteLimit(
   val check: String?
     get() = when (ver) {
       "dubbio" -> "dato da verificare"
-      "doppio" -> if (kind == "speed_camera") "confermato dall'elenco ufficiale" else "confermato da due fonti"
+      "doppio" -> if (kind == "speed_camera") "confermato (elenco ufficiale o relazione)" else "confermato da due fonti"
       "ufficiale" -> "elenco ufficiale"
+      CameraImport.VER -> "dal tuo elenco"
       else -> null
     }
 
@@ -113,7 +114,12 @@ class LimitsIndex(regions: RegionManager) {
     val found = HashMap<String, RouteLimit>()
     val ways = a?.wayIds ?: emptySet()
     var elsewhere = 0
-    dbs.perCells(m.cells) { db, inList ->
+    var otherSide = 0
+    val settings = app.navmaster.truck.AppGraph.settings.settings.value
+    // the owner's own list of speed cameras (Impostazioni › Autovelox) comes first: where it and
+    // OpenStreetMap have the same camera, the list's one is kept
+    val imported = if (settings.speedCamerasImported) CameraImport.db() else null
+    val rows: (android.database.sqlite.SQLiteDatabase, String) -> List<RouteLimit> = { db, inList ->
       val out = mutableListOf<RouteLimit>()
       val hasVer = hasCheck(db)
       db.rawQuery(
@@ -146,6 +152,19 @@ class LimitsIndex(regions: RegionManager) {
                 // a camera stands beside the road; a barrier or a sign on a point is on it
                 lo = m.span(pts, if (kind == "speed_camera") 25.0 else if (pts.size <= 1) 3.0 else 9.0)?.first ?: continue
                 p = pts.minByOrNull { pt -> m.nearest(pt)?.first ?: 1e9 } ?: continue
+                // on a motorway or trunk road the other carriageway runs 10-25 m to the left (right
+                // where traffic keeps left): a camera over there is not on this road
+                if (kind == "speed_camera" && a != null) {
+                  val e = a.edgeAt(lo)
+                  if (e != null && (e.roadClass == "motorway" || e.roadClass == "trunk")) {
+                    val right = sideOf(m, lo, p)
+                    val away = if (e.country?.uppercase() in LHT) right else -right
+                    if (away > 7.0) {
+                      otherSide++
+                      continue
+                    }
+                  }
+                }
               }
               val cond = c.getString(4)
               val at = departure.plusSeconds((lo / avgSpeedMs).toLong())
@@ -155,11 +174,28 @@ class LimitsIndex(regions: RegionManager) {
             }
           }
       out
-    }.forEach { l -> found.putIfAbsent("${l.kind}:${(l.alongM / 30).toLong()}", l) }
+    }
+    val all = ArrayList<RouteLimit>()
+    if (imported != null) {
+      for (chunk in m.cells.chunked(400)) all += runCatching { rows(imported, chunk.joinToString(",")) }
+          .onFailure { Log.w("NavMasterLimits", "imported cameras: $it") }.getOrDefault(emptyList())
+    }
+    all += dbs.perCells(m.cells, rows)
+    all.forEach { l -> found.putIfAbsent("${l.kind}:${(l.alongM / 30).toLong()}", l) }
     val out = mutableListOf<RouteLimit>()
+    var unverified = 0
     for (l in found.values.sortedBy { it.alongM }) {
       if (out.any { it.kind == l.kind && abs(it.alongM - l.alongM) < 60 }) continue
       if (!relevant(l, vehicle)) continue
+      if (l.kind == "speed_camera") {
+        // nobody confirmed it (a bare point on a motorway: often not a camera at all): left out unless asked
+        if (l.ver == "dubbio" && !settings.speedCamerasUnverified) {
+          unverified++
+          continue
+        }
+        // the owner trusts his list only
+        if (imported != null && settings.speedCamerasImportedOnly && l.ver != CameraImport.VER) continue
+      }
       out += l
     }
     out += runCatching { sections(m, vehicle) }.getOrElse { Log.w("NavMasterLimits", "sections: $it"); emptyList() }
@@ -168,7 +204,8 @@ class LimitsIndex(regions: RegionManager) {
     if (a != null) a.laneSigns = runCatching { laneSigns(m, a) }.getOrElse { Log.w("NavMasterLimits", "lane signs: $it"); emptyList() }
     Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
         "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms, " +
-        "$elsewhere on roads next to the route left out" + (if (ways.isEmpty()) " (no way ids: matched by distance)" else ""))
+        "$elsewhere on roads next to the route left out, $otherSide cameras on the other carriageway, $unverified unverified" +
+        (if (ways.isEmpty()) " (no way ids: matched by distance)" else ""))
     for (l in out) Log.d("NavMasterLimits", "limit ${l.kind} ${l.value} @${l.alongM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, l.lat)}," +
         "${"%.5f".format(java.util.Locale.ROOT, l.lon)} blocking=${l.blocking} ${l.name ?: ""}")
     return out
@@ -310,6 +347,22 @@ class LimitsIndex(regions: RegionManager) {
     return out
   }
 
+  /** Metres of [p] to the right of the route at [alongM] (negative: to the left). */
+  private fun sideOf(m: RouteMatcher, alongM: Double, p: GeographicCoordinate): Double {
+    val a = app.navmaster.truck.core.Geo.pointAt(m.route, m.cum, (alongM - 5).coerceAtLeast(0.0))
+    val b = app.navmaster.truck.core.Geo.pointAt(m.route, m.cum, (alongM + 15).coerceAtMost(m.cum.last()))
+    val k = kotlin.math.cos(Math.toRadians(a.lat))
+    val rx = (b.lng - a.lng) * k
+    val ry = b.lat - a.lat
+    val len = kotlin.math.hypot(rx, ry)
+    if (len < 1e-9) return 0.0
+    val vx = (p.lng - a.lng) * k
+    val vy = p.lat - a.lat
+    // the cross product: positive = p to the left of the direction of travel
+    val cross = (rx * vy - ry * vx) / len
+    return -cross * 111_195.0
+  }
+
   private fun relevant(l: RouteLimit, v: VehicleProfile): Boolean =
       when (l.kind) {
         "hgv" -> v.isHgv
@@ -359,6 +412,8 @@ class LimitsIndex(regions: RegionManager) {
       }
 
   companion object {
+    /** Countries where traffic keeps left. */
+    private val LHT = setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE")
     private val DAYS = mapOf("Mo" to DayOfWeek.MONDAY, "Tu" to DayOfWeek.TUESDAY, "We" to DayOfWeek.WEDNESDAY,
         "Th" to DayOfWeek.THURSDAY, "Fr" to DayOfWeek.FRIDAY, "Sa" to DayOfWeek.SATURDAY, "Su" to DayOfWeek.SUNDAY)
 

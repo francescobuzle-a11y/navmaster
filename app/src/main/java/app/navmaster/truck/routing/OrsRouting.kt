@@ -69,11 +69,11 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
    * Up to 1 + [alternates] routes through [points] ([lat, lon]) for [spec], best first, as
    * GraphHopper's results (points, stops, distance, time); null when openrouteservice cannot be used.
    */
-  fun routes(points: List<DoubleArray>, spec: TruckSpec, alternates: Int): List<GhEngine.Result>? {
+  fun routes(points: List<DoubleArray>, spec: TruckSpec, alternates: Int, passThrough: Boolean = false): List<GhEngine.Result>? {
     if (!available() || points.size < 2) return null
     val started = SystemClock.elapsedRealtime()
     val profile = if (spec.hgv) "driving-hgv" else "driving-car"
-    val body = request(points, spec, alternates, profile).toString()
+    val body = request(points, spec, alternates, profile, passThrough).toString()
     return try {
       val req = Request.Builder()
           .url("https://api.openrouteservice.org/v2/directions/$profile/geojson")
@@ -112,7 +112,7 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
     }
   }
 
-  private fun request(points: List<DoubleArray>, s: TruckSpec, alternates: Int, profile: String): JsonObject {
+  private fun request(points: List<DoubleArray>, s: TruckSpec, alternates: Int, profile: String, passThrough: Boolean = false): JsonObject {
     val options = mutableMapOf<String, JsonElement>()
     val avoid = mutableListOf<JsonElement>()
     if (s.avoidTolls) avoid += JsonPrimitive("tollways")
@@ -156,6 +156,8 @@ class OrsRouting(private val context: Context, private val enabled: () -> Boolea
         "geometry" to JsonPrimitive(true),
     )
     if (options.isNotEmpty()) o["options"] = JsonObject(options)
+    // pass-through points (the driver going on along his road, or back onto the planned route): no u-turn at them
+    if (passThrough && points.size > 2) o["continue_straight"] = JsonPrimitive(true)
     // the vehicle's top speed (openrouteservice accepts 80 km/h and more)
     if (s.topSpeedKmh > 0) o["maximum_speed"] = JsonPrimitive(s.topSpeedKmh.coerceAtLeast(80.0))
     // alternatives: only between two points closer than 100 km (openrouteservice's limit)

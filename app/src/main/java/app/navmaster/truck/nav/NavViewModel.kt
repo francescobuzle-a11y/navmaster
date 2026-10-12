@@ -145,6 +145,9 @@ sealed class DriverPrompt {
 
   /** The road ahead is closed (official information): look for another way? */
   data class Closure(override val id: String, val event: RouteLiveEvent, val distanceM: Double) : DriverPrompt()
+
+  /** The driver left the route: go on along this road, or back onto the planned route? [askedAt]: System.currentTimeMillis. */
+  data class OffRoute(override val id: String, val askedAt: Long) : DriverPrompt()
 }
 
 data class NavExtras(
@@ -230,7 +233,182 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     // a jump of the simulation is not a wrong turn: no new route while the vehicle is being moved
     core.deviationHandler = RouteDeviationHandler { _, _, waypoints ->
-      if (_simulating.value && simJumping()) CorrectiveAction.DoNothing else CorrectiveAction.GetNewRoutes(waypoints)
+      if (_simulating.value && simJumping()) CorrectiveAction.DoNothing else onDeviation(waypoints)
+    }
+  }
+
+  // ------------------------------------------------------------------------------ leaving the route
+
+  /** Since when the vehicle is off the route (System.currentTimeMillis), 0 on it. */
+  private var offRouteSince = 0L
+  private var offRouteCalls = 0
+  /** Metres of the route driven when the vehicle was last on it. */
+  private var lastOnRouteTraveled = 0.0
+  /** The route (geometry key) the driver was already asked about: one question per route. */
+  private var offRouteAskedKey: String? = null
+
+  /**
+   * Ferrostar sees the vehicle off the route (every few seconds while it stays off): the planned
+   * route is kept and the driver chooses, by the buttons on the screen (Impostazioni › Percorso:
+   * or the app chooses by itself), whether to go on along the road he is driving or to go back.
+   * Ferrostar's own recalculation (the fastest way to the destination from here, which often means
+   * back onto the old route) is not used any more.
+   */
+  private fun onDeviation(waypoints: List<Waypoint>): CorrectiveAction {
+    val now = System.currentTimeMillis()
+    if (offRouteSince == 0L) {
+      offRouteSince = now
+      offRouteCalls = 0
+    }
+    offRouteCalls++
+    // a glitch of the position is not a wrong turn: off the route for a few seconds, seen twice
+    if (now - offRouteSince < 4_000 || offRouteCalls < 2) return CorrectiveAction.DoNothing
+    if (_nav.value.recalculating || _nav.value.prompt is DriverPrompt.OffRoute) return CorrectiveAction.DoNothing
+    val key = lastGeometryKey
+    if (offRouteAskedKey == key) return CorrectiveAction.DoNothing
+    offRouteAskedKey = key
+    Log.i(TAG, "off the route for ${(now - offRouteSince) / 1000} s at ${lastOnRouteTraveled.toInt()} m: ${AppGraph.settings.settings.value.deviation}")
+    when (AppGraph.settings.settings.value.deviation) {
+      app.navmaster.truck.settings.DeviationChoice.CONTINUE -> rerouteContinuing()
+      app.navmaster.truck.settings.DeviationChoice.RETURN -> rerouteBack()
+      else -> {
+        // a toll or ramp question still on the screen gives way: this one cannot wait
+        _nav.update { it.copy(prompt = DriverPrompt.OffRoute("off:$key:$now", now)) }
+        say("Hai lasciato il percorso. Vuoi continuare su questa strada o tornare sul percorso? Scegli con i tasti sullo schermo.")
+      }
+    }
+    return CorrectiveAction.DoNothing
+  }
+
+  /** The driver's answer to [DriverPrompt.OffRoute] (or the choice made for him after 30 s without one). */
+  fun answerOffRoute(continueHere: Boolean) {
+    if (_nav.value.prompt !is DriverPrompt.OffRoute) return
+    dismissPrompt()
+    if (continueHere) rerouteContinuing() else rerouteBack()
+  }
+
+  /** The stops of the trip still to reach, in order, as waypoints (the last one is the destination). */
+  private fun remainingStops(): List<Waypoint> {
+    val stops = _plan.value.stops
+    if (stops.size <= 1) return stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }
+    val a = _nav.value.analysis
+    val out = mutableListOf<Waypoint>()
+    for ((i, st) in stops.withIndex()) {
+      if (i < stops.size - 1 && a != null) {
+        // an intermediate stop already passed on the old route does not count any more
+        val g = a.route.geometry
+        var best = Double.MAX_VALUE
+        var at = -1.0
+        for (k in g.indices) {
+          val d = Geo.dist(g[k], st.coordinate)
+          if (d < best) {
+            best = d
+            at = a.cum[k]
+          }
+        }
+        if (best < 300 && at < lastOnRouteTraveled - 30) continue
+      }
+      out += Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+    }
+    return out
+  }
+
+  /**
+   * "Continua su questa strada": a new route to the destination that starts along the road the
+   * vehicle is driving: a pass-through point about 700 m ahead on it (the graph of the country
+   * follows the road through its junctions; the light package's roads otherwise; the direction of
+   * travel as the last resort), then the best way from there with the trip's options. The old
+   * route counts for nothing: the engine may still rejoin it later only if that is the best way.
+   */
+  private fun rerouteContinuing() {
+    val loc = navigationUiState.value.location ?: lastLocation.value ?: return
+    val lat = loc.coordinates.lat
+    val lon = loc.coordinates.lng
+    val heading = loc.courseOverGround?.degrees?.toDouble() ?: Double.NaN
+    _nav.update { it.copy(recalculating = true) }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val ahead = AppGraph.gh.ahead(lat, lon, heading, 700.0)
+            ?: runCatching { RoadAhead.along(AppGraph.roads.near(lat, lon, 1500.0), lat, lon, heading, 700.0) }.getOrNull()
+            ?: if (!heading.isNaN()) RoadAhead.straight(lat, lon, heading, 400.0) else null
+        val vias = mutableListOf<Waypoint>()
+        val headings = HashMap<String, Double>()
+        if (ahead != null && Geo.dist(lat, lon, ahead[0], ahead[1]) > 40) {
+          vias += Waypoint(coordinate = GeographicCoordinate(ahead[0], ahead[1]), kind = WaypointKind.VIA)
+          headings[TripOptions.pointKey(ahead[0], ahead[1])] = ahead[2]
+          Log.i(TAG, "go on along this road: pass-through ${"%.5f,%.5f".format(java.util.Locale.ROOT, ahead[0], ahead[1])} bearing ${ahead[2].toInt()}")
+        } else Log.w(TAG, "go on along this road: no point ahead found, plain route from here")
+        val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
+        val r = AppGraph.routes.routes(loc, vias + remainingStops(), options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
+        withContext(Dispatchers.Main) {
+          if (_simulating.value) locationProvider.enableSimulationOn(r)
+          core.replaceRoute(r)
+        }
+        say("Percorso ricalcolato da questa strada.")
+      } catch (e: Exception) {
+        Log.w(TAG, "reroute along this road: $e")
+        say("Non trovo un percorso da questa strada: prosegui con attenzione.")
+      } finally {
+        _nav.update { it.copy(recalculating = false) }
+      }
+    }
+  }
+
+  /**
+   * "Torna sul percorso": a route from here back onto the planned route and then along it: the
+   * route is asked to pass through points of the old one (1.5 km past where the vehicle left it,
+   * then every 8 km, in the old direction of travel), so it rejoins the old route the best way
+   * and keeps it from there.
+   */
+  private fun rerouteBack() {
+    val loc = navigationUiState.value.location ?: lastLocation.value ?: return
+    val a = _nav.value.analysis ?: return rerouteContinuing()
+    _nav.update { it.copy(recalculating = true) }
+    viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val stops = remainingStops()
+        val headings = HashMap<String, Double>()
+        val vias = mutableListOf<Pair<Double, Waypoint>>()
+        var m = lastOnRouteTraveled + 1500
+        while (m < a.length - 1000 && vias.size < 24) {
+          val p = a.pointAt(m)
+          val q = a.pointAt(minOf(m + 30, a.length))
+          // not next to a stop: the stop itself is the point there
+          if (stops.none { Geo.dist(it.coordinate, p) < 600 }) {
+            vias += m to Waypoint(coordinate = p, kind = WaypointKind.VIA)
+            headings[TripOptions.pointKey(p.lat, p.lng)] = Geo.bearing(p, q)
+          }
+          m += 8000
+        }
+        // the stops still to reach, in their place among the pass-through points
+        val all = (vias + stops.map { st ->
+          var best = Double.MAX_VALUE
+          var at = a.length
+          val g = a.route.geometry
+          for (k in g.indices) {
+            val d = Geo.dist(g[k], st.coordinate)
+            if (d < best) {
+              best = d
+              at = a.cum[k]
+            }
+          }
+          (if (best < 300) at else a.length + 1) to st
+        }).sortedBy { it.first }.map { it.second }
+        Log.i(TAG, "back onto the route: ${vias.size} pass-through points from ${(lastOnRouteTraveled + 1500).toInt()} m, ${stops.size} stops")
+        val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
+        val r = AppGraph.routes.routes(loc, all, options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
+        withContext(Dispatchers.Main) {
+          if (_simulating.value) locationProvider.enableSimulationOn(r)
+          core.replaceRoute(r)
+        }
+        say("Ti riporto sul percorso.")
+      } catch (e: Exception) {
+        Log.w(TAG, "reroute back: $e")
+        say("Non riesco a tornare sul percorso: ricalcolo da qui.")
+        withContext(Dispatchers.Main) { rerouteContinuing() }
+      } finally {
+        _nav.update { it.copy(recalculating = false) }
+      }
     }
   }
 
@@ -1071,6 +1249,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val key = geometryKey(geometry)
     if (key != lastGeometryKey && geometry.size > 1) {
       lastGeometryKey = key
+      offRouteSince = 0L
+      offRouteAskedKey = null
+      lastOnRouteTraveled = 0.0
+      if (extras.prompt is DriverPrompt.OffRoute) dismissPrompt()
       AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry)
       laneTracker.reset()
       if (key == simPendingKey) {
@@ -1089,6 +1271,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     val remaining = ui.progress?.distanceRemaining ?: return
     val traveled = (extras.routeLength - remaining).coerceAtLeast(0.0)
+    if (ui.routeDeviation is uniffi.ferrostar.RouteDeviation.NoDeviation) {
+      // on the route (again): the question about leaving it, if still open, is over
+      offRouteSince = 0L
+      lastOnRouteTraveled = traveled
+      if (extras.prompt is DriverPrompt.OffRoute) {
+        offRouteAskedKey = null
+        dismissPrompt()
+      }
+    } else (extras.prompt as? DriverPrompt.OffRoute)?.let { p ->
+      // nobody answered: the choice of the settings, said aloud
+      if (System.currentTimeMillis() - p.askedAt > 30_000) {
+        val goOn = AppGraph.settings.settings.value.deviationDefaultContinue
+        say(if (goOn) "Nessuna risposta: continuo su questa strada." else "Nessuna risposta: torno sul percorso.")
+        answerOffRoute(goOn)
+      }
+    }
 
     // driving time (EU rules: a 45 minute break after 4 h 30 of driving)
     val now = System.currentTimeMillis()

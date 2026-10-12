@@ -67,24 +67,48 @@ public final class GhEngine implements Closeable {
       + ", hazmat_tunnel, hazmat_water"
       // for the guidance (GhGuide): the OSM way (limits and difficulties of the tablet's data are
       // matched by way), road class, lanes, surface, country, speed limit, roundabouts, tolls, tunnels
-      + ", road_class, road_class_link, road_environment, toll, osm_way_id, lanes, surface, country, max_speed, roundabout";
+      + ", road_class, road_class_link, road_environment, toll, osm_way_id, lanes, surface, country, max_speed, roundabout"
+      // a mark (never set on a road): the graph was built with the strong "more motorway" weighting
+      + ", nm_mw_strong";
+
+  /**
+   * The graphs made from 10/2026 carry this (empty) value: their "more motorway" profiles were
+   * prepared with OrsWeighting's strong preference (stay on the motorway, leave it as little as
+   * possible); the older ones keep openrouteservice's mild "recommended" their landmarks were made with.
+   */
+  public static final String STRONG_MOTORWAY_MARK = "nm_mw_strong";
 
   /** Values of the graph's key-value store added for the guidance (tools/gh/NmImport.java). */
   public static final String KV_TURN_LANES = "nm_turn_lanes", KV_LANES_DIR = "nm_lanes_dir",
       KV_JUNCTION_REF = "nm_junction_ref", KV_NODES = "nm_nodes", KV_SERVICE = "nm_service";
 
-  /** Every profile name of the graph, in order: lorry fast/recommended/short, car fast/short. */
+  /** Every profile name of the graph, in order: lorry fast/more motorway/short, car fast/more motorway/short. */
   public static List<String> profileNames() {
     return Arrays.asList(PROFILE_TRUCK, PROFILE_TRUCK + SUFFIX_MOTORWAY, PROFILE_TRUCK + SUFFIX_SHORT,
-        PROFILE_CAR, PROFILE_CAR + SUFFIX_SHORT);
+        PROFILE_CAR, PROFILE_CAR + SUFFIX_MOTORWAY, PROFILE_CAR + SUFFIX_SHORT);
   }
 
-  /** The profile for a vehicle and the kind of route asked (cars: "more motorway" is the fastest, as in openrouteservice). */
+  /** The profiles a package may lack (graphs made before 10/2026 have no "more motorway" for cars). */
+  public static final List<String> OPTIONAL_PROFILES = Collections.singletonList(PROFILE_CAR + SUFFIX_MOTORWAY);
+
+  /** The profile for a vehicle and the kind of route asked. */
   public static String profileFor(TruckSpec s) {
     String base = s.hgv ? PROFILE_TRUCK : PROFILE_CAR;
     if (s.route == ROUTE_SHORT || s.shortest) return base + SUFFIX_SHORT;
-    if (s.route == ROUTE_MOTORWAY && s.hgv) return base + SUFFIX_MOTORWAY;
+    if (s.route == ROUTE_MOTORWAY) return base + SUFFIX_MOTORWAY;
     return base;
+  }
+
+  /** The profile of this graph for [s]: [profileFor], or the fastest one when the graph lacks it (older graphs, cars). */
+  public String profileOf(TruckSpec s) {
+    String p = profileFor(s);
+    if (!ready.contains(p) && s.route == ROUTE_MOTORWAY && !s.shortest) return s.hgv ? PROFILE_TRUCK : PROFILE_CAR;
+    return p;
+  }
+
+  /** The graph was built with the strong "more motorway" preference (see STRONG_MOTORWAY_MARK). */
+  public boolean strongMotorway() {
+    return hopper.getEncodingManager().hasEncodedValue(STRONG_MOTORWAY_MARK);
   }
 
   /**
@@ -139,7 +163,122 @@ public final class GhEngine implements Closeable {
 
   /** The landmarks of the vehicle's profile are on the tablet (its package was downloaded). */
   public boolean canRoute(TruckSpec spec) {
-    return ready.contains(profileFor(spec));
+    return ready.contains(profileOf(spec));
+  }
+
+  /** The landmarks of [profile] are on the tablet. */
+  public boolean ready(String profile) {
+    return ready.contains(profile);
+  }
+
+  /**
+   * A point about [metres] ahead of ([lat], [lon]) along the road being driven in direction
+   * [heading] (degrees, NaN = unknown), going straight on through every junction (the road that
+   * turns least, never back): the driver who left the planned route and wants to go on along this
+   * road gets a pass-through point on it. [lat, lon, bearing of the road there], or null when the
+   * position is not near a road or the road ends before.
+   */
+  public double[] ahead(double lat, double lon, double heading, double metres) {
+    com.graphhopper.routing.util.EncodingManager em = hopper.getEncodingManager();
+    com.graphhopper.routing.ev.BooleanEncodedValue access = em.hasEncodedValue(ORS_CAR_ACCESS)
+        ? em.getBooleanEncodedValue(ORS_CAR_ACCESS) : em.getBooleanEncodedValue("car_access");
+    com.graphhopper.routing.util.EdgeFilter f = e -> e.get(access) || e.getReverse(access);
+    com.graphhopper.storage.index.Snap snap = hopper.getLocationIndex().findClosest(lat, lon, f);
+    if (!snap.isValid() || snap.getQueryDistance() > 60) return null;
+    boolean dbg = Boolean.getBoolean("nm.ahead.debug");
+    com.graphhopper.storage.BaseGraph g = hopper.getBaseGraph();
+    com.graphhopper.util.EdgeIteratorState e = snap.getClosestEdge();
+    if (dbg) System.out.printf("ahead: snap %.1f m to '%s' edge %d wayIndex %d%n", snap.getQueryDistance(), e.getName(), e.getEdge(), snap.getWayIndex());
+    PointList pl = e.fetchWayGeometry(com.graphhopper.util.FetchMode.ALL);
+    int wi = Math.min(snap.getWayIndex(), pl.size() - 2);
+    double segBearing = bearing(pl.getLat(wi), pl.getLon(wi), pl.getLat(wi + 1), pl.getLon(wi + 1));
+    // the edge read the way the vehicle goes
+    boolean forward = Double.isNaN(heading) || Math.abs(angleDiff(segBearing, heading)) <= 90;
+    if (forward ? !e.get(access) : !e.getReverse(access)) {
+      // a one-way road driven the other way: the data (or the fix) are wrong, no point ahead
+      if (forward ? !e.getReverse(access) : !e.get(access)) return null;
+      forward = !forward;
+    }
+    if (!forward) {
+      e = g.getEdgeIteratorState(e.getEdge(), e.getBaseNode());
+      pl = e.fetchWayGeometry(com.graphhopper.util.FetchMode.ALL);
+      wi = pl.size() - 2 - wi;
+    }
+    // the rest of this edge from the snapped point
+    double pLat = snap.getSnappedPoint().getLat(), pLon = snap.getSnappedPoint().getLon();
+    double left = metres;
+    double lastBearing = bearing(pl.getLat(wi), pl.getLon(wi), pl.getLat(wi + 1), pl.getLon(wi + 1));
+    for (int i = wi + 1; i < pl.size(); i++) {
+      double d = metres(pLat, pLon, pl.getLat(i), pl.getLon(i));
+      if (d >= left) return new double[] {pLat + (pl.getLat(i) - pLat) * left / d, pLon + (pl.getLon(i) - pLon) * left / d, bearing(pLat, pLon, pl.getLat(i), pl.getLon(i))};
+      if (d > 1) lastBearing = bearing(pLat, pLon, pl.getLat(i), pl.getLon(i));
+      left -= d;
+      pLat = pl.getLat(i);
+      pLon = pl.getLon(i);
+    }
+    int node = e.getAdjNode();
+    int prevEdge = e.getEdge();
+    String name = e.getName();
+    com.graphhopper.routing.ev.BooleanEncodedValue rb = em.hasEncodedValue("roundabout") ? em.getBooleanEncodedValue("roundabout") : null;
+    // in a roundabout: the exit nearest to the direction the vehicle had when it came in (straight through)
+    boolean inRb = rb != null && e.get(rb);
+    double rbBearing = inRb ? segBearing : Double.NaN;
+    com.graphhopper.util.EdgeExplorer ex = g.createEdgeExplorer();
+    for (int hop = 0; hop < 80; hop++) {
+      com.graphhopper.util.EdgeIterator it = ex.setBaseNode(node);
+      com.graphhopper.util.EdgeIteratorState best = null;
+      double bestTurn = 1e9;
+      while (it.next()) {
+        if (it.getEdge() == prevEdge || !it.get(access)) continue;
+        PointList q = it.fetchWayGeometry(com.graphhopper.util.FetchMode.ALL);
+        if (q.size() < 2) continue;
+        int k = 1;
+        while (k < q.size() - 1 && metres(q.getLat(0), q.getLon(0), q.getLat(k), q.getLon(k)) < 8) k++;
+        double b = bearing(q.getLat(0), q.getLon(0), q.getLat(k), q.getLon(k));
+        boolean itRb = rb != null && it.get(rb);
+        double turn;
+        if (inRb) {
+          // staying in the ring is always possible; an exit is taken when it leads on straight
+          if (itRb) turn = 60;
+          else {
+            turn = Math.abs(angleDiff(rbBearing, b));
+            if (turn > 50) continue;
+          }
+        } else {
+          turn = Math.abs(angleDiff(lastBearing, b));
+          // the same road (name) goes on: preferred over a straighter side road
+          if (!itRb && name != null && !name.isEmpty() && name.equals(it.getName())) turn -= 25;
+        }
+        if (turn < bestTurn) {
+          bestTurn = turn;
+          best = g.getEdgeIteratorState(it.getEdge(), it.getAdjNode());
+        }
+      }
+      if (dbg) System.out.printf("ahead: hop %d at node %d left %.0f m: best '%s' turn %.0f%s%n", hop, node, left, best == null ? null : best.getName(), bestTurn, inRb ? " (roundabout)" : "");
+      // the road ends, or only turns are left (a junction, not the road going on)
+      if (best == null || bestTurn > 70) return new double[] {pLat, pLon, lastBearing};
+      boolean bestRb = rb != null && best.get(rb);
+      if (bestRb && !inRb) rbBearing = lastBearing;
+      inRb = bestRb;
+      PointList q = best.fetchWayGeometry(com.graphhopper.util.FetchMode.ALL);
+      for (int i = 1; i < q.size(); i++) {
+        double d = metres(pLat, pLon, q.getLat(i), q.getLon(i));
+        if (d >= left) return new double[] {pLat + (q.getLat(i) - pLat) * left / d, pLon + (q.getLon(i) - pLon) * left / d, bearing(pLat, pLon, q.getLat(i), q.getLon(i))};
+        if (d > 1) lastBearing = bearing(pLat, pLon, q.getLat(i), q.getLon(i));
+        left -= d;
+        pLat = q.getLat(i);
+        pLon = q.getLon(i);
+      }
+      node = best.getAdjNode();
+      prevEdge = best.getEdge();
+      if (best.getName() != null && !best.getName().isEmpty()) name = best.getName();
+    }
+    return new double[] {pLat, pLon, lastBearing};
+  }
+
+  static double angleDiff(double a, double b) {
+    double d = (b - a + 540) % 360 - 180;
+    return d;
   }
 
   /**
@@ -164,8 +303,37 @@ public final class GhEngine implements Closeable {
    * GraphHopper's own reading of the restrictions for hgv / motorcar / motor_vehicle, u-turns 60 s.
    */
   static List<Profile> profiles(boolean legacy) {
+    return profiles(legacy, profileNames());
+  }
+
+  /**
+   * The names of the profiles a graph was built with, from its "properties" file (the graphs made
+   * before 10/2026 have no "more motorway" for cars): GraphHopper opens a graph only with exactly
+   * those. [profileNames] when the file cannot be read.
+   */
+  public static List<String> graphProfiles(File dir) {
+    try {
+      com.graphhopper.storage.StorableProperties p = new com.graphhopper.storage.StorableProperties(
+          new com.graphhopper.storage.GHDirectory(dir.getAbsolutePath(), com.graphhopper.storage.DAType.RAM_STORE));
+      if (!p.loadExisting()) return profileNames();
+      String v = p.get("profiles");
+      p.close();
+      if (v == null || v.isEmpty()) return profileNames();
+      List<String> out = new ArrayList<>();
+      for (String part : v.split(",")) {
+        String n = part.contains("|") ? part.substring(0, part.indexOf('|')) : part;
+        n = n.trim();
+        if (!n.isEmpty()) out.add(n);
+      }
+      return out.isEmpty() ? profileNames() : out;
+    } catch (Exception e) {
+      return profileNames();
+    }
+  }
+
+  static List<Profile> profiles(boolean legacy, List<String> names) {
     List<Profile> out = new ArrayList<>();
-    for (String n : profileNames()) {
+    for (String n : names) {
       boolean truck = n.startsWith(PROFILE_TRUCK);
       if (legacy) {
         Profile p = profile(n, n + ".json", truck ? LEGACY_TURN_TRUCK : LEGACY_TURN_CAR);
@@ -209,11 +377,12 @@ public final class GhEngine implements Closeable {
     // as when the graph was built (only checked, nothing is imported here)
     cfg.putObject("import.osm.ignored_highways", IGNORED_HIGHWAYS);
     cfg.putObject("graph.dataaccess.default_type", mmap ? "MMAP" : "RAM_STORE");
-    cfg.setProfiles(profiles(legacy));
+    List<String> names = graphProfiles(dir);
+    cfg.setProfiles(profiles(legacy, names));
     // only the profiles whose landmarks were downloaded (lorries, other vehicles or both)
     List<LMProfile> lm = new ArrayList<>();
     java.util.Set<String> ready = new java.util.HashSet<>();
-    for (String n : profileNames()) {
+    for (String n : names) {
       if (hasLandmarks(dir, n)) {
         lm.add(new LMProfile(n));
         ready.add(n);
@@ -535,7 +704,7 @@ public final class GhEngine implements Closeable {
   private GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     List<GHPoint> pts = new ArrayList<>();
     for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
-    GHRequest req = new GHRequest(pts).setProfile(profileFor(spec)).setLocale(Locale.ITALIAN);
+    GHRequest req = new GHRequest(pts).setProfile(profileOf(spec)).setLocale(Locale.ITALIAN);
     if (headings != null && headings.size() == pts.size()) {
       boolean any = false;
       for (Double h : headings) if (h != null && !h.isNaN()) any = true;

@@ -123,6 +123,17 @@ enum class OfflineVehicles(val label: String) {
   BOTH("Tutti"),
 }
 
+/** What the app does when the driver leaves the planned route. */
+@Serializable
+enum class DeviationChoice(val label: String) {
+  /** Voice and two buttons: go on along this road, or back to the planned route. */
+  ASK("Chiedi"),
+  /** A new route from the road being driven (never back to the old one just to rejoin it). */
+  CONTINUE("Continua sulla strada"),
+  /** A route back onto the planned one. */
+  RETURN("Torna sul percorso"),
+}
+
 /** How the map looks while driving. */
 @Serializable
 enum class DriveView(val label: String) {
@@ -137,6 +148,10 @@ data class Settings(
     val onlineRouting: Boolean = true,
     /** The kind of route computed first (the others are offered next to it). */
     val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.MOTORWAY,
+    /** When the driver leaves the route: ask (buttons on the screen), or decide by itself. */
+    val deviation: DeviationChoice = DeviationChoice.ASK,
+    /** Without an answer to the question, after 30 s: go on along the road being driven (else back). */
+    val deviationDefaultContinue: Boolean = true,
     /** Minutes more the driver accepts to save the toll (below this the app suggests it). */
     val tollMaxExtraMin: Int = 5,
     val askTightRamps: Boolean = true,
@@ -162,6 +177,16 @@ data class Settings(
     val junctionView: Boolean = true,
     /** Fixed speed cameras (where the law allows the warning). */
     val speedCameras: Boolean = true,
+    /**
+     * Also the speed cameras of OpenStreetMap nobody confirmed (a point with no speed, no
+     * direction, no name, on a motorway or trunk road, in no enforcement relation: often an old
+     * mistake, an SOS post or a gantry): off, only the confirmed ones are announced.
+     */
+    val speedCamerasUnverified: Boolean = false,
+    /** The speed cameras of the list the owner imported (Impostazioni › Autovelox) are announced. */
+    val speedCamerasImported: Boolean = true,
+    /** With an imported list, the OpenStreetMap cameras are left out (the list is the only source). */
+    val speedCamerasImportedOnly: Boolean = false,
     val nightMode: NightMode = NightMode.AUTO,
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,

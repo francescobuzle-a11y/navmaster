@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,6 +52,7 @@ import app.navmaster.truck.settings.PoiCategory
 import app.navmaster.truck.settings.PoiGroup
 import app.navmaster.truck.settings.PoiSide
 import app.navmaster.truck.settings.Settings
+import app.navmaster.truck.settings.DeviationChoice
 import app.navmaster.truck.settings.TollPolicy
 import app.navmaster.truck.settings.VoiceLevel
 
@@ -186,9 +188,25 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     Spacer(Modifier.height(6.dp))
     Caption(when (s.routeKind) {
       app.navmaster.truck.vehicle.RouteKind.FASTEST -> "Il più rapido, con le regole e le velocità di openrouteservice per camion o auto."
-      app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> "Il «consigliato» di openrouteservice: il camion preferisce autostrade e strade principali ed evita le strade piccole. Per camper e auto è il più veloce."
+      app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> "Resta in autostrada il più possibile e ne esce il meno possibile: il tempo fuori " +
+          "autostrada conta più del doppio e ogni uscita pesa come minuti in più (calcolo sul tablet, grafi dal 10/2026; online è il «consigliato» di openrouteservice)."
       app.navmaster.truck.vehicle.RouteKind.SHORTEST -> "Meno chilometri, sempre su strade adatte al mezzo (il «più corto» di openrouteservice)."
-    } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 4)
+    } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 5)
+  }
+  Card("Se lasci il percorso") {
+    Pills { for (d in DeviationChoice.entries) Pill(d.label, s.deviation == d) { set { it.copy(deviation = d) } } }
+    Spacer(Modifier.height(6.dp))
+    Caption(when (s.deviation) {
+      DeviationChoice.ASK -> "La voce lo dice e sullo schermo compaiono due tasti: «Continua su questa strada» (nuovo percorso dalla strada " +
+          "che stai facendo, senza tornare indietro) o «Torna sul percorso». Nessuna risposta a voce."
+      DeviationChoice.CONTINUE -> "Senza chiedere: nuovo percorso dalla strada che stai facendo, con le tue opzioni."
+      DeviationChoice.RETURN -> "Senza chiedere: percorso per tornare su quello calcolato."
+    }, lines = 4)
+    if (s.deviation == DeviationChoice.ASK) {
+      ToggleRow("Senza risposta entro 30 s, continua sulla strada", "Spento: senza risposta torna sul percorso", s.deviationDefaultContinue) { v ->
+        set { it.copy(deviationDefaultContinue = v) }
+      }
+    }
   }
   Card("Calcolo online") {
     ToggleRow("Con internet usa openrouteservice",
@@ -252,15 +270,77 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     }
   }
   Card("Autovelox") {
-    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap. " + (if (s.enforcementEverywhere) "In tutti i Paesi " +
-        "(scelta in Traffico e segnalazioni)." else "In Germania e Svizzera non compare, in Francia solo «zona di controllo»."),
+    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap confermati (elenco ufficiale, relazione, velocità o nome) e dal tuo elenco. " +
+        (if (s.enforcementEverywhere) "In tutti i Paesi (scelta in Traffico e segnalazioni)." else "In Germania e Svizzera non compare, in Francia solo «zona di controllo»."),
         s.speedCameras) { v -> set { it.copy(speedCameras = v) } }
+    if (s.speedCameras) {
+      ToggleRow("Anche gli autovelox non confermati", "Punti di OpenStreetMap senza velocità, nome né direzione su autostrade e superstrade: " +
+          "spesso sono vecchi errori, colonnine SOS o portali. Spento: non vengono annunciati.", s.speedCamerasUnverified) { v ->
+        set { it.copy(speedCamerasUnverified = v) }
+      }
+      CameraListRow(s, set)
+    }
   }
   Card("Velocità") {
     Stepper("Avviso quando superi il limite di", s.speedWarningKmh.toDouble(), "km/h", 1.0, 0.0, 20.0, 0) { v ->
       set { it.copy(speedWarningKmh = v.toInt()) }
     }
   }
+}
+
+/**
+ * The owner's own list of speed cameras (CameraImport): the file of a speed-camera database
+ * provider (GPX or CSV, as sold for every navigator) chosen from the tablet, what was imported,
+ * and whether it is the only source.
+ */
+@Composable
+private fun CameraListRow(s: Settings, set: ((Settings) -> Settings) -> Unit) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  var info by remember { mutableStateOf(app.navmaster.truck.limits.CameraImport.info()) }
+  var message by remember { mutableStateOf<String?>(null) }
+  var busy by remember { mutableStateOf(false) }
+  val scope = androidx.compose.runtime.rememberCoroutineScope()
+  val pick = androidx.activity.compose.rememberLauncherForActivityResult(
+      androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+    if (uri == null) return@rememberLauncherForActivityResult
+    busy = true
+    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+      val name = runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+          val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+          if (c.moveToFirst() && i >= 0) c.getString(i) else null
+        }
+      }.getOrNull() ?: (uri.lastPathSegment ?: "elenco")
+      val n = runCatching { context.contentResolver.openInputStream(uri)?.use { app.navmaster.truck.limits.CameraImport.import(it, name) } ?: 0 }
+          .onFailure { android.util.Log.w("NavMasterCameras", "import: $it") }.getOrDefault(0)
+      kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        busy = false
+        info = app.navmaster.truck.limits.CameraImport.info()
+        message = if (n > 0) "Importati $n autovelox da $name." else "Nessun autovelox letto da $name: serve un GPX (waypoint) o un CSV con longitudine, latitudine e nome."
+      }
+    }
+  }
+  Spacer(Modifier.height(8.dp))
+  Caption("Il tuo elenco: il file di un fornitore di autovelox (per esempio SCDB, in GPX o CSV per navigatori) o un CSV tuo. " +
+      "Gli autovelox del file vengono annunciati come quelli dei dati scaricati.", lines = 3)
+  Spacer(Modifier.height(6.dp))
+  info?.let { i ->
+    Caption("Elenco importato: ${i.count} autovelox da «${i.file}» (${i.date}).", color = Nm.Text, lines = 2)
+    Spacer(Modifier.height(6.dp))
+    ToggleRow("Usa solo il mio elenco", "Gli autovelox di OpenStreetMap non vengono annunciati (restano Tutor e tratti dalle relazioni).",
+        s.speedCamerasImportedOnly) { v -> set { it.copy(speedCamerasImportedOnly = v) } }
+  }
+  Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    BigButton(if (info == null) "Importa un elenco (GPX/CSV)" else "Sostituisci l'elenco", Modifier.weight(1f), enabled = !busy) {
+      pick.launch(arrayOf("*/*"))
+    }
+    if (info != null) BigButton("Elimina", Modifier.weight(0.6f), style = BtnStyle.DANGER, enabled = !busy) {
+      app.navmaster.truck.limits.CameraImport.clear()
+      info = null
+      message = "Elenco eliminato."
+    }
+  }
+  message?.let { Spacer(Modifier.height(4.dp)); Caption(it, color = Nm.Text, lines = 3) }
 }
 
 @Composable

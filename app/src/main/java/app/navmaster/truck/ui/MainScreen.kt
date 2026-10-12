@@ -500,7 +500,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       nav.prompt?.let { p ->
         PromptCard(p, traveled, onRamp = vm::answerRamp, onToll = vm::answerToll,
             onBreakGo = { pk -> vm.dismissPrompt(); vm.addStopDuringNav(pk.poi.coordinate, pk.poi.title.ifBlank { "Parcheggio" }) },
-            onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure)
+            onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure, onOffRoute = vm::answerOffRoute)
       }
       if (stopsOpen && plan.stops.size > 1) {
         StopsPanel(plan.stops, onRemove = { i -> vm.removeStopDuringNav(i); if (plan.stops.size <= 2) stopsOpen = false },

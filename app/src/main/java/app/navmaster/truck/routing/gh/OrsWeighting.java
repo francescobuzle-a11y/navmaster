@@ -64,6 +64,17 @@ public final class OrsWeighting implements Weighting {
   static final double HEADING_PENALTY = 300;
   /** A road over the vehicle's limits in the soft mode (TruckSpec.soft): its time x 10 plus half an hour (30 km for the shortest). */
   static final double SOFT_FACTOR = 10, SOFT_PENALTY_S = 1800, SOFT_PENALTY_M = 30_000;
+  /**
+   * "More motorway", strong (the driver asks to stay on the motorway and to leave it as little as
+   * possible): the time on a motorway counts as it is; on a trunk road 1.6 times; on every other
+   * road 2.4 times (times openrouteservice's own preference for lorries); and every metre of a
+   * motorway or trunk ramp costs 0.4 s more, so that an exit and the entrance after it (about
+   * 1.2 km of ramps) weigh like eight minutes: a shortcut off the motorway is taken only when it
+   * saves far more than that.
+   */
+  static final double STRONG_TRUNK = 1.6, STRONG_OTHER = 2.4, STRONG_LINK_S_PER_M = 0.4;
+  /** The weighting is the strong "more motorway" one (see STRONG_TRUNK). */
+  final boolean strong;
   /** LimitedAccessWeighting's factors for motor vehicles. */
   static final double DESTINATION_FACTOR = 10, PRIVATE_FACTOR = 10, CUSTOMERS_FACTOR = 1.5, SERVICE_FACTOR = 1.2;
   /** openrouteservice does not accept a lower "maximum_speed" (maximum_speed_lower_bound). */
@@ -101,7 +112,10 @@ public final class OrsWeighting implements Weighting {
     // for heavy vehicles "fastest" is "recommended" (the same weighting); graphs made before the
     // openrouteservice values keep the weighting their landmarks were prepared with
     boolean old = !ev.hasEncodedValue(GhEngine.ORS_ROAD_ACCESS);
-    this.kind = !truck && kind == Kind.RECOMMENDED ? Kind.FASTEST
+    // "more motorway" on the graphs made from 10/2026: the strong preference (STRONG_MOTORWAY),
+    // for lorries and for the other vehicles alike; before, openrouteservice's mild "recommended"
+    strong = kind == Kind.RECOMMENDED && ev.hasEncodedValue(GhEngine.STRONG_MOTORWAY_MARK);
+    this.kind = !truck && kind == Kind.RECOMMENDED && !strong ? Kind.FASTEST
         : truck && kind == Kind.FASTEST && !old ? Kind.RECOMMENDED : kind;
     this.turns = turns;
     this.spec = spec;
@@ -162,8 +176,8 @@ public final class OrsWeighting implements Weighting {
       return kind == Kind.SHORTEST ? perM + LEGACY_DISTANCE_INFLUENCE : perM;
     }
     if (kind == Kind.SHORTEST) return 1;
-    // the best preference halves the time (2^((4 - 7) / 3)); the other factors are >= 1
-    return SPEED_CONV / maxSpeed * (kind == Kind.RECOMMENDED ? 0.5 : 1);
+    // the best preference halves the time (2^((4 - 7) / 3), lorries only); the other factors are >= 1
+    return SPEED_CONV / maxSpeed * (kind == Kind.RECOMMENDED && truck ? 0.5 : 1);
   }
 
   @Override
@@ -188,7 +202,21 @@ public final class OrsWeighting implements Weighting {
     } else {
       w = distance / v * SPEED_CONV;
       if (edge.get(EdgeIteratorState.UNFAVORED_EDGE)) w += HEADING_PENALTY;
-      if (kind == Kind.RECOMMENDED) w *= preferenceFactor(edge);
+      if (kind == Kind.RECOMMENDED) {
+        if (truck) w *= preferenceFactor(edge);
+        if (strong) {
+          RoadClass rc = roadClass == null ? RoadClass.OTHER : edge.get(roadClass);
+          boolean link = roadClassLink != null && edge.get(roadClassLink);
+          if (rc == RoadClass.MOTORWAY) {
+            if (link) w += distance * STRONG_LINK_S_PER_M;
+          } else if (rc == RoadClass.TRUNK) {
+            w *= STRONG_TRUNK;
+            if (link) w += distance * STRONG_LINK_S_PER_M;
+          } else {
+            w *= STRONG_OTHER;
+          }
+        }
+      }
     }
     w *= limitedAccess(edge);
     if (spec != null && spec.penalized != null && spec.penalized.contains(edge.getEdge())) w *= 2;

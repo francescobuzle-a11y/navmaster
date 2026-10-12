@@ -110,7 +110,12 @@ class OfflineRouteProvider(
         // 0. online: openrouteservice's routes, followed and checked by GraphHopper; not for the
         //    "more routes" the driver asks for (GraphHopper's alternatives)
         val online = ors != null && ors.available()
-        if (!options.moreRoutes && online) {
+        // "more motorway": the strong preference lives in the graphs on the tablet (built from
+        // 10/2026); where they cover the trip the route is computed there, not online
+        val localMotorway = spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest &&
+            runCatching { gh.strongMotorwayFor(stops.points, spec) }.getOrDefault(false)
+        if (localMotorway) Log.i(TAG, "more motorway: computed on the tablet (strong preference)")
+        if (!options.moreRoutes && online && !localMotorway) {
           val found = runCatching { orsRoutes(stops, spec, options) }
               .onFailure { Log.w(TAG, "openrouteservice route failed: $it", it) }
               .getOrNull()?.takeIf { it.isNotEmpty() }
@@ -301,7 +306,7 @@ class OfflineRouteProvider(
    * guided from it. Null when none is left (the routes are then computed on the tablet).
    */
   private fun orsRoutes(s: Stops, spec: TruckSpec, options: TripOptions): List<Route>? {
-    val found = ors?.routes(s.points, spec, options.alternates.coerceAtLeast(0)) ?: return null
+    val found = ors?.routes(s.points, spec, options.alternates.coerceAtLeast(0), s.kinds.any { it == "via" }) ?: return null
     orsAnswered = true
     val out = mutableListOf<Route>()
     for ((n, r) in found.withIndex()) {
