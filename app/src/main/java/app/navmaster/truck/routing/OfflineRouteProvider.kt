@@ -160,7 +160,7 @@ class OfflineRouteProvider(
         // 2. no road respects every limit of the vehicle: the route that passes the fewest of them
         //    (the limits as a strong penalty), never no route at all because of the measures
         //    (also across countries: no crossing passable with the measures is not "no route")
-        if (problem == null || problem.startsWith("percorso tra Paesi")) {
+        if (!options.quick && (problem == null || problem.startsWith("percorso tra Paesi"))) {
           val soft = spec.copy().apply { this.soft = true }
           val relaxed = runCatching { ghRoutes(stops, soft, 0, checkWith = spec) }
               .onFailure { Log.w(TAG, "GraphHopper soft route failed: $it", it) }

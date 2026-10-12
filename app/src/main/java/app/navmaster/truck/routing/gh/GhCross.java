@@ -85,6 +85,8 @@ public final class GhCross {
 
   /** Crossings tried at each border. */
   static final int CANDIDATES = 6;
+  /** The longest the search to one candidate crossing may take (ms). */
+  static final long CANDIDATE_TIMEOUT_MS = 20_000;
   /** Chains of countries tried. */
   static final int CHAINS = 2;
 
@@ -244,24 +246,34 @@ public final class GhCross {
         if (cands.size() > CANDIDATES) cands = new ArrayList<>(cands.subList(0, CANDIDATES));
         Crossing pick = null;
         double pickS = Double.MAX_VALUE, pickT = 0;
+        // the searches to the candidate crossings: limited in time, and after three crossings in
+        // a row without a way the others are not tried (the vehicle cannot cross this border with
+        // these choices: e.g. a lorry avoiding tolls into Austria)
+        TruckSpec probe = spec.copy();
+        probe.timeoutMs = spec.timeoutMs > 0 ? Math.min(spec.timeoutMs, CANDIDATE_TIMEOUT_MS) : CANDIDATE_TIMEOUT_MS;
+        int failedInARow = 0;
         for (Crossing c : cands) {
+          if (failedInARow >= 3) break;
           if (DEBUG) System.out.println("CROSS try " + c);
-          GhEngine.Result r1 = ex.routes(Arrays.asList(cur, new double[] {c.lat, c.lon}), Arrays.asList(i == 0 ? Double.NaN : chosen.get(i - 1).ab, c.ab), spec, 1).get(0);
+          GhEngine.Result r1 = ex.routes(Arrays.asList(cur, new double[] {c.lat, c.lon}), Arrays.asList(i == 0 ? Double.NaN : chosen.get(i - 1).ab, c.ab), probe, 1).get(0);
           if (!r1.ok()) {
             if (DEBUG) System.out.println("CROSS   no way to it: " + r1.error);
+            failedInARow++;
             continue;
           }
           double s;
           if (last) {
-            GhEngine.Result r2 = ey.routes(Arrays.asList(new double[] {c.lat, c.lon}, q), Arrays.asList(c.ab, Double.NaN), spec, 1).get(0);
+            GhEngine.Result r2 = ey.routes(Arrays.asList(new double[] {c.lat, c.lon}, q), Arrays.asList(c.ab, Double.NaN), probe, 1).get(0);
             if (!r2.ok()) {
               if (DEBUG) System.out.println("CROSS   no way from it: " + r2.error);
+              failedInARow++;
               continue;
             }
             s = r1.timeMs / 1000.0 + r2.timeMs / 1000.0;
           } else {
             s = r1.timeMs / 1000.0 + rest(c, q, spec);
           }
+          failedInARow = 0;
           if (DEBUG) System.out.println("CROSS " + c + ": " + Math.round(s) + " s (" + Math.round(r1.timeMs / 1000.0) + " s to it)");
           if (s < pickS) {
             pickS = s;

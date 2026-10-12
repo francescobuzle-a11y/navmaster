@@ -51,6 +51,15 @@ public final class TruckSpec {
    * respects them, so the driver always gets the route that passes the fewest limits.
    */
   public boolean soft = false;
+  /**
+   * The longest a single search may take (ms; 0 = GhEngine.DEFAULT_TIMEOUT_MS): a search that
+   * cannot find a way (e.g. a lorry without tolls across Austria) gives up instead of exploring a
+   * whole country for minutes.
+   */
+  /** The time limit of the choices computed next to the main route (TripOptions.quick). */
+  public static final long QUICK_TIMEOUT_MS = 12_000;
+
+  public long timeoutMs = 0;
   /** Zones to avoid: each one a closed ring of [lat, lon]. */
   public final List<double[][]> avoidZones = new ArrayList<>();
 
@@ -64,6 +73,7 @@ public final class TruckSpec {
     t.avoidZones.addAll(avoidZones);
     t.penalized = penalized;
     t.soft = soft;
+    t.timeoutMs = timeoutMs;
     return t;
   }
 

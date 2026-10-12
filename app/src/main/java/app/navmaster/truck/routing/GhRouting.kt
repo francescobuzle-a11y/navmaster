@@ -533,6 +533,7 @@ fun app.navmaster.truck.vehicle.VehicleProfile.ghSpec(loadT: Double, trip: app.n
     preferTruckRoutes = v.preferTruckRoutes
     shortest = trip.shortest
     route = trip.route.gh
+    if (trip.quick) timeoutMs = TruckSpec.QUICK_TIMEOUT_MS
     // the zones are rings of [lon, lat] (GeoJSON), [lat, lon] here
     for (ring in trip.excludePolygons) {
       avoidZones.add(ring.map { p -> doubleArrayOf(p[1], p[0]) }.toTypedArray())

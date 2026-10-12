@@ -117,6 +117,9 @@ public final class GhEngine implements Closeable {
    */
   public static final int LANDMARKS = 4;
 
+  /** The longest one search may take on the tablet (ms), unless the spec says otherwise. */
+  public static final long DEFAULT_TIMEOUT_MS = 60_000;
+
   /** The profiles of lorries ("camion" package) or of the other vehicles ("auto" package). */
   public static List<String> profilesOf(boolean hgv) {
     List<String> out = new ArrayList<>();
@@ -716,6 +719,8 @@ public final class GhEngine implements Closeable {
       }
     }
     req.getHints().putObject(NmWeightingFactory.SPEC, spec);
+    // a search that finds nothing stops instead of going on for minutes on the tablet
+    req.getHints().putObject("timeout_ms", spec.timeoutMs > 0 ? spec.timeoutMs : DEFAULT_TIMEOUT_MS);
     // tests on the computer: without the landmarks (plain A*, same routes, slower)
     if (Boolean.getBoolean("nm.nolm")) req.getHints().putObject("lm.disable", true);
     // the roads of the path (alternatives, guidance) and the time on each one

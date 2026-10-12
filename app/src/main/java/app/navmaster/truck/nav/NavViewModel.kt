@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -592,89 +593,135 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         val pref = settings.routeKind
         val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions, route = pref)
-        // the routes of the kind the driver prefers (the best one and an alternative) with the
-        // vehicle's measures: openrouteservice's online, else GraphHopper's
+        // 1. the routes of the kind the driver prefers (the best one and an alternative) with the
+        //    vehicle's measures: shown as soon as they are there, the driver can start at once
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))
         val routeNote = AppGraph.routes.note
-        // the other two kinds, one route each, next to it
-        val others = if (main.isEmpty()) emptyList() else
-          app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }.mapNotNull { k ->
-            runCatching { AppGraph.routes.routes(from, waypoints, base.copy(route = k)).firstOrNull() }.getOrNull()?.let { k to it }
-          }
-        planRequest = Triple(from, waypoints, base)
-        val noToll = if (!avoidTolls) runCatching { AppGraph.routes.routes(from, waypoints, base.copy(avoidTolls = true)) }.getOrNull() else null
+        val req = Triple(from, waypoints, base)
+        planRequest = req
         val departure = LocalDateTime.now()
 
         fun build(kind: VariantKind, title: String, r: Route, opts: TripOptions): RouteVariant =
             buildVariant(kind, title, r, opts, departure)
 
-        val variants = mutableListOf<RouteVariant>()
-        main.firstOrNull()?.let { variants += build(kindOf(pref), if (avoidTolls) "${pref.label} · senza pedaggi" else pref.label, it, base) }
-        for ((k, r) in others) {
-          // the same road as one already offered: said on that card instead
-          val same = variants.indexOfFirst { same(it.route, r) || alongSameRoads(r, it.route) }
-          if (same >= 0) {
-            val v0 = variants[same]
-            variants[same] = v0.copy(title = v0.title + " = " + k.label.lowercase())
-            continue
-          }
-          variants += build(kindOf(k), k.label, r, base.copy(route = k))
-        }
+        val first = mutableListOf<RouteVariant>()
+        main.firstOrNull()?.let { first += build(kindOf(pref), if (avoidTolls) "${pref.label} · senza pedaggi" else pref.label, it, base) }
         var nAlt = 0
         for (r in main.drop(1)) {
-          if (variants.any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
+          if (first.any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
           nAlt++
-          variants += build(VariantKind.ALTERNATIVE, "Alternativa $nAlt", r, base)
+          first += build(VariantKind.ALTERNATIVE, "Alternativa $nAlt", r, base)
         }
-        val fastest = variants.firstOrNull()
-        var advice: String? = null
-        var recommended = 0
-        if (noToll != null && fastest != null && fastest.analysis.tollKm > 0.5) {
-          val nt = noToll.firstOrNull()
-          // the graph may give back a route with tolls anyway (start or end on a motorway): it is a
-          // toll-free choice only when it really saves the toll
-          val existing = nt?.let { r -> variants.indexOfFirst { same(it.route, r) } } ?: -1
-          val candidate = when {
-            nt == null -> null
-            existing >= 0 -> variants[existing].copy(kind = VariantKind.NO_TOLL, title = "Senza pedaggi")
-            else -> build(VariantKind.NO_TOLL, "Senza pedaggi", nt, base.copy(avoidTolls = true))
-          }?.takeIf { it.analysis.tollKm < fastest.analysis.tollKm - 0.5 && it.analysis.tollKm < 0.5 }
-          if (nt != null && candidate == null) {
-            advice = "Il pedaggio qui non si può evitare: ${km(fastest.analysis.tollKm, false)} a pagamento."
+        if (first.isEmpty()) throw IllegalStateException("Nessun percorso trovato")
+        val fastest = first[0]
+        // the other choices, computed after: the other two kinds (the shortest only on short
+        // trips: across countries it is a long search on the tablet and never the lorry's road)
+        // and the toll-free one (only where it can be found in reasonable time), each with a
+        // time limit and without the "fewest limits" retry
+        val crowKm = (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0
+        val kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
+            .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
+        val tryNoToll = !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
+        val extras = kinds.isNotEmpty() || tryNoToll
+        Log.i(TAG, "plan: ${first.size} route(s) shown, then ${kinds.joinToString { it.name }}${if (tryNoToll) " + no toll" else ""} (crow ${crowKm.roundToInt()} km)")
+        val shown = _plan.value.copy(variants = first.mapIndexed { i, x -> if (i == 0) x.copy(recommended = true) else x }, selected = 0, computing = false, advice = null, routeNote = routeNote,
+            more = if (extras) MoreRoutes.LOADING else MoreRoutes.NONE)
+        _plan.value = shown
+        if (!extras) {
+          withContext(Dispatchers.Main) { then?.invoke(shown) }
+          return@launch
+        }
+
+        // 2. the other kinds, added next to the routes on screen (the driver's choice untouched)
+        for (k in kinds) {
+          val r = runCatching { AppGraph.routes.routes(from, waypoints, base.copy(route = k, quick = true)).firstOrNull() }
+              .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull() ?: continue
+          if (planRequest !== req) return@launch
+          val cur = _plan.value.variants
+          val same = cur.indexOfFirst { same(it.route, r) || alongSameRoads(r, it.route) }
+          if (same >= 0) {
+            // the same road as one already offered: said on that card instead
+            _plan.update { st -> st.copy(variants = st.variants.mapIndexed { i, x -> if (i == same) x.copy(title = x.title + " = " + k.label.lowercase()) else x }) }
+            continue
           }
-          if (candidate != null) {
-            val ntVariant = candidate
-            if (existing >= 0) variants[existing] = ntVariant else variants += ntVariant
-            val extraS = ntVariant.durationS - fastest.durationS
-            val extraMin = (extraS / 60).roundToInt().coerceAtLeast(0)
-            val extraKm = (ntVariant.distanceM - fastest.distanceM) / 1000.0
-            val tollKm = fastest.analysis.tollKm
-            val worse = ntVariant.critical > fastest.critical || ntVariant.warnings > fastest.warnings + 2
-            advice = when {
-              extraS <= settings.tollMaxExtraMin * 60 && !worse -> {
-                if (settings.tollPolicy == TollPolicy.ASK) recommended = variants.indexOf(ntVariant)
-                "Senza pedaggio arrivi solo $extraMin min più tardi (${km(extraKm)}) ed eviti ${km(tollKm, false)} a pagamento."
+          val added = build(kindOf(k), k.label, r, base.copy(route = k))
+          if (planRequest !== req) return@launch
+          // after the kinds, before the alternatives
+          _plan.update { st ->
+            val at = st.variants.indexOfFirst { it.kind == VariantKind.ALTERNATIVE }.let { if (it < 0) st.variants.size else it }
+            val list = st.variants.toMutableList().apply { add(at, added) }
+            st.copy(variants = list, selected = if (st.selected >= at) st.selected + 1 else st.selected)
+          }
+        }
+
+        // 3. without tolls: kept only when it really saves the toll, with the advice
+        var advice: String? = null
+        var recommendNt = false
+        var ntVariant: RouteVariant? = null
+        if (tryNoToll) {
+          val nt = runCatching { AppGraph.routes.routes(from, waypoints, base.copy(avoidTolls = true, quick = true)).firstOrNull() }
+              .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
+          if (planRequest !== req) return@launch
+          if (nt != null) {
+            // the graph may give back a route with tolls anyway (start or end on a motorway): it is
+            // a toll-free choice only when it really saves the toll
+            val cur = _plan.value.variants
+            val existing = cur.indexOfFirst { same(it.route, nt) }
+            val candidate = (if (existing >= 0) cur[existing].copy(kind = VariantKind.NO_TOLL, title = "Senza pedaggi")
+                else build(VariantKind.NO_TOLL, "Senza pedaggi", nt, base.copy(avoidTolls = true)))
+                .takeIf { it.analysis.tollKm < fastest.analysis.tollKm - 0.5 && it.analysis.tollKm < 0.5 }
+            if (candidate == null) {
+              advice = "Il pedaggio qui non si può evitare: ${km(fastest.analysis.tollKm, false)} a pagamento."
+            } else {
+              ntVariant = candidate
+              val extraS = candidate.durationS - fastest.durationS
+              val extraMin = (extraS / 60).roundToInt().coerceAtLeast(0)
+              val extraKm = (candidate.distanceM - fastest.distanceM) / 1000.0
+              val tollKm = fastest.analysis.tollKm
+              val worse = candidate.critical > fastest.critical || candidate.warnings > fastest.warnings + 2
+              advice = when {
+                extraS <= settings.tollMaxExtraMin * 60 && !worse -> {
+                  recommendNt = settings.tollPolicy == TollPolicy.ASK
+                  "Senza pedaggio arrivi solo $extraMin min più tardi (${km(extraKm)}) ed eviti ${km(tollKm, false)} a pagamento."
+                }
+                extraS <= settings.tollMaxExtraMin * 60 && worse ->
+                  "Senza pedaggio impieghi solo $extraMin min in più, ma la strada ha più punti difficili: meglio l'autostrada."
+                else -> "Col pedaggio risparmi $extraMin min: ${km(tollKm, false)} a pagamento."
               }
-              extraS <= settings.tollMaxExtraMin * 60 && worse ->
-                "Senza pedaggio impieghi solo $extraMin min in più, ma la strada ha più punti difficili: meglio l'autostrada."
-              else -> "Col pedaggio risparmi $extraMin min: ${km(tollKm, false)} a pagamento."
             }
           }
         }
-        val list = variants.mapIndexed { i, x -> if (i == recommended) x.copy(recommended = true) else x }
-        if (list.isEmpty()) throw IllegalStateException("Nessun percorso trovato")
-        for (x in list) Log.i(TAG, "variant ${x.title} [${x.source}]: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
+        if (planRequest !== req) return@launch
+        var selectedNt = false
+        val state = _plan.updateAndGet { st ->
+          var list = st.variants
+          var sel = st.selected
+          ntVariant?.let { nv ->
+            val existing = list.indexOfFirst { same(it.route, nv.route) }
+            list = if (existing >= 0) list.mapIndexed { i, x -> if (i == existing) nv else x } else list + nv
+          }
+          val ntAt = ntVariant?.let { nv -> list.indexOfFirst { same(it.route, nv.route) } } ?: -1
+          if (recommendNt && ntAt >= 0) {
+            list = list.mapIndexed { i, x -> x.copy(recommended = i == ntAt) }
+            // the driver has not chosen yet and is not driving: the recommended one selected
+            if (sel == 0 && !navigationUiState.value.isNavigating()) {
+              sel = ntAt
+              selectedNt = true
+            }
+          }
+          st.copy(variants = list, selected = sel, advice = advice, more = MoreRoutes.NONE)
+        }
+        for (x in state.variants) Log.i(TAG, "variant ${x.title} [${x.source}]: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
             "toll ${"%.1f".format(x.analysis.tollKm)} km, booths ${x.analysis.tollBooths.size}, crit ${x.critical}/${x.warnings}${if (x.recommended) " CONSIGLIATO" else ""}")
         Log.i(TAG, "advice: $advice")
-        val state = _plan.value.copy(variants = list, selected = recommended, computing = false, advice = advice, routeNote = routeNote)
-        _plan.value = state
-        if (advice != null && settings.voiceWarnings && settings.tollPolicy == TollPolicy.ASK && recommended != 0) say(advice)
+        if (advice != null && selectedNt && settings.voiceWarnings) say(advice)
         withContext(Dispatchers.Main) { then?.invoke(state) }
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (e: Exception) {
         Log.e(TAG, "route failed", e)
-        _plan.update { it.copy(computing = false, error = friendly(e)) }
+        // the routes already on screen stay (a failure of the other choices is not an error)
+        _plan.update { if (it.variants.isNotEmpty() && !it.computing) it.copy(more = MoreRoutes.NONE) else it.copy(computing = false, error = friendly(e)) }
       }
     }
   }
@@ -762,6 +809,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   fun start(simulate0: Boolean) {
     val v = _plan.value.current ?: return
+    // the other choices still being looked for are no longer needed (the tablet is free for the
+    // recalculations along the way)
+    if (_plan.value.more == MoreRoutes.LOADING) {
+      planJob?.cancel()
+      _plan.update { it.copy(more = MoreRoutes.NONE) }
+    }
     // a trip from a departure chosen on the map can only be simulated (the vehicle is elsewhere)
     val simulate = simulate0 || _plan.value.start != null
     _simulating.value = simulate
@@ -773,7 +826,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // the route for the tunnels (the position goes on along it when the satellites are silent)
     AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry)
     laneTracker.reset()
-    AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false)
+    AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false, quick = false)
     asked.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
     _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, pois(v.route), v.analysis.length)
@@ -2062,5 +2115,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   companion object {
     private const val TAG = "NavMasterVM"
+    /** The shortest route is looked for only on trips up to this distance (as the crow flies). */
+    private const val SHORTEST_MAX_KM = 200.0
+    /** The toll-free route is looked for only on trips up to this distance (as the crow flies). */
+    private const val NO_TOLL_MAX_KM = 400.0
   }
 }

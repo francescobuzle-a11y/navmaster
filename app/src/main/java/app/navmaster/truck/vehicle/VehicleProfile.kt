@@ -157,6 +157,11 @@ data class TripOptions(
      * already computed, so that the route takes them on the right carriageway of a motorway.
      */
     val viaHeadings: Map<String, Double> = emptyMap(),
+    /**
+     * A choice computed next to the main route (another kind, without tolls): searched with a
+     * short time limit and without the "fewest limits" retry, so that it never keeps the tablet busy.
+     */
+    val quick: Boolean = false,
 ) {
   companion object {
     fun pointKey(lat: Double, lon: Double): String = String.format(java.util.Locale.ROOT, "%.5f,%.5f", lat, lon)
