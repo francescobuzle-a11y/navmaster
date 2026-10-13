@@ -26,4 +26,13 @@ public final class NioCompat {
     d.put(src, offset, length);
     return b;
   }
+
+  /**
+   * Closing a memory-mapped graph: GraphHopper unmaps every segment through sun.misc.Unsafe
+   * .invokeCleaner, which Android does not have, and then threw "Unable to unmap the mapped
+   * buffer" (the graph could not be closed nor opened again after an update, and a trip through
+   * several countries failed). Redirected here: on Android the mapping is released when the
+   * buffer is garbage-collected, nothing to do now.
+   */
+  public static void cleanMappedByteBuffer(ByteBuffer b) {}
 }

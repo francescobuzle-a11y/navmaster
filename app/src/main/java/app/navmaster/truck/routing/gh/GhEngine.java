@@ -825,6 +825,11 @@ public final class GhEngine implements Closeable {
 
   @Override
   public void close() {
-    hopper.close();
+    // a graph that cannot be closed cleanly is still dropped: never a failure of the trip
+    try {
+      hopper.close();
+    } catch (RuntimeException e) {
+      System.err.println("GraphHopper close: " + e);
+    }
   }
 }

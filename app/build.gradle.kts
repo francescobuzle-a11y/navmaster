@@ -156,6 +156,10 @@ abstract class NioCompatFactory : AsmClassVisitorFactory<InstrumentationParamete
                   (name == "get" || name == "put") && descriptor == "(I[BII)Ljava/nio/ByteBuffer;") {
                 super.visitMethodInsn(Opcodes.INVOKESTATIC, "app/navmaster/truck/routing/gh/NioCompat", name,
                     "(Ljava/nio/ByteBuffer;I[BII)Ljava/nio/ByteBuffer;", false)
+              } else if (opcode == Opcodes.INVOKESTATIC && owner == "com/graphhopper/storage/MMapDataAccess" && name == "cleanMappedByteBuffer") {
+                // closing a graph: Android has no Unsafe.invokeCleaner (see NioCompat)
+                super.visitMethodInsn(Opcodes.INVOKESTATIC, "app/navmaster/truck/routing/gh/NioCompat", "cleanMappedByteBuffer",
+                    "(Ljava/nio/ByteBuffer;)V", false)
               } else {
                 super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
               }

@@ -736,6 +736,7 @@ private fun BrowsingOverlay(
           onClearStart = vm::clearStart,
           onMore = vm::loadMoreRoutes,
           onMotorwayLevel = vm::setMotorwayLevel,
+          motorwayLevel = AppGraph.settings.settings.collectAsState().value.motorwayLevel,
       )
     } else {
       Text("Cerca un indirizzo o tieni premuto sulla mappa", color = Color(0xCCFFFFFF), fontSize = 14.sp,
