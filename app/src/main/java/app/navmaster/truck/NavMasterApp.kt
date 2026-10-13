@@ -148,7 +148,7 @@ object AppGraph {
           WaypointAdvanceMode.WaypointWithinRange(100.0),
           stepAdvanceOr(listOf(stepAdvanceDistanceEntryAndSnappedExit(30u, 5u, 50u), stepAdvanceDistanceFromStep(60u, 50u, DeviationCalculationPolicy.WHILE_ON_ROUTE))),
           stepAdvanceDistanceToEndOfStep(10u, 32u),
-          RouteDeviationTracking.StaticThreshold(15U, 35.0),
+          RouteDeviationTracking.StaticThreshold(15U, 30.0),
           CourseFiltering.SNAP_TO_ROUTE,
       )
 }

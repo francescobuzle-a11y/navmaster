@@ -86,9 +86,10 @@ class DriveScreenShots {
   )
 
   /** The modes of the panel, and what is done to reach them. */
-  private enum class Case(val start: String?, val click: String?, val bar: Boolean) {
+  private enum class Case(val start: String?, val click: String?, val bar: Boolean, val fold: Boolean = false) {
     LISTA(null, null, true),
     LISTA_SENZA_BARRA(null, null, false),
+    LISTA_CHIUSA(null, null, false, fold = true),
     SCEGLI("CHOOSE", null, false),
     CERCA("SEARCH", null, false),
     GASOLIO("CHOOSE", "Gasolio", false),
@@ -169,7 +170,8 @@ class DriveScreenShots {
                 poi = { w, h ->
                   Box(Modifier.testTag("poi")) {
                     PoiColumn(
-                        pois = ahead, traveledM = 0.0, source = source, settings = settings, hasHere = true, hasDestination = true,
+                        pois = ahead, traveledM = 0.0, source = source, settings = if (case.fold) settings.copy(poiRailSeconds = 1) else settings,
+                        hasHere = true, hasDestination = true,
                         secondsPerMetre = 0.045, canType = true, width = w, maxHeight = h, startMode = case.start,
                         onPoi = {}, onAll = {}, onPins = { pins.clear(); pins.addAll(it) }, onOpen = { open = it },
                     )
@@ -224,7 +226,7 @@ class DriveScreenShots {
         compose.waitForIdle()
         case.click?.let { compose.onNodeWithText(it).performScrollTo().performClick() }
         compose.waitForIdle()
-        compose.mainClock.advanceTimeBy(1_000)
+        compose.mainClock.advanceTimeBy(if (case.fold) 2_500 else 1_000)
         compose.waitForIdle()
 
         // the picture
@@ -263,6 +265,12 @@ class DriveScreenShots {
           }
         }
         if (shown["pannello"] == null) problems += "$name: il pannello dei posti non c'è"
+        // folded after the seconds of the setting: only the small tab is left
+        if (case.fold) {
+          runCatching { compose.onNodeWithContentDescription("Apri i punti di interesse").assertExists() }
+              .onFailure { problems += "$name: la colonna non si è richiusa nella linguetta" }
+          shown["pannello"]?.let { r -> if (r.bottom - r.top > 70.dp) problems += "$name: linguetta troppo alta (${r.bottom - r.top})" }
+        }
         // the buttons are big enough to be touched (the volume button was squeezed before)
         for ((k, r) in shown) if (k != "tachimetro" && k != "manovra" && k != "pannello" && (r.right - r.left < 40.dp || r.bottom - r.top < 40.dp)) {
           problems += "$name: $k troppo piccolo (${r.right - r.left} × ${r.bottom - r.top})"

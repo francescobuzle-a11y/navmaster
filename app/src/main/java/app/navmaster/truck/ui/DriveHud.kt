@@ -475,7 +475,30 @@ fun PoiColumn(
   val lensSize = 56.dp
   Column(modifier.width(width).heightIn(max = maxHeight), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     when (mode) {
-      PanelMode.LIST -> {
+      PanelMode.LIST -> if (folded && ahead.isNotEmpty()) {
+        // folded (nothing touched for a while): one small tab with the nearest place and the
+        // magnifier; a touch opens the list again
+        val first = ahead.first()
+        val (g, c) = PoiGlyphs.of(first.poi.cat)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+          Row(
+              Modifier.weight(1f).heightIn(min = 44.dp).clip(RoundedCornerShape(14.dp)).background(panel)
+                  .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp)).clickable { folded = false }
+                  .semantics { contentDescription = "Apri i punti di interesse" }.padding(horizontal = 8.dp, vertical = 5.dp),
+              verticalAlignment = Alignment.CenterVertically,
+          ) {
+            GlyphTile(g, c, 28.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(distOf(first), color = Nm.Amber, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(6.dp))
+            Text(first.poi.title.ifBlank { PoiCategories.byId(first.poi.cat)?.label ?: "" }, color = Nm.Text, fontSize = 13.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("▾", color = Nm.Muted, fontSize = 14.sp)
+          }
+          Spacer(Modifier.width(8.dp))
+          LensButton(44.dp) { mode = PanelMode.CHOOSE }
+        }
+      } else {
         val room = maxHeight - lensSize - 8.dp
         val bigH = 150.dp
         val rowH = 60.dp
@@ -851,14 +874,21 @@ data class BarButton(val label: String, val icon: ImageVector?, val text: String
  * voice, end), in one bar at the bottom left that appears with a touch on the map and goes away
  * after a few seconds; in the room left of the round buttons, so it never squeezes nor overlaps them.
  */
+/** The lines the bar of [n] buttons takes in [maxWidth] (one when it fits, else two, evenly filled). */
+fun controlsBarLines(n: Int, maxWidth: Dp): Int {
+  val fit = ((maxWidth - 12.dp + 4.dp) / (62.dp + 4.dp)).toInt().coerceIn(1, n.coerceAtLeast(1))
+  return (n + fit - 1) / fit
+}
+
+/** The height of the bar of [n] buttons in [maxWidth]. */
+fun controlsBarHeight(n: Int, maxWidth: Dp): Dp = 12.dp + 60.dp * controlsBarLines(n, maxWidth) + 4.dp * (controlsBarLines(n, maxWidth) - 1)
+
 @Composable
 fun ControlsBar(visible: Boolean, items: List<BarButton>, maxWidth: Dp, modifier: Modifier = Modifier) {
-  // one line when it fits, else two (an upright phone): never under the round buttons at the right
+  // one line when it fits, else two (an upright phone): never under the round buttons
   val itemW = 62.dp
   val gap = 4.dp
-  val fit = ((maxWidth - 12.dp + gap) / (itemW + gap)).toInt().coerceIn(1, items.size.coerceAtLeast(1))
-  // the lines evenly filled (3 + 2, not 4 + 1)
-  val lines = (items.size + fit - 1) / fit
+  val lines = controlsBarLines(items.size, maxWidth)
   val perRow = ((items.size + lines - 1) / lines).coerceAtLeast(1)
   androidx.compose.animation.AnimatedVisibility(
       visible,
@@ -895,11 +925,11 @@ fun ControlsBar(visible: Boolean, items: List<BarButton>, maxWidth: Dp, modifier
 }
 
 /**
- * The right side of the driving screen under the manoeuvre bar, laid out so nothing overlaps:
- * the speedometer at the top (when it is not beside the manoeuvre bar), the places' column under
- * it, the round buttons ([rail], each told its size) at the bottom, and the bar of [ControlsBar]
- * at the bottom left. Lying down the buttons stand left of the places' column (the height is
- * short); upright they are under it and the column stops above them.
+ * The driving screen under the manoeuvre bar, laid out so nothing overlaps: the speedometer at
+ * the top right (when it is not beside the manoeuvre bar), the places' column under it at the
+ * right, the round buttons ([rail], each told its size) at the bottom LEFT, and the bar of
+ * [ControlsBar] at the bottom right, under the places' column (which stops above it while it is
+ * shown). The bar and most buttons come with a touch on the map.
  */
 @Composable
 fun DriveSide(
@@ -924,29 +954,19 @@ fun DriveSide(
     val colW = (maxWidth * (if (landscape) 0.22f else 0.34f)).coerceIn(230.dp, 290.dp)
         .coerceAtMost(maxWidth * if (landscape) 0.38f else 0.5f)
     val top = if (arcInside) arcHeight + 12.dp else 4.dp
+    if (arcInside) Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp)) { arc() }
     // the round buttons smaller when they would not fit (a phone lying down), never below 40 dp
     val n = railCount.coerceAtLeast(1)
-    val railRoom = if (landscape) boxH - top - 4.dp else boxH * 0.6f
+    val railRoom = boxH - top - 4.dp
     val railFit = minOf(railSize, (railRoom - 10.dp * (n - 1)) / n).coerceAtLeast(40.dp)
-    if (arcInside) Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp)) { arc() }
-    if (landscape) {
-      Row(Modifier.align(Alignment.TopEnd).fillMaxHeight().padding(top = top), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Column(Modifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom), horizontalAlignment = Alignment.End) {
-          rail(railFit)
-        }
-        if (showPoi) poi(colW, (boxH - top - 4.dp).coerceAtLeast(0.dp))
-      }
-    } else {
-      val railH = (railFit + 10.dp) * n
-      val room = boxH - top - railH - 12.dp
-      if (showPoi && room >= 64.dp) Box(Modifier.align(Alignment.TopEnd).padding(top = top)) { poi(colW, room) }
-      Column(Modifier.align(Alignment.BottomEnd), verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.End) {
-        rail(railFit)
-      }
+    // the bar at the bottom right, as wide as it may be left of the round buttons
+    val barW = (maxWidth - railFit - 28.dp).coerceAtLeast(140.dp)
+    val barH = if (barVisible) controlsBarHeight(bar.size, barW) + 8.dp else 0.dp
+    val room = (boxH - top - barBottom - barH - 4.dp).coerceAtLeast(0.dp)
+    if (showPoi && room >= 64.dp) Box(Modifier.align(Alignment.TopEnd).padding(top = top)) { poi(colW, room) }
+    Column(Modifier.align(Alignment.BottomStart).padding(bottom = barBottom), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+      rail(railFit)
     }
-    // the bar at the bottom left, in the room the buttons (and lying down the places) leave
-    val reserved = railFit + 10.dp + (if (landscape && showPoi) colW + 10.dp else 0.dp)
-    ControlsBar(barVisible, bar, (maxWidth - reserved - 8.dp).coerceAtLeast(140.dp),
-        Modifier.align(Alignment.BottomStart).padding(bottom = barBottom))
+    ControlsBar(barVisible, bar, barW, Modifier.align(Alignment.BottomEnd).padding(bottom = barBottom))
   }
 }

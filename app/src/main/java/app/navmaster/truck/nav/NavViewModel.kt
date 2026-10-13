@@ -147,8 +147,11 @@ sealed class DriverPrompt {
   /** The road ahead is closed (official information): look for another way? */
   data class Closure(override val id: String, val event: RouteLiveEvent, val distanceM: Double) : DriverPrompt()
 
-  /** The driver left the route: go on along this road, or back onto the planned route? [askedAt]: System.currentTimeMillis. */
-  data class OffRoute(override val id: String, val askedAt: Long) : DriverPrompt()
+  /**
+   * The driver left the route and the route was recalculated at once from the road he is on: back
+   * onto the planned route ([old], left at [oldTraveled] m) instead? [askedAt]: System.currentTimeMillis.
+   */
+  data class OffRoute(override val id: String, val askedAt: Long, val old: RouteAnalysis, val oldTraveled: Double) : DriverPrompt()
 }
 
 data class NavExtras(
@@ -232,6 +235,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         if (f != null && !f.reckoned && f.speedMs > 2.0) laneTracker.feed(f.lateralM, f.accuracyM, f.atNanos)
       }
     }
+    // the vehicle leaves the route (the provider sees it first): recalculated at once
+    viewModelScope.launch {
+      kotlinx.coroutines.flow.combine(AppGraph.smartLocation.onRoute, AppGraph.smartLocation.raw) { f, r -> f to r }
+          .collect { (f, r) -> onProviderFix(f, r) }
+    }
     // a jump of the simulation is not a wrong turn: no new route while the vehicle is being moved
     core.deviationHandler = RouteDeviationHandler { _, _, waypoints ->
       if (_simulating.value && simJumping()) CorrectiveAction.DoNothing else onDeviation(waypoints)
@@ -258,49 +266,105 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
    * back onto the old route) is not used any more.
    */
   private fun onDeviation(waypoints: List<Waypoint>): CorrectiveAction {
+    if (!_simulating.value) {
+      // in real driving the satellites' provider sees the vehicle leave the route (and the
+      // heading go away from it) sooner than the guidance: that is what starts the recalculation
+      return CorrectiveAction.DoNothing
+    }
     val now = System.currentTimeMillis()
     if (offRouteSince == 0L) {
       offRouteSince = now
       offRouteCalls = 0
     }
     offRouteCalls++
-    // a glitch of the position is not a wrong turn: off the route for two seconds, seen twice
-    if (now - offRouteSince < 2_000 || offRouteCalls < 2) return CorrectiveAction.DoNothing
-    if (_nav.value.recalculating || _nav.value.prompt is DriverPrompt.OffRoute) return CorrectiveAction.DoNothing
+    if (offRouteCalls < 2) return CorrectiveAction.DoNothing
+    handleOffRoute(navigationUiState.value.location ?: lastLocation.value ?: return CorrectiveAction.DoNothing)
+    return CorrectiveAction.DoNothing
+  }
+
+  /** When the vehicle was last seen off the route by the provider, and when no road was found there. */
+  private var providerOffSince = 0L
+  private var noRoadCheckedAt = 0L
+
+  /**
+   * The satellites' provider says the vehicle is not on the route ([SmartLocationProvider.onRoute]
+   * null while a fix keeps coming and the vehicle moves): off the route for 1.5 s is a wrong turn.
+   */
+  private fun onProviderFix(f: app.navmaster.truck.location.SmartLocationProvider.Fix?, raw: android.location.Location?) {
+    if (_simulating.value || !navigationUiState.value.isNavigating() || _nav.value.analysis == null) {
+      providerOffSince = 0L
+      return
+    }
+    if (f != null) {
+      providerOffSince = 0L
+      return
+    }
+    val r = raw ?: return
+    if (!r.hasSpeed() || r.speed < 1.5f) return
+    val now = System.currentTimeMillis()
+    if (providerOffSince == 0L) providerOffSince = now
+    if (now - providerOffSince < 1_500) return
+    handleOffRoute(r.toUserLocation())
+  }
+
+  /**
+   * The vehicle left the planned route: the route is recalculated AT ONCE from the road it is on
+   * (through the point where that road rejoins the old route, if it does within 2 km: then nothing
+   * is said), and with Impostazioni › Percorso on "Chiedi" the driver is then asked whether to go
+   * back to the planned route. Off every road (a field, a yard, a private track) nothing is done:
+   * the arrow shows the real position and the route is recalculated when the vehicle is on a road
+   * again. One recalculation per route.
+   */
+  private fun handleOffRoute(loc: UserLocation) {
+    if (_nav.value.recalculating) return
     val key = lastGeometryKey
-    if (offRouteAskedKey == key) return CorrectiveAction.DoNothing
-    offRouteAskedKey = key
-    val loc = navigationUiState.value.location ?: lastLocation.value
-    Log.i(TAG, "off the route for ${(now - offRouteSince) / 1000} s at ${lastOnRouteTraveled.toInt()} m: ${AppGraph.settings.settings.value.deviation}")
+    if (offRouteAskedKey == key) return
+    val now = System.currentTimeMillis()
+    if (now - noRoadCheckedAt < 3_000) return
+    noRoadCheckedAt = now
+    val a = _nav.value.analysis ?: return
+    val lat = loc.coordinates.lat
+    val lon = loc.coordinates.lng
+    val heading = loc.courseOverGround?.degrees?.toDouble() ?: Double.NaN
+    val oldTraveled = lastOnRouteTraveled
     viewModelScope.launch(Dispatchers.IO) {
-      // the road taken comes back onto the planned route within 2 km (a parallel lane, a slip
-      // road, the other side of a roundabout): no question, the route is recalculated through
-      // the point where it rejoins
-      val rejoin = loc?.let { l ->
-        runCatching { rejoinAhead(l.coordinates.lat, l.coordinates.lng, l.courseOverGround?.degrees?.toDouble() ?: Double.NaN) }
-            .onFailure { Log.w(TAG, "rejoin check: $it") }.getOrNull()
+      // no road here: nothing to recalculate from (and no question)
+      val road = runCatching { AppGraph.gh.roadWithin(lat, lon, 45.0) }.getOrNull()
+          ?: runCatching { AppGraph.roads.near(lat, lon, 120.0).any { rd -> roadDistance(rd.pts, lat, lon) <= 45.0 } }.getOrNull()
+      if (road == false) {
+        Log.i(TAG, "off the route and off every road (${"%.5f,%.5f".format(java.util.Locale.ROOT, lat, lon)}): waiting for a road")
+        return@launch
       }
+      val rejoin = runCatching { rejoinAhead(lat, lon, heading) }.onFailure { Log.w(TAG, "rejoin check: $it") }.getOrNull()
       withContext(Dispatchers.Main) {
-        // back on the route meanwhile, or a new route: nothing to do
-        if (offRouteSince == 0L || offRouteAskedKey != key || lastGeometryKey != key) return@withContext
+        if (offRouteAskedKey == key || lastGeometryKey != key || _nav.value.recalculating) return@withContext
+        offRouteAskedKey = key
+        val choice = AppGraph.settings.settings.value.deviation
+        Log.i(TAG, "off the route at ${oldTraveled.toInt()} m: $choice" + (if (rejoin != null) ", rejoins in ${rejoin[3].toInt()} m" else ""))
         if (rejoin != null) {
-          Log.i(TAG, "off the route but this road rejoins it in ${rejoin[3].toInt()} m: recalculated without asking")
           rerouteContinuing(via = rejoin, quiet = true)
           return@withContext
         }
-        when (AppGraph.settings.settings.value.deviation) {
+        when (choice) {
+          app.navmaster.truck.settings.DeviationChoice.RETURN -> rerouteBack(a, oldTraveled)
           app.navmaster.truck.settings.DeviationChoice.CONTINUE -> rerouteContinuing()
-          app.navmaster.truck.settings.DeviationChoice.RETURN -> rerouteBack()
-          else -> {
-            // a toll or ramp question still on the screen gives way: this one cannot wait
+          else -> rerouteContinuing(quiet = true) {
+            // the new route is in place: back onto the old one instead?
             val asked = System.currentTimeMillis()
-            _nav.update { it.copy(prompt = DriverPrompt.OffRoute("off:$key:$asked", asked)) }
-            sayOffRoute("Hai lasciato il percorso. Vuoi continuare su questa strada o tornare sul percorso? Scegli con i tasti sullo schermo.")
+            _nav.update { it.copy(prompt = DriverPrompt.OffRoute("off:$key:$asked", asked, a, oldTraveled)) }
+            sayOffRoute("Percorso ricalcolato da questa strada. Vuoi tornare sul percorso di prima? Scegli con i tasti sullo schermo.")
           }
         }
       }
     }
-    return CorrectiveAction.DoNothing
+  }
+
+  /** Metres from a point to the nearest piece of a road's line. */
+  private fun roadDistance(pts: List<GeographicCoordinate>, lat: Double, lon: Double): Double {
+    val p = GeographicCoordinate(lat, lon)
+    var best = Double.MAX_VALUE
+    for (k in 0 until pts.size - 1) best = minOf(best, Geo.pointToSegment(p, pts[k], pts[k + 1]).first)
+    return best
   }
 
   /**
@@ -346,13 +410,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     return null
   }
 
-  /** The driver's answer to [DriverPrompt.OffRoute] (or the choice made for him after 30 s without one). */
+  /** The driver's answer to [DriverPrompt.OffRoute]: stay on the new route, or back onto the old one. */
   fun answerOffRoute(continueHere: Boolean) {
-    if (_nav.value.prompt !is DriverPrompt.OffRoute) return
+    val p = _nav.value.prompt as? DriverPrompt.OffRoute ?: return
     // the question is answered: the voice stops at once (or does not start)
     voice.cancel(OFF_ROUTE_VOICE)
     dismissPrompt()
-    if (continueHere) rerouteContinuing() else rerouteBack()
+    if (!continueHere) rerouteBack(p.old, p.oldTraveled)
   }
 
   /** The stops of the trip still to reach, in order, as waypoints (the last one is the destination). */
@@ -388,7 +452,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
    * travel as the last resort), then the best way from there with the trip's options. The old
    * route counts for nothing: the engine may still rejoin it later only if that is the best way.
    */
-  private fun rerouteContinuing(via: DoubleArray? = null, quiet: Boolean = false) {
+  private fun rerouteContinuing(via: DoubleArray? = null, quiet: Boolean = false, onDone: () -> Unit = {}) {
     val loc = navigationUiState.value.location ?: lastLocation.value ?: return
     val lat = loc.coordinates.lat
     val lon = loc.coordinates.lng
@@ -411,6 +475,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         withContext(Dispatchers.Main) {
           if (_simulating.value) locationProvider.enableSimulationOn(r)
           core.replaceRoute(r)
+          onDone()
         }
         if (!quiet) say("Percorso ricalcolato da questa strada.")
       } catch (e: Exception) {
@@ -428,16 +493,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
    * then every 8 km, in the old direction of travel), so it rejoins the old route the best way
    * and keeps it from there.
    */
-  private fun rerouteBack() {
+  private fun rerouteBack(a: RouteAnalysis, leftAt: Double) {
     val loc = navigationUiState.value.location ?: lastLocation.value ?: return
-    val a = _nav.value.analysis ?: return rerouteContinuing()
     _nav.update { it.copy(recalculating = true) }
     viewModelScope.launch(Dispatchers.IO) {
       try {
         val stops = remainingStops()
         val headings = HashMap<String, Double>()
         val vias = mutableListOf<Pair<Double, Waypoint>>()
-        var m = lastOnRouteTraveled + 1500
+        var m = leftAt + 1500
         while (m < a.length - 1000 && vias.size < 24) {
           val p = a.pointAt(m)
           val q = a.pointAt(minOf(m + 30, a.length))
@@ -462,7 +526,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           }
           (if (best < 300) at else a.length + 1) to st
         }).sortedBy { it.first }.map { it.second }
-        Log.i(TAG, "back onto the route: ${vias.size} pass-through points from ${(lastOnRouteTraveled + 1500).toInt()} m, ${stops.size} stops")
+        Log.i(TAG, "back onto the route: ${vias.size} pass-through points from ${(leftAt + 1500).toInt()} m, ${stops.size} stops")
         val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val r = AppGraph.routes.routes(loc, all, options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
@@ -1371,11 +1435,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       lastGeometryKey = key
       offRouteSince = 0L
       offRouteAskedKey = null
+      providerOffSince = 0L
       lastOnRouteTraveled = 0.0
-      if (extras.prompt is DriverPrompt.OffRoute) {
-        voice.cancel(OFF_ROUTE_VOICE)
-        dismissPrompt()
-      }
+      // (the question "back onto the old route?" stays: it is asked right after the new route)
       AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry)
       laneTracker.reset()
       if (key == simPendingKey) {
@@ -1395,19 +1457,24 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val remaining = ui.progress?.distanceRemaining ?: return
     val traveled = (extras.routeLength - remaining).coerceAtLeast(0.0)
     if (ui.routeDeviation is uniffi.ferrostar.RouteDeviation.NoDeviation) {
-      // on the route (again): the question about leaving it, if still open, is over
       offRouteSince = 0L
       lastOnRouteTraveled = traveled
-      if (extras.prompt is DriverPrompt.OffRoute) {
-        offRouteAskedKey = null
+    }
+    (extras.prompt as? DriverPrompt.OffRoute)?.let { p ->
+      val loc = ui.location
+      // the vehicle is back on the old route by itself: nothing to ask any more
+      val onOld = loc != null && p.old.route.geometry.let { g ->
+        val c = loc.coordinates
+        (0 until g.size - 1).any { k -> Geo.pointToSegment(c, g[k], g[k + 1]).first < 30 }
+      }
+      if (onOld) {
         voice.cancel(OFF_ROUTE_VOICE)
         dismissPrompt()
-      }
-    } else (extras.prompt as? DriverPrompt.OffRoute)?.let { p ->
-      // nobody answered: the choice of the settings, said aloud
-      if (System.currentTimeMillis() - p.askedAt > 30_000) {
+        offRouteAskedKey = null
+      } else if (System.currentTimeMillis() - p.askedAt > 30_000) {
+        // nobody answered: the choice of the settings
         val goOn = AppGraph.settings.settings.value.deviationDefaultContinue
-        say(if (goOn) "Nessuna risposta: continuo su questa strada." else "Nessuna risposta: torno sul percorso.")
+        if (!goOn) say("Nessuna risposta: torno sul percorso di prima.")
         answerOffRoute(goOn)
       }
     }

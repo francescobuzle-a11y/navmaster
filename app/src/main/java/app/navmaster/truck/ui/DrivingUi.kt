@@ -117,14 +117,14 @@ fun PromptCard(p: DriverPrompt, traveledM: Double, onRamp: (Boolean) -> Unit, on
           Row(verticalAlignment = Alignment.CenterVertically) {
             Text("↩", fontSize = 34.sp)
             Spacer(Modifier.width(10.dp))
-            Title("Hai lasciato il percorso", size = 24)
+            Title("Percorso ricalcolato da questa strada", size = 22)
           }
-          Caption("Vuoi continuare sulla strada che stai facendo (nuovo percorso da qui, senza tornare indietro) o tornare sul percorso calcolato?" +
+          Caption("Hai lasciato il percorso: ora ti guido da qui. Vuoi invece tornare sul percorso di prima?" +
               (if (left > 0) " Senza risposta tra $left s scelgo io." else ""), color = Nm.Text, size = 17, lines = 4)
           Spacer(Modifier.height(14.dp))
           Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            BigButton("Continua su questa strada", Modifier.weight(1.2f), Icons.Rounded.Check) { onOffRoute(true) }
-            BigButton("Torna sul percorso", Modifier.weight(1f), Icons.Rounded.Route, BtnStyle.SECONDARY) { onOffRoute(false) }
+            BigButton("Resta su questa strada", Modifier.weight(1.2f), Icons.Rounded.Check) { onOffRoute(true) }
+            BigButton("Torna sul percorso di prima", Modifier.weight(1f), Icons.Rounded.Route, BtnStyle.SECONDARY) { onOffRoute(false) }
           }
         }
         is DriverPrompt.Closure -> {

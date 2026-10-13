@@ -204,7 +204,7 @@ data class Settings(
     val camperEveningStops: Boolean = true,
     val camperEveningFromHour: Int = 17,
     /** Seconds the panel stays open when new places come up (0 = always open). */
-    val poiRailSeconds: Int = 12,
+    val poiRailSeconds: Int = 5,
     /** Opacity of the panel, percent. */
     val poiRailOpacity: Int = 70,
     val poiRailSide: PoiSide = PoiSide.AUTO,

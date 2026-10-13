@@ -281,6 +281,18 @@ class GhRouting(private val context: Context, private val regions: RegionManager
     return runCatching { e.ahead(lat, lon, heading, metres) }.onFailure { Log.w(TAG, "ahead: $it") }.getOrNull()
   }
 
+  /**
+   * Whether a road open to vehicles lies within [maxM] of a point: null when no graph covers the
+   * point (not known), else whether there is one. The off-route question is not asked where there
+   * is no road at all (a field, a yard).
+   */
+  @Synchronized
+  fun roadWithin(lat: Double, lon: Double, maxM: Double): Boolean? {
+    val region = regions.regionAt(lat, lon) ?: return null
+    val e = runCatching { engineFor(region.id) }.getOrNull() ?: return null
+    return runCatching { e.roadDistance(lat, lon, maxM) >= 0 }.onFailure { Log.w(TAG, "road within: $it") }.getOrNull()
+  }
+
   /** The roads of the graph around a point with their real lanes (the junction view), empty without a graph there. */
   @Synchronized
   fun roadsAround(lat: Double, lon: Double, radiusM: Double): List<app.navmaster.truck.routing.gh.GhGuide.Road> {

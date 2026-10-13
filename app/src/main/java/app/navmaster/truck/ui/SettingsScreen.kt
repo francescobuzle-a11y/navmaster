@@ -428,14 +428,14 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
 private fun PoiPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   val heavy = AppGraph.profiles.garage.value.active.type.heavy
   Card("Pannello in guida") {
-    Caption("Un pannello stretto al bordo dello schermo: si apre da solo quando arrivano nuovi punti e poi si richiude " +
-        "lasciando una linguetta da toccare.", size = 13)
+    Caption("La colonna dei posti a destra in guida: si apre da sola quando arrivano nuovi punti e, se non la tocchi, " +
+        "dopo qualche secondo si richiude in una linguetta.", size = 13)
     Stepper("Quanti punti mostrare (0 = mai)", s.poiRailCount.toDouble(), "", 1.0, 0.0, 6.0, 0) { v -> set { it.copy(poiRailCount = v.toInt()) } }
     if (s.poiRailCount > 0) {
-      Caption("Per quanto resta aperto", size = 14)
+      Caption("Dopo quanti secondi si richiude", size = 14)
       Spacer(Modifier.height(4.dp))
       Pills {
-        for (sec in listOf(5, 8, 12, 20, 30, 60, 0)) {
+        for (sec in listOf(3, 5, 8, 12, 20, 30, 60, 0)) {
           Pill(if (sec == 0) "Sempre" else "$sec s", s.poiRailSeconds == sec) { set { it.copy(poiRailSeconds = sec) } }
         }
       }

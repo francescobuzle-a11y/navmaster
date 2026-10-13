@@ -181,6 +181,20 @@ public final class GhEngine implements Closeable {
    * road gets a pass-through point on it. [lat, lon, bearing of the road there], or null when the
    * position is not near a road or the road ends before.
    */
+  /**
+   * How far the nearest road open to vehicles is from a point (metres), or -1 beyond [maxM]: a
+   * vehicle on a field, a yard or a private track has no road to be rerouted from.
+   */
+  public double roadDistance(double lat, double lon, double maxM) {
+    com.graphhopper.routing.util.EncodingManager em = hopper.getEncodingManager();
+    com.graphhopper.routing.ev.BooleanEncodedValue access = em.hasEncodedValue(ORS_CAR_ACCESS)
+        ? em.getBooleanEncodedValue(ORS_CAR_ACCESS) : em.getBooleanEncodedValue("car_access");
+    com.graphhopper.routing.util.EdgeFilter f = e -> e.get(access) || e.getReverse(access);
+    com.graphhopper.storage.index.Snap snap = hopper.getLocationIndex().findClosest(lat, lon, f);
+    if (!snap.isValid() || snap.getQueryDistance() > maxM) return -1;
+    return snap.getQueryDistance();
+  }
+
   public double[] ahead(double lat, double lon, double heading, double metres) {
     com.graphhopper.routing.util.EncodingManager em = hopper.getEncodingManager();
     com.graphhopper.routing.ev.BooleanEncodedValue access = em.hasEncodedValue(ORS_CAR_ACCESS)

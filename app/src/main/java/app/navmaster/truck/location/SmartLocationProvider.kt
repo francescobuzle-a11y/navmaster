@@ -71,6 +71,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   private val _onRoute = MutableStateFlow<Fix?>(null)
   val onRoute: StateFlow<Fix?> = _onRoute.asStateFlow()
 
+  /**
+   * The last position handed on, as the satellites gave it (never moved onto the route): the arrow
+   * on the map shows it as it is whenever the vehicle is off the route, on a track, a yard, a field.
+   */
+  private val _raw = MutableStateFlow<Location?>(null)
+  val raw: StateFlow<Location?> = _raw.asStateFlow()
+
   // the last good satellite fix: where it was on the route, how fast, when (elapsed realtime)
   @Volatile private var fixAlong = -1.0
   @Volatile private var fixSpeed = 0.0
@@ -118,7 +125,15 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     }
     scan(hintIndex - 20, hintIndex + 400)
     if (bestD > 60) scan(0, n - 1)
-    if (bestI < 0 || bestD > 45) return null
+    // off the route from 30 m aside, and sooner when the vehicle clearly goes another way than the
+    // route there (a slip road leaving the motorway, a turn not planned): the arrow must leave the
+    // route the moment the vehicle does
+    if (bestI < 0 || bestD > 30) return null
+    if (bestD > 6 && l.hasBearing() && l.hasSpeed() && l.speed >= 3f) {
+      val rb = bearing(ln.pts[bestI], ln.pts[bestI + 1])
+      val diff = ((l.bearing - rb + 540.0) % 360.0) - 180.0
+      if (Math.abs(diff) > 50) return null
+    }
     hintIndex = bestI
     // on which side of the line: the cross product of the segment and the point (right is negative)
     val a = ln.pts[bestI]
@@ -140,6 +155,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     var lastOnRouteAt = 0L
     fun send(l: Location) {
       lastSent = l
+      _raw.value = l
       trySend(l)
     }
     fun accept(l: Location) {
@@ -157,11 +173,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         val acc = if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0
         val driving = fixAlong >= 0 && fixSpeed >= 3.0 && el - fixAt < 30_000
         // a poor fix while driving on the route (tunnel mouths, under bridges, between buildings:
-        // positions tens of metres off, or "off the route" for a few seconds) is not handed on: it
-        // made the arrow jump sideways or backwards and could start a needless recalculation. For
-        // the guidance it is as if the satellites were silent, so the position goes on along the
-        // route (below) until good fixes come back. Off the route for more than 8 s is real.
-        if (driving && (acc > 35.0 || (s == null && el - lastOnRouteAt < 8_000))) {
+        // positions tens of metres off) is not handed on: it made the arrow jump sideways or
+        // backwards and could start a needless recalculation. For the guidance it is as if the
+        // satellites were silent, so the position goes on along the route (below) until good fixes
+        // come back. A GOOD fix off the route is handed on at once (the vehicle really left it: the
+        // arrow and the recalculation must follow immediately); a doubtful one (over 20 m of
+        // accuracy) only after 4 s off.
+        if (driving && (acc > 35.0 || (s == null && acc > 20.0 && el - lastOnRouteAt < 4_000))) {
           Log.d(TAG, "poor fix left out (accuracy ${acc.toInt()} m, on route ${s != null})")
           return
         }

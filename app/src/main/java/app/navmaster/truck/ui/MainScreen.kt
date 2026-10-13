@@ -340,14 +340,21 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val gpsFix by AppGraph.smartLocation.onRoute.collectAsState()
   val fixFresh = gpsFix != null && (System.nanoTime() - gpsFix!!.atNanos) < 4_000_000_000L &&
       trackAnalysis != null && gpsFix!!.alongM <= trackAnalysis.length + 5
-  // off the route only when the guidance has said so for a few seconds (a single fix off and back
-  // made the arrow jump to the raw position and return): hysteresis
-  val deviated = ui.routeDeviation !is uniffi.ferrostar.RouteDeviation.NoDeviation
-  var deviatedSince by remember { mutableLongStateOf(0L) }
-  LaunchedEffect(deviated) { deviatedSince = if (deviated) System.currentTimeMillis() else 0L }
-  val offRoute = deviated && deviatedSince > 0 && System.currentTimeMillis() - deviatedSince > 2_500
-  val trackOk = navigating && trackAnalysis != null && coreLoc != null && !offRoute &&
-      (fixFresh || app.navmaster.truck.core.Geo.dist(trackAnalysis.pointAt(traveled), coreLoc.coordinates) < 60.0)
+  val simulatingTrack by vm.simulating.collectAsState()
+  // the arrow glides along the route only while the satellites' provider puts the vehicle ON the
+  // route (in the simulation: while the guidance's position is on it); the moment it leaves it,
+  // the arrow shows the real position as it is (a slip road, a yard, a field), never held on the
+  // route nor dragged back to it
+  val trackOk = navigating && trackAnalysis != null && coreLoc != null &&
+      (fixFresh || (simulatingTrack && app.navmaster.truck.core.Geo.dist(trackAnalysis.pointAt(traveled), coreLoc.coordinates) < 60.0))
+  // the real position (the provider's last fix) for the map while the vehicle is off the route
+  val rawFix by AppGraph.smartLocation.raw.collectAsState()
+  val rawLoc = remember(rawFix) { rawFix?.let { l ->
+    uniffi.ferrostar.UserLocation(
+        GeographicCoordinate(l.latitude, l.longitude), if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0,
+        if (l.hasBearing()) uniffi.ferrostar.CourseOverGround(l.bearing.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()) else null,
+        java.time.Instant.ofEpochMilli(l.time), null)
+  } }
   SideEffect {
     if (trackOk) {
       val f = gpsFix
@@ -408,7 +415,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         navigationMapState = mapState,
         // the arrow and the camera follow the position worked out here along the route (see
         // SmoothTrack); "off route" only tells the map to use it as it is, without its own snapping
-        uiState = if (smooth != null) ui.copy(location = smooth, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0))) else ui,
+        uiState = when {
+          smooth != null -> ui.copy(location = smooth, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
+          // off the route while guided: the real position, drawn as it is (no snapping by the map)
+          navigating && !simulatingTrack && rawLoc != null -> ui.copy(location = rawLoc, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
+          else -> ui
+        },
         mapOptions = MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false)),
         routeOverlayBuilder =
             RouteOverlayBuilder(
@@ -773,15 +785,19 @@ private fun NavigatingOverlay(
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
-  // buttons: shown for a few seconds after the map is touched (and at the start), then only the
-  // ones that are needed right now (the "centre" one when the map was moved by hand)
+  // the buttons (report, settings, stops at the left; view, satellite, day/night, voice, end at the
+  // bottom right): away while driving, one touch on the map brings them, another touch puts them
+  // away (and so does doing nothing for 12 s); shown at the start for a moment
   var controls by remember { mutableStateOf(true) }
+  val firstTap = remember { lastMapTap }
+  LaunchedEffect(lastMapTap) { if (lastMapTap != firstTap) controls = !controls }
   // a touch on the bar of the controls keeps it open a little longer
   var barTouch by remember { mutableStateOf(0L) }
-  LaunchedEffect(lastMapTap, barTouch) {
-    controls = true
-    delay(8_000)
-    controls = false
+  LaunchedEffect(controls, barTouch) {
+    if (controls) {
+      delay(12_000)
+      controls = false
+    }
   }
   // the lane the vehicle is really in (from the satellites, nav.LaneTracker): on motorways and
   // slip roads, whose line is the middle of the carriageway; elsewhere the lane is not guessed
@@ -821,14 +837,24 @@ private fun NavigatingOverlay(
   // the speedometer (DriveHud.SpeedArc): about a third of the short side, never so small it cannot
   // be read nor so big it hides the road; smaller while the junction view is open
   val shortSide = minOf(maxWidth, maxHeight)
+  // small while all is well; big for a few seconds when the speed goes over the limit (with an
+  // animation), then small again
   val arcFull = (shortSide * 0.36f).coerceIn(150.dp, 230.dp)
-  // looking at the places (the magnifier's panels open): the speedometer smaller and up, the
-  // buttons smaller, with an animation; smaller also with the junction view
+  val arcSmall = (shortSide * 0.24f).coerceIn(112.dp, 150.dp)
   var poiPanelOpen by remember { mutableStateOf(false) }
+  val overLimit = speedKmh != null && limitKmh != null && speedKmh - minOf(limitKmh, vehicle.topSpeedKmh) >= 1
+  var arcBig by remember { mutableStateOf(false) }
+  LaunchedEffect(overLimit) {
+    if (overLimit) {
+      arcBig = true
+      delay(5_000)
+      arcBig = false
+    } else arcBig = false
+  }
   val arcTarget = when {
-    jv != null -> (arcFull * 0.78f).coerceAtLeast(140.dp)
-    poiPanelOpen -> (arcFull * 0.72f).coerceAtLeast(130.dp)
-    else -> arcFull
+    jv != null -> arcSmall
+    arcBig -> arcFull
+    else -> arcSmall
   }
   val arcW by androidx.compose.animation.core.animateDpAsState(arcTarget, label = "arc")
   val arcH = arcW * 0.733f
@@ -842,27 +868,13 @@ private fun NavigatingOverlay(
     SpeedArc(speedKmh, limitKmh, vehicle.topSpeedKmh, settings.speedWarningKmh, sectionAvg, sectionLimit, arcW, muted, m,
         onSay = { vm.say(it) })
   }
-  Column(Modifier.fillMaxSize()) {
-  Row(Modifier.weight(1f).fillMaxWidth()) {
-  Column(Modifier.weight(1f).fillMaxHeight()) {
-    if (arcBeside) {
-      Row(Modifier.fillMaxWidth()) {
-        Box(Modifier.weight(1f)) {
-          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
-        }
-        Spacer(Modifier.width(10.dp))
-        speedArc(Modifier)
-      }
-    } else {
-      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
-    }
-    // the lane bar from 2 km; once the junction view is open it carries the lanes itself (one
-    // picture, in the same place, upright and sideways)
+  // under the manoeuvre bar, RIGHT under it: the lane bar from 2 km (once the junction view is
+  // open it carries the lanes itself), upright the junction view, then the banners
+  val underManeuver: @Composable () -> Unit = {
     if (laneGuide != null && jv == null) {
       LaneStrip(laneGuide, (if (landscape) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp),
           vehicleLane = stripLane)
     }
-    // upright: the junction view right under the manoeuvre, a fixed height (the banners go under it)
     if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 6.dp), height = jvHeight)
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
@@ -875,14 +887,34 @@ private fun NavigatingOverlay(
       if (section != null) SectionBanner(section.first, traveled, section.second, section.third)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
+  }
+  Column(Modifier.fillMaxSize()) {
+  Row(Modifier.weight(1f).fillMaxWidth()) {
+  Column(Modifier.weight(1f).fillMaxHeight()) {
+    if (arcBeside) {
+      // lying down: the speedometer beside the manoeuvre bar, the lanes and banners under the bar
+      Row(Modifier.fillMaxWidth()) {
+        Column(Modifier.weight(1f)) {
+          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+          underManeuver()
+        }
+        Spacer(Modifier.width(10.dp))
+        speedArc(Modifier)
+      }
+    } else {
+      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+      underManeuver()
+    }
     Box(Modifier.weight(1f).fillMaxWidth()) {
       val spm = ui.progress?.let { pr -> if (pr.distanceRemaining > 1) pr.durationRemaining / pr.distanceRemaining else null }
       val route = analysis?.let { it.route.geometry }
       val hereNow = androidx.compose.runtime.rememberUpdatedState(ui.location?.coordinates)
       val source = remember(route, destination) { AppPoiSource(route, { hereNow.value }, destination) }
       val tracking = mapState.isTrackingUser
-      val railCount = (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) + (if (!tracking) 1 else 0) +
-          (if (!controls && muted) 1 else 0)
+      // the round buttons at the left: with the controls (a touch on the map) report, settings,
+      // stops; always "centre" when the map was moved and the reminder when muted
+      val railCount = (if (controls) (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) else 0) +
+          (if (!tracking) 1 else 0) + (if (!controls && muted) 1 else 0)
       val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
       val nightMode = settings.nightMode
       // the controls needed now and then: in one bar that a touch on the map brings up
@@ -961,17 +993,19 @@ private fun NavigatingOverlay(
             )
           },
           rail = { size ->
-            // always there: report something on the road (touch: what; long press: police at once,
-            // undoable), the settings; the stops; "centre" when the map was moved by hand
-            if (settings.liveReports) {
-              RoundBtn(size, Nm.Amber, "Segnala", onLongClick = onQuickReport, onClick = onReport) {
+            // with the controls: report something on the road (touch: what; long press: police at
+            // once, undoable), the settings, the stops; always "centre" when the map was moved by hand
+            if (controls && settings.liveReports) {
+              RoundBtn(size, Nm.Amber, "Segnala", onLongClick = onQuickReport, onClick = { barTouch = System.currentTimeMillis(); onReport() }) {
                 Text("⚠", fontSize = (size.value * 0.46f).sp, color = Color.Black)
               }
             }
-            RoundBtn(size, Nm.PanelSolid, "Impostazioni", onClick = onSettings) {
-              Icon(Icons.Rounded.Settings, null, tint = Nm.Text, modifier = Modifier.size(size * 0.48f))
+            if (controls) {
+              RoundBtn(size, Nm.PanelSolid, "Impostazioni", onClick = onSettings) {
+                Icon(Icons.Rounded.Settings, null, tint = Nm.Text, modifier = Modifier.size(size * 0.48f))
+              }
             }
-            if (stopsCount > 0) StopsButton(stopsCount, onStops)
+            if (controls && stopsCount > 0) StopsButton(stopsCount, onStops)
             if (!tracking) {
               RoundBtn(size, Nm.PanelSolid, "Centra", onClick = { mapState.recenter(true) }) {
                 Icon(Icons.Rounded.MyLocation, null, tint = Nm.Text, modifier = Modifier.size(size * 0.48f))
