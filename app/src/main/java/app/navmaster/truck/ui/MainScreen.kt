@@ -869,7 +869,7 @@ private fun NavigatingOverlay(
         val buttons = (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) + (if (!mapState.isTrackingUser) 1 else 0) +
             (if (controls) 3 else 0) + (if (!controls && muted) 1 else 0)
         val top = if (arcBeside) 4.dp else arcH + 12.dp
-        val room = boxH - top - buttons * 68.dp - 16.dp
+        val room = boxH - top - 68.dp * buttons - 16.dp
         val colW = (arcFull + 24.dp).coerceIn(220.dp, 270.dp).coerceAtMost(maxWidth * 0.5f)
         val spm = ui.progress?.let { pr -> if (pr.distanceRemaining > 1) pr.durationRemaining / pr.distanceRemaining else null }
         if (room >= 64.dp) {
