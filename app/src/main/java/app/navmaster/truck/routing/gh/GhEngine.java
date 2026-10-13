@@ -737,6 +737,8 @@ public final class GhEngine implements Closeable {
     req.getHints().putObject("timeout_ms", spec.timeoutMs > 0 ? spec.timeoutMs : DEFAULT_TIMEOUT_MS);
     // tests on the computer: without the landmarks (plain A*, same routes, slower)
     if (Boolean.getBoolean("nm.nolm")) req.getHints().putObject("lm.disable", true);
+    // the mild "more motorway" (level 1) weighs less than the landmarks expect: without them
+    if (spec.route == ROUTE_MOTORWAY && !spec.shortest && spec.motorwayLevel <= 1) req.getHints().putObject("lm.disable", true);
     // the roads of the path (alternatives, guidance) and the time on each one
     req.setPathDetails(Arrays.asList("edge_id", "edge_key", "time"));
     req.getHints().putObject("instructions", false);

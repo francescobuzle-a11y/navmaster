@@ -207,6 +207,8 @@ data class Settings(
     val poiRailSeconds: Int = 5,
     /** The places on the map while driving: the name on the pin, and a touch on the pin opens the place (stop here). */
     val poiPinNames: Boolean = true,
+    /** "Più autostrada": 1 (mild) to 5 (almost never off the motorway); the slider on the route card. */
+    val motorwayLevel: Int = 3,
     val poiPinTap: Boolean = true,
     /** Opacity of the panel, percent. */
     val poiRailOpacity: Int = 70,

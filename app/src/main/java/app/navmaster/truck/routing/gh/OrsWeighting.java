@@ -73,13 +73,28 @@ public final class OrsWeighting implements Weighting {
    * saves far more than that.
    */
   static final double STRONG_TRUNK = 1.6, STRONG_OTHER = 2.4, STRONG_LINK_S_PER_M = 0.4;
+  /**
+   * The five levels of "more motorway" (TruckSpec.motorwayLevel): the factors on the time off the
+   * motorway (trunk roads, other roads) and the seconds per metre of ramp. Level 2 is the base the
+   * landmarks were prepared with; above it the weights only grow (the landmarks stay exact); at
+   * level 1 they shrink, so the landmarks are switched off for it (GhEngine).
+   */
+  static final double[] LEVEL_TRUNK = {1.2, STRONG_TRUNK, 2.0, 2.6, 3.5};
+  static final double[] LEVEL_OTHER = {1.5, STRONG_OTHER, 3.2, 4.5, 7.0};
+  static final double[] LEVEL_LINK_S_PER_M = {0.15, STRONG_LINK_S_PER_M, 0.6, 0.9, 1.5};
+  private final double strongTrunk, strongOther, strongLink;
   /** The weighting is the strong "more motorway" one (see STRONG_TRUNK). */
   final boolean strong;
   /** LimitedAccessWeighting's factors for motor vehicles. */
   static final double DESTINATION_FACTOR = 10, PRIVATE_FACTOR = 10, CUSTOMERS_FACTOR = 1.5, SERVICE_FACTOR = 1.2;
   /** openrouteservice does not accept a lower "maximum_speed" (maximum_speed_lower_bound). */
   public static final double MIN_TOP_SPEED = 80.0;
-  static final double IMPLAUSIBLE_MOTORWAY_HEIGHT = 3.8, IMPLAUSIBLE_MOTORWAY_WIDTH = 2.6;
+  /**
+   * On a motorway (and its ramps) a height limit under 4.6 m or a width limit under 3 m is a map
+   * mistake (the tag of the street under the bridge, a sign of the road beside): motorways are
+   * built for every lorry. Such limits never close the road nor send the route off the motorway.
+   */
+  static final double IMPLAUSIBLE_MOTORWAY_HEIGHT = 4.6, IMPLAUSIBLE_MOTORWAY_WIDTH = 3.0;
   // ORS-GH RoadAccess ordinals
   static final int RA_DESTINATION = 1, RA_CUSTOMERS = 2, RA_PRIVATE = 6;
 
@@ -115,6 +130,10 @@ public final class OrsWeighting implements Weighting {
     // "more motorway" on the graphs made from 10/2026: the strong preference (STRONG_MOTORWAY),
     // for lorries and for the other vehicles alike; before, openrouteservice's mild "recommended"
     strong = kind == Kind.RECOMMENDED && ev.hasEncodedValue(GhEngine.STRONG_MOTORWAY_MARK);
+    int lvl = Math.max(1, Math.min(5, spec == null ? 3 : spec.motorwayLevel)) - 1;
+    strongTrunk = LEVEL_TRUNK[lvl];
+    strongOther = LEVEL_OTHER[lvl];
+    strongLink = LEVEL_LINK_S_PER_M[lvl];
     this.kind = !truck && kind == Kind.RECOMMENDED && !strong ? Kind.FASTEST
         : truck && kind == Kind.FASTEST && !old ? Kind.RECOMMENDED : kind;
     this.turns = turns;
@@ -208,12 +227,12 @@ public final class OrsWeighting implements Weighting {
           RoadClass rc = roadClass == null ? RoadClass.OTHER : edge.get(roadClass);
           boolean link = roadClassLink != null && edge.get(roadClassLink);
           if (rc == RoadClass.MOTORWAY) {
-            if (link) w += distance * STRONG_LINK_S_PER_M;
+            if (link) w += distance * strongLink;
           } else if (rc == RoadClass.TRUNK) {
-            w *= STRONG_TRUNK;
-            if (link) w += distance * STRONG_LINK_S_PER_M;
+            w *= strongTrunk;
+            if (link) w += distance * strongLink;
           } else {
-            w *= STRONG_OTHER;
+            w *= strongOther;
           }
         }
       }
@@ -260,8 +279,7 @@ public final class OrsWeighting implements Weighting {
     TruckSpec s = spec;
     if (truck && typeNo != null && edge.get(typeNo)) return false;
     if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return false;
-    boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY
-        && !(roadClassLink != null && edge.get(roadClassLink));
+    boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY;
     if (below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT)) return false;
     if (below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH)) return false;
     if (below(edge, maxLength, s.lengthM) || below(edge, maxWeight, s.weightT) || below(edge, maxAxleLoad, s.axleLoadT)) return false;
@@ -288,8 +306,7 @@ public final class OrsWeighting implements Weighting {
     TruckSpec s = spec;
     if (truck && typeNo != null && edge.get(typeNo)) return "bus".equals(s.vehicleType) ? "divieto per gli autobus" : "divieto per i mezzi pesanti";
     if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return "divieto per le merci pericolose";
-    boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY
-        && !(roadClassLink != null && edge.get(roadClassLink));
+    boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY;
     java.util.Locale it = java.util.Locale.ITALIAN;
     if (below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT))
       return String.format(it, "altezza massima %.2f m", edge.get(maxHeight));

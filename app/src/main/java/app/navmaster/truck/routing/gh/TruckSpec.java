@@ -44,6 +44,11 @@ public final class TruckSpec {
   public boolean shortest = false;
   /** The kind of route: GhEngine.ROUTE_FAST, ROUTE_MOTORWAY (more motorway), ROUTE_SHORT. */
   public int route = 0;
+  /**
+   * How strongly "more motorway" keeps to the motorway, 1 (mild) to 5 (almost never off it); 2 is
+   * the weighting the graphs' landmarks were prepared with (OrsWeighting.STRONG_OTHER).
+   */
+  public int motorwayLevel = 3;
   /** Roads (edge ids) made twice as costly: those of the routes already found, to find another one. */
   public com.carrotsearch.hppc.IntHashSet penalized = null;
   /**

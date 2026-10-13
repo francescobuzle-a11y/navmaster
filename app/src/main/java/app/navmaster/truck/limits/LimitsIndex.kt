@@ -115,6 +115,7 @@ class LimitsIndex(regions: RegionManager) {
     val ways = a?.wayIds ?: emptySet()
     var elsewhere = 0
     var otherSide = 0
+    var implausible = 0
     val settings = app.navmaster.truck.AppGraph.settings.settings.value
     // the owner's own list of speed cameras (Impostazioni › Autovelox) comes first: where it and
     // OpenStreetMap have the same camera, the list's one is kept
@@ -168,9 +169,18 @@ class LimitsIndex(regions: RegionManager) {
               }
               val cond = c.getString(4)
               val at = departure.plusSeconds((lo / avgSpeedMs).toLong())
+              val ver = c.getString(8)
+              // on a motorway a height under 4.6 m or a width under 3 m is a mistake of the data
+              // (the street under the bridge): not a limit of this road
+              val hereEdge = a?.edgeAt(lo)
+              if (hereEdge?.roadClass == "motorway" && ((kind == "maxheight" && value < 4.6) || (kind == "maxwidth" && value < 3.0))) {
+                implausible++
+                continue
+              }
+              // a doubtful limit (not plausible, contradictory, not confirmed) is told, never a block
               out += RouteLimit(kind, value, c.getString(3), c.getString(5), cond, lo, p.lat, p.lng,
-                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)), osm.ifBlank { null },
-                  c.getString(8))
+                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)) && ver != "dubbio", osm.ifBlank { null },
+                  ver)
             }
           }
       out
@@ -204,7 +214,7 @@ class LimitsIndex(regions: RegionManager) {
     if (a != null) a.laneSigns = runCatching { laneSigns(m, a) }.getOrElse { Log.w("NavMasterLimits", "lane signs: $it"); emptyList() }
     Log.i("NavMasterLimits", "scan: ${m.route.size} pts, ${m.cells.size} cells, ${out.size} limits " +
         "(${out.count { it.blocking }} blocking) in ${System.currentTimeMillis() - started} ms, " +
-        "$elsewhere on roads next to the route left out, $otherSide cameras on the other carriageway, $unverified unverified" +
+        "$elsewhere on roads next to the route left out, $otherSide cameras on the other carriageway, $implausible implausible on motorways, $unverified unverified" +
         (if (ways.isEmpty()) " (no way ids: matched by distance)" else ""))
     for (l in out) Log.d("NavMasterLimits", "limit ${l.kind} ${l.value} @${l.alongM.toInt()} ${"%.5f".format(java.util.Locale.ROOT, l.lat)}," +
         "${"%.5f".format(java.util.Locale.ROOT, l.lon)} blocking=${l.blocking} ${l.name ?: ""}")

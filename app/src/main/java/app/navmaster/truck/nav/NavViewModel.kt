@@ -122,6 +122,8 @@ data class PlanState(
     val more: MoreRoutes = MoreRoutes.NONE,
     /** Something the driver should know about the routes (openrouteservice's refused for a limit). */
     val routeNote: String? = null,
+    /** The "more motorway" route is being computed again with another level of the slider. */
+    val motorwayBusy: Boolean = false,
 ) {
   val current: RouteVariant?
     get() = variants.getOrNull(selected)
@@ -672,6 +674,53 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   fun selectVariant(i: Int) = _plan.update { it.copy(selected = i.coerceIn(0, (it.variants.size - 1).coerceAtLeast(0))) }
 
+  private var motorwayJob: Job? = null
+
+  /**
+   * The slider on the "more motorway" card: the level is kept (Settings.motorwayLevel) and that
+   * route is computed again with it, in place of the one on the screen (the other routes stay).
+   */
+  fun setMotorwayLevel(level: Int) {
+    val lvl = level.coerceIn(1, 5)
+    AppGraph.settings.update { it.copy(motorwayLevel = lvl) }
+    val req = planRequest ?: return
+    motorwayJob?.cancel()
+    motorwayJob = viewModelScope.launch(Dispatchers.IO) {
+      delay(400)
+      _plan.update { it.copy(motorwayBusy = true) }
+      try {
+        val (from, waypoints, base) = req
+        val kind = app.navmaster.truck.vehicle.RouteKind.MOTORWAY
+        val opts = base.copy(route = kind, quick = true, motorwayLevel = lvl)
+        val r = runCatching { AppGraph.routes.routes(from, waypoints, opts).firstOrNull() }
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
+        if (planRequest !== req) return@launch
+        if (r == null) {
+          Log.w(TAG, "more motorway level $lvl: no route")
+          return@launch
+        }
+        val built = buildVariant(VariantKind.MOTORWAY, kind.label, r, opts, LocalDateTime.now())
+        if (planRequest !== req) return@launch
+        _plan.update { st ->
+          val at = st.variants.indexOfFirst { it.kind == VariantKind.MOTORWAY }
+          val list = st.variants.toMutableList()
+          if (at >= 0) {
+            list[at] = built.copy(recommended = list[at].recommended)
+            st.copy(variants = list, selected = at)
+          } else {
+            // offered next to the first route (its "= più autostrada" note no longer holds)
+            val cleaned = list.map { v -> v.copy(title = v.title.replace(" = più autostrada", "")) }.toMutableList()
+            cleaned.add(1.coerceAtMost(cleaned.size), built)
+            st.copy(variants = cleaned, selected = 1.coerceAtMost(cleaned.size - 1))
+          }
+        }
+        Log.i(TAG, "more motorway level $lvl: ${(built.distanceM / 1000).roundToInt()} km, ${(built.durationS / 60).roundToInt()} min")
+      } finally {
+        _plan.update { it.copy(motorwayBusy = false) }
+      }
+    }
+  }
+
   /** The driver does not want to go through this point: recompute avoiding it. */
   fun avoid(c: Criticality) {
     _plan.update { it.copy(avoided = it.avoided + c) }
@@ -723,7 +772,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
             p.avoidAreas.map { Geo.squareAround(it.lat, it.lng, 60.0) }
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         val pref = settings.routeKind
-        val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions, route = pref)
+        val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions, route = pref, motorwayLevel = settings.motorwayLevel)
         // 1. the routes of the kind the driver prefers (the best one and an alternative) with the
         //    vehicle's measures: shown as soon as they are there, the driver can start at once
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))

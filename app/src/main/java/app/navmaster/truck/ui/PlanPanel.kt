@@ -79,6 +79,7 @@ fun PlanPanel(
     onClearStart: () -> Unit = {},
     /** "Altri percorsi": GraphHopper's alternatives added to the routes on screen. */
     onMore: () -> Unit = {},
+    onMotorwayLevel: (Int) -> Unit = {},
 ) {
   // a departure chosen by the driver: the trip can only be simulated
   val startLabel = if (plan.start != null) "Simula" else "Avvia"
@@ -165,7 +166,10 @@ fun PlanPanel(
       if (plan.variants.isNotEmpty()) {
         Spacer(Modifier.height(8.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-          plan.variants.forEachIndexed { i, v -> VariantCard(v, i == plan.selected) { onSelect(i) } }
+          plan.variants.forEachIndexed { i, v ->
+            VariantCard(v, i == plan.selected, level = if (v.kind == VariantKind.MOTORWAY) v.options.motorwayLevel else 0,
+                busy = v.kind == VariantKind.MOTORWAY && plan.motorwayBusy, onLevel = onMotorwayLevel) { onSelect(i) }
+          }
           if (!plan.computing) MoreRoutesCard(plan.more, compact = false, onClick = onMore)
         }
         plan.routeNote?.let {
@@ -283,7 +287,7 @@ private fun MoreRoutesCard(state: MoreRoutes, compact: Boolean, onClick: () -> U
 }
 
 @Composable
-private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit) {
+private fun VariantCard(v: RouteVariant, selected: Boolean, level: Int = 0, busy: Boolean = false, onLevel: (Int) -> Unit = {}, onClick: () -> Unit) {
   Column(
       Modifier.widthIn(min = 170.dp).clip(RoundedCornerShape(18.dp)).background(if (selected) Nm.Raised else Color(0x14FFFFFF))
           .border(2.dp, if (selected) Nm.Accent else Color.Transparent, RoundedCornerShape(18.dp)).clickable(onClick = onClick).padding(12.dp),
@@ -305,6 +309,27 @@ private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
       if (v.critical > 0) Badge("${v.critical} critiche", Nm.Red)
       if (v.warnings > 0) Badge("${v.warnings} attenzione", Nm.Amber)
       if (v.critical == 0 && v.warnings == 0) Badge("nessuna criticità", Nm.Accent)
+    }
+    // "more motorway": five levels, from mild to almost never off the motorway; a touch computes
+    // this route again with the level chosen
+    if (level > 0) {
+      Spacer(Modifier.height(8.dp))
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Caption("Quanta autostrada", size = 12, modifier = Modifier.weight(1f))
+        if (busy) CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+        else Caption(when (level) { 1 -> "poca"; 2 -> "normale"; 3 -> "tanta"; 4 -> "quasi sempre"; else -> "sempre" }, size = 12, color = Nm.Accent)
+      }
+      Spacer(Modifier.height(4.dp))
+      Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (k in 1..5) {
+          Box(
+              Modifier.weight(1f).height(26.dp).clip(RoundedCornerShape(8.dp))
+                  .background(if (k <= level) Nm.Accent else Color(0x22FFFFFF))
+                  .clickable(enabled = !busy) { onLevel(k) },
+              contentAlignment = Alignment.Center,
+          ) { Text("$k", color = if (k <= level) Color.Black else Nm.Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+        }
+      }
     }
   }
 }

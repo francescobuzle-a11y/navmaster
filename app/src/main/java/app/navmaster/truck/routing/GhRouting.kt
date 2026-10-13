@@ -545,6 +545,7 @@ fun app.navmaster.truck.vehicle.VehicleProfile.ghSpec(loadT: Double, trip: app.n
     preferTruckRoutes = v.preferTruckRoutes
     shortest = trip.shortest
     route = trip.route.gh
+    motorwayLevel = trip.motorwayLevel.coerceIn(1, 5)
     if (trip.quick) timeoutMs = TruckSpec.QUICK_TIMEOUT_MS
     // the zones are rings of [lon, lat] (GeoJSON), [lat, lon] here
     for (ring in trip.excludePolygons) {

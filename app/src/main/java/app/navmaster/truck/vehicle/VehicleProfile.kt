@@ -162,6 +162,8 @@ data class TripOptions(
      * short time limit and without the "fewest limits" retry, so that it never keeps the tablet busy.
      */
     val quick: Boolean = false,
+    /** "Più autostrada": how strongly it keeps to the motorway, 1 (mild) to 5 (almost never off it). */
+    val motorwayLevel: Int = 3,
 ) {
   companion object {
     fun pointKey(lat: Double, lon: Double): String = String.format(java.util.Locale.ROOT, "%.5f,%.5f", lat, lon)
