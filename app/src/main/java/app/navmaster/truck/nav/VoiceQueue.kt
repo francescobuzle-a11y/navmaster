@@ -68,6 +68,22 @@ class VoiceQueue(
     ensureLoop()
   }
 
+  /**
+   * The sentence of [tag] is not wanted any more (the driver already answered the question it
+   * asks): dropped if still waiting, cut at once if being said.
+   */
+  fun cancel(tag: String) {
+    if (Looper.myLooper() != Looper.getMainLooper()) {
+      scope.launch(Dispatchers.Main) { cancel(tag) }
+      return
+    }
+    pending.removeAll { it.tag == tag }
+    if (speaking?.tag == tag) {
+      runCatching { tts()?.stop() }
+      speaking = null
+    }
+  }
+
   /** Everything waiting is forgotten and the voice stops (guidance ended, muted). */
   fun clear() {
     if (Looper.myLooper() != Looper.getMainLooper()) {

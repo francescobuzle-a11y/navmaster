@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The same mark in one colour, for the themed icons of Android 13 and later. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="0.68" android:scaleY="0.68">
+        <path android:pathData="M31,88 L31,34 L77,80 L77,36"
+            android:strokeColor="#FF000000" android:strokeWidth="18" android:strokeLineJoin="miter"
+            android:strokeMiterLimit="10" android:fillColor="#00000000"/>
+        <path android:pathData="M77,11 L94,37 L60,37 Z" android:fillColor="#FF000000"/>
+    </group>
+</vector>

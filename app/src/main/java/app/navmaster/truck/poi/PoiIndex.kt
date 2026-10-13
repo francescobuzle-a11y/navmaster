@@ -61,7 +61,9 @@ class PoiIndex(regions: RegionManager) {
             "AND p.cat IN ($inCats)", null).use { c ->
           while (c.moveToNext()) {
             val p = read(c, region.id)
-            if (truckOnly && p.cat == "fuel" && "hgv" !in p.flags) continue
+            // (truckOnly no longer drops the fuel stations without "hgv": OpenStreetMap marks very
+            // few of them, 245 of 32 000 in Italy, and the driver saw none along the route; the
+            // badge "TIR" says which ones are known to suit lorries)
             if (!passes(p, subs)) continue
             val (d, along) = m.nearest(p.coordinate) ?: continue
             val limit = if (p.cat in setOf("services", "rest_area")) maxOf(maxOffM, 400) else maxOffM
@@ -74,7 +76,7 @@ class PoiIndex(regions: RegionManager) {
   }
 
   /** The finer choices of the driver (restaurants only, AdBlue, free ...) for this place. */
-  private fun passes(p: Poi, subs: Set<String>): Boolean {
+  fun passes(p: Poi, subs: Set<String>): Boolean {
     if (subs.isEmpty()) return true
     val prefix = p.cat + ":"
     val chosen = subs.filter { it.startsWith(prefix) }.map { it.substring(prefix.length) }

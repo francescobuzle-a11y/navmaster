@@ -3,6 +3,15 @@ package app.navmaster.truck.ui
 import android.media.AudioManager
 import android.media.ToneGenerator
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,12 +39,12 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -205,7 +214,7 @@ fun SpeedArc(
     SpeedState.SECTION -> Nm.Blue
   }
   val track = if (state == SpeedState.FAR) Color(0x40FFFFFF) else Color(0xFF2A323C)
-  val bg = if (state == SpeedState.FAR) Nm.RedDark else Color(0xF0171C22)
+  val bg = if (state == SpeedState.FAR) Nm.RedDark else Nm.PanelSolid
   val edge = when (state) {
     SpeedState.OVER -> Nm.Amber
     SpeedState.SECTION -> Nm.Blue.copy(alpha = 0.8f)
@@ -294,8 +303,8 @@ data class PoiPin(val key: String, val lat: Double, val lon: Double, val glyph: 
 enum class QuickPoi(val label: String, val glyph: String, val color: Color, val cats: Set<String>, val subs: Set<String> = emptySet()) {
   FUEL("Gasolio", PoiGlyphs.FUEL, PoiGlyphs.Blue, setOf("fuel")),
   ADBLUE("AdBlue", PoiGlyphs.DROP, PoiGlyphs.LightBlue, setOf("fuel"), setOf("fuel:adblue")),
-  PARKING("Posti TIR", PoiGlyphs.PARKING, PoiGlyphs.Violet, setOf("truck_parking", "services", "rest_area"),
-      setOf("services:hgv", "rest_area:hgv")),
+  // the motorway service areas have lorry parking: kept all (OpenStreetMap seldom says so)
+  PARKING("Posti TIR", PoiGlyphs.PARKING, PoiGlyphs.Violet, setOf("truck_parking", "services", "rest_area"), setOf("rest_area:hgv")),
   SERVICES("Area servizio", PoiGlyphs.SERVICES, PoiGlyphs.Teal, setOf("services")),
   FOOD("Ristoro", PoiGlyphs.FOOD, PoiGlyphs.Orange, setOf("food")),
   SHOWER("Docce", PoiGlyphs.SHOWER, PoiGlyphs.Cyan, setOf("shower")),
@@ -313,43 +322,91 @@ enum class SearchScope(val label: String) {
 
 private enum class PanelMode { LIST, CHOOSE, SEARCH, RESULTS }
 
+/** What the magnifier finds, with a note when it had to look elsewhere ("none along the route"). */
+data class PoiFound(val list: List<RoutePoi>, val note: String? = null)
+
+/**
+ * Where the driving panel finds its places: the app's offline databases ([AppPoiSource]), or
+ * fixed lists in the screenshot tests.
+ */
+interface PoiSource {
+  suspend fun quick(q: QuickPoi, traveledM: Double): PoiFound
+  suspend fun search(text: String, scope: SearchScope, traveledM: Double): PoiFound
+}
+
+/**
+ * The places of the offline databases (poi.sqlite of every installed country): along [route]
+ * within 1.5 km, or near the vehicle / the destination. A quick choice with nothing along the
+ * route shows the nearest ones around the vehicle instead (and says so). Fuel stations are not
+ * filtered on "for lorries": OpenStreetMap marks very few of them (245 of 32 000 in Italy), the
+ * badge "TIR" says which ones are.
+ */
+class AppPoiSource(
+    route: List<GeographicCoordinate>?,
+    private val here: () -> GeographicCoordinate?,
+    private val destination: GeographicCoordinate?,
+) : PoiSource {
+  private val matcher = route?.takeIf { it.size > 1 }?.let { lazy { RouteMatcher(it) } }
+
+  override suspend fun quick(q: QuickPoi, traveledM: Double): PoiFound = withContext(Dispatchers.IO) {
+    runCatching {
+      val m = matcher?.value
+      val along = if (m == null) emptyList() else
+        AppGraph.poi.alongRoute(m, q.cats, false, 1500, q.subs).filter { it.alongM > traveledM + 30 }.take(8)
+      if (along.isNotEmpty()) return@runCatching PoiFound(along)
+      // nothing on the way: the nearest around the vehicle
+      val c = here() ?: return@runCatching PoiFound(emptyList())
+      val near = AppGraph.poi.near(c.lat, c.lng, 30_000.0, q.cats, limit = 60)
+          .filter { (p, _) -> AppGraph.poi.passes(p, q.subs) }
+          .take(8).map { (p, d) -> RoutePoi(p, traveledM + d, -1.0) }
+      PoiFound(near, if (near.isEmpty()) null else "Nessuno lungo il percorso: i più vicini a te")
+    }.getOrDefault(PoiFound(emptyList()))
+  }
+
+  override suspend fun search(text: String, scope: SearchScope, traveledM: Double): PoiFound = withContext(Dispatchers.IO) {
+    PoiFound(runCatching { searchPlaces(text, scope, matcher?.value, here(), destination, traveledM) }.getOrDefault(emptyList()))
+  }
+}
+
 /**
  * The places while driving, in a column at the right under the speedometer: the nearest of the
  * driver's kinds in a big card, the next ones in a line each, "altri" for the whole list and the
  * magnifier. The magnifier opens "Cosa cerchi?" (quick choices: fuel, AdBlue, lorry parking…, and
  * "Cerca" for a name or a kind along the route, near the vehicle or near the destination); a
  * choice shows only those places, in the column and on the map. It never grows beyond
- * [maxHeight] (the room left by the buttons under it).
+ * [maxHeight]: what does not fit scrolls. [onOpen] says when the magnifier's panels are open
+ * (the speedometer and the buttons make room for them).
  */
 @Composable
 fun PoiColumn(
     pois: List<RoutePoi>,
     traveledM: Double,
-    route: List<GeographicCoordinate>?,
-    here: GeographicCoordinate?,
-    destination: GeographicCoordinate?,
+    source: PoiSource,
+    settings: app.navmaster.truck.settings.Settings,
+    hasHere: Boolean,
+    hasDestination: Boolean,
     secondsPerMetre: Double?,
     canType: Boolean,
     width: Dp,
     maxHeight: Dp,
     modifier: Modifier = Modifier,
+    startMode: String? = null,
     onPoi: (RoutePoi) -> Unit,
     onAll: () -> Unit,
     onPins: (List<PoiPin>) -> Unit,
+    onOpen: (Boolean) -> Unit = {},
+    onRemember: (String) -> Unit = {},
 ) {
-  val settings by AppGraph.settings.settings.collectAsState()
-  val alpha = (settings.poiRailOpacity.coerceIn(40, 100)) / 100f
-  val panel = Color(0xFF171C22).copy(alpha = maxOf(alpha, 0.88f))
-  var mode by remember { mutableStateOf(PanelMode.LIST) }
+  val panel = Nm.PanelSolid
+  var mode by remember { mutableStateOf(startMode?.let { m -> PanelMode.entries.firstOrNull { it.name == m } } ?: PanelMode.LIST) }
   var quick by remember { mutableStateOf<QuickPoi?>(null) }
   var query by remember { mutableStateOf("") }
   var scope by remember { mutableStateOf(SearchScope.ROUTE) }
-  var results by remember { mutableStateOf<List<RoutePoi>?>(null) }
+  var found by remember { mutableStateOf<PoiFound?>(null) }
   var resultsTitle by remember { mutableStateOf("") }
   var resultsGlyph by remember { mutableStateOf(PoiGlyphs.SEARCH to PoiGlyphs.Green) }
   val scopeAll = rememberCoroutineScope()
-  val matcher = remember(route) { route?.takeIf { it.size > 1 }?.let { lazy { RouteMatcher(it) } } }
-  val truckOnly = settings.poiOnlyTruckFriendly && AppGraph.profiles.garage.value.active.type.heavy
+  LaunchedEffect(mode) { onOpen(mode != PanelMode.LIST) }
 
   // the nearest of each kind ahead (a parking, a fuel station, a service area…), as the side panel did
   val ahead = remember(pois, (traveledM / 100).toInt()) {
@@ -382,17 +439,9 @@ fun PoiColumn(
     quick = q
     resultsTitle = "${q.label} sul percorso"
     resultsGlyph = q.glyph to q.color
-    results = null
+    found = null
     mode = PanelMode.RESULTS
-    val m = matcher ?: run { results = emptyList(); return }
-    scopeAll.launch {
-      results = withContext(Dispatchers.IO) {
-        runCatching {
-          AppGraph.poi.alongRoute(m.value, q.cats, truckOnly && q != QuickPoi.CAMPER, maxOf(settings.poiMaxDetourM, 1500), q.subs)
-              .filter { it.alongM > traveledM + 30 }.take(8)
-        }.getOrDefault(emptyList())
-      }
-    }
+    scopeAll.launch { found = source.quick(q, traveledM) }
   }
 
   fun runSearch() {
@@ -401,33 +450,30 @@ fun PoiColumn(
     quick = null
     resultsTitle = "«$text» · " + scope.label.lowercase()
     resultsGlyph = PoiGlyphs.SEARCH to PoiGlyphs.Green
-    results = null
+    found = null
     mode = PanelMode.RESULTS
-    AppGraph.settings.update { st -> st.copy(poiRecent = (listOf(text) + st.poiRecent.filter { !it.equals(text, true) }).take(5)) }
+    onRemember(text)
     val sc = scope
-    scopeAll.launch {
-      results = withContext(Dispatchers.IO) {
-        runCatching { searchPlaces(text, sc, matcher?.value, here, destination, traveledM) }.getOrDefault(emptyList())
-      }
-    }
+    scopeAll.launch { found = source.search(text, sc, traveledM) }
   }
 
   // the pins on the map: the places shown in the column (the first ones)
   val pinSource = when (mode) {
-    PanelMode.RESULTS -> results.orEmpty().filter { it.offRouteM >= 0 }.take(3)
+    PanelMode.RESULTS -> found?.list.orEmpty().take(3)
     else -> ahead.take(2)
   }
   val pinKey = pinSource.map { it.poi.key + ":" + distOf(it) }
   LaunchedEffect(pinKey) {
     onPins(pinSource.map { p ->
-      val (g, c) = if (mode == PanelMode.RESULTS && quick != null) quick!!.glyph to quick!!.color else PoiGlyphs.of(p.poi.cat)
+      val q = quick
+      val (g, c) = if (mode == PanelMode.RESULTS && q != null) q.glyph to q.color else PoiGlyphs.of(p.poi.cat)
       PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, distOf(p))
     })
   }
-  DisposableEffect(Unit) { onDispose { onPins(emptyList()) } }
+  DisposableEffect(Unit) { onDispose { onPins(emptyList()); onOpen(false) } }
 
   val lensSize = 56.dp
-  Column(modifier.width(width).heightIn(max = maxHeight).animateContentSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  Column(modifier.width(width).heightIn(max = maxHeight), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     when (mode) {
       PanelMode.LIST -> {
         val room = maxHeight - lensSize - 8.dp
@@ -451,7 +497,7 @@ fun PoiColumn(
       }
       PanelMode.CHOOSE -> ChoosePanel(panel, maxHeight,
           onPick = { runQuick(it) }, onSearch = { mode = PanelMode.SEARCH }, onClose = { mode = PanelMode.LIST })
-      PanelMode.SEARCH -> SearchPanel(panel, query, { query = it }, scope, { scope = it }, destination != null, here != null,
+      PanelMode.SEARCH -> SearchPanel(panel, maxHeight, query, { query = it }, scope, { scope = it }, hasDestination, hasHere,
           canType, settings.poiRecent, onRecent = { query = it; runSearch() }, onGo = { runSearch() }, onBack = { mode = PanelMode.CHOOSE })
       PanelMode.RESULTS -> {
         Row(
@@ -463,21 +509,30 @@ fun PoiColumn(
           Spacer(Modifier.width(10.dp))
           Text(resultsTitle, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
               modifier = Modifier.weight(1f))
-          IconButtonSmall(PoiGlyphs.CLOSE, "Togli il filtro") { mode = PanelMode.LIST; results = null; quick = null }
+          IconButtonSmall(PoiGlyphs.CLOSE, "Togli il filtro") { mode = PanelMode.LIST; found = null; quick = null }
         }
-        val list = results
-        val room = maxHeight - 48.dp - lensSize - 16.dp
-        when {
-          list == null -> Row(Modifier.clip(RoundedCornerShape(14.dp)).background(panel).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(22.dp), strokeWidth = 3.dp)
-            Spacer(Modifier.width(10.dp))
-            Text("Cerco…", color = Nm.Text, fontSize = 14.sp)
-          }
-          list.isEmpty() -> Text("Niente trovato: prova un'altra zona.", color = Nm.Text, fontSize = 14.sp,
-              modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(panel).padding(14.dp))
-          else -> {
-            for ((i, p) in list.take((room / 60.dp).toInt().coerceAtLeast(1)).withIndex()) {
-              PoiLine(p, distOf(p), eta(p), panel, highlight = if (i == 0) resultsGlyph.second else null) { onPoi(p) }
+        val f = found
+        // the list scrolls in the room left between the title and the magnifier
+        Column(
+            Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          when {
+            f == null -> Row(Modifier.clip(RoundedCornerShape(14.dp)).background(panel).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+              CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(22.dp), strokeWidth = 3.dp)
+              Spacer(Modifier.width(10.dp))
+              Text("Cerco…", color = Nm.Text, fontSize = 14.sp)
+            }
+            f.list.isEmpty() -> Text("Niente trovato lungo il percorso né vicino a te.", color = Nm.Text, fontSize = 14.sp,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(panel).padding(14.dp))
+            else -> {
+              f.note?.let {
+                Text(it, color = Nm.Amber, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(panel).padding(horizontal = 12.dp, vertical = 8.dp))
+              }
+              for ((i, p) in f.list.withIndex()) {
+                PoiLine(p, distOf(p), eta(p), panel, highlight = if (i == 0) resultsGlyph.second else null) { onPoi(p) }
+              }
             }
           }
         }
@@ -510,7 +565,7 @@ private fun BigPoiCard(p: RoutePoi, dist: String, eta: String?, bg: Color, onCli
   val (g, c) = PoiGlyphs.of(p.poi.cat)
   val cat = PoiCategories.byId(p.poi.cat)
   Column(
-      Modifier.fillMaxWidth().shadow(8.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(bg)
+      Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(bg)
           .border(1.dp, c.copy(alpha = 0.7f), RoundedCornerShape(20.dp)).clickable(onClick = onClick).padding(12.dp),
       verticalArrangement = Arrangement.spacedBy(6.dp),
   ) {
@@ -565,10 +620,10 @@ private fun PoiLine(p: RoutePoi, dist: String, eta: String?, bg: Color, highligh
 
 @Composable
 private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, onSearch: () -> Unit, onClose: () -> Unit) {
-  // the tiles a little lower when the room is short (a phone, or the buttons open under it)
-  val tileH = if (maxHeight < 360.dp) 54.dp else 66.dp
+  // the tiles lower when the room is short (lying down, a phone): the panel scrolls if still too tall
+  val tileH = if (maxHeight < 330.dp) 50.dp else 64.dp
   Column(
-      Modifier.fillMaxWidth().shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(bg)
+      Modifier.fillMaxWidth().heightIn(max = maxHeight).clip(RoundedCornerShape(22.dp)).background(bg)
           .border(1.dp, Nm.Accent.copy(alpha = 0.6f), RoundedCornerShape(22.dp)).padding(start = 12.dp, end = 6.dp, bottom = 12.dp),
   ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -576,7 +631,7 @@ private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, on
           modifier = Modifier.weight(1f).padding(start = 4.dp))
       IconButtonSmall(PoiGlyphs.CLOSE, "Chiudi", onClose)
     }
-    Column(Modifier.padding(end = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.padding(end = 6.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
       for (row in QuickPoi.entries.chunked(3)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           for (q in row) {
@@ -585,9 +640,9 @@ private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, on
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-              Glyph(q.glyph, q.color, 24.dp, description = q.label)
-              Spacer(Modifier.height(4.dp))
-              Text(q.label, color = Nm.Text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+              Glyph(q.glyph, q.color, if (tileH < 60.dp) 20.dp else 24.dp, description = q.label)
+              Spacer(Modifier.height(3.dp))
+              Text(q.label, color = Nm.Text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
           }
         }
@@ -608,6 +663,7 @@ private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, on
 @Composable
 private fun SearchPanel(
     bg: Color,
+    maxHeight: Dp,
     query: String,
     onQuery: (String) -> Unit,
     scope: SearchScope,
@@ -621,19 +677,18 @@ private fun SearchPanel(
     onBack: () -> Unit,
 ) {
   Column(
-      Modifier.fillMaxWidth().shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(bg)
+      Modifier.fillMaxWidth().heightIn(max = maxHeight).clip(RoundedCornerShape(22.dp)).background(bg)
           .border(1.dp, Nm.Accent.copy(alpha = 0.6f), RoundedCornerShape(22.dp)).padding(start = 12.dp, end = 6.dp, bottom = 12.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Text("CERCA", color = Color(0xFF8FE0AE), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp,
           modifier = Modifier.weight(1f).padding(start = 4.dp))
       IconButtonSmall(PoiGlyphs.CLOSE, "Indietro", onBack)
     }
-    Column(Modifier.padding(end = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.padding(end = 6.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
       OutlinedTextField(
           query, onQuery, singleLine = true, enabled = canType,
-          label = { Text(if (canType) "Nome o tipo di posto" else "Per scrivere fermati (o usa le ricerche recenti)") },
+          label = { Text(if (canType) "Nome o tipo di posto" else "Per scrivere fermati (o usa le recenti)") },
           keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
           keyboardActions = KeyboardActions(onSearch = { onGo() }),
           modifier = Modifier.fillMaxWidth(),
@@ -691,14 +746,7 @@ fun searchPlaces(
     destination: GeographicCoordinate?,
     traveledM: Double,
 ): List<RoutePoi> {
-  val words = text.lowercase().split(' ', ',', '.').filter { it.length >= 4 }
-  val cats = PoiCategories.all.filter { c ->
-    val l = c.label.lowercase()
-    words.any { w -> l.contains(w.take(6)) || w.contains(l.take(6)) }
-  }.map { it.id }.toSet() +
-      (if (words.any { it.startsWith("gomm") }) setOf("tyres") else emptySet()) +
-      (if (words.any { it.startsWith("lavag") }) setOf("truck_wash") else emptySet()) +
-      (if (words.any { it.startsWith("offic") || it.startsWith("mecca") }) setOf("truck_repair") else emptySet())
+  val cats = categoriesFor(text)
   val byName: List<Poi> = AppGraph.poi.search(text, 200)
   val out = LinkedHashMap<String, RoutePoi>()
   when (scope) {
@@ -723,5 +771,163 @@ fun searchPlaces(
       }
       return out.values.sortedBy { it.alongM }.take(8)
     }
+  }
+}
+
+/** The kinds of place a search text names ("gasolio", "parcheggio", "lavaggio camion"…). */
+fun categoriesFor(text: String): Set<String> {
+  val words = text.lowercase().split(' ', ',', '.').filter { it.length >= 3 }
+  val out = HashSet<String>()
+  for (c in PoiCategories.all) {
+    val l = c.label.lowercase()
+    if (words.any { w -> w.length >= 4 && (l.contains(w.take(6)) || w.contains(l.take(6))) }) out += c.id
+  }
+  for (w in words) {
+    when {
+      w.startsWith("gomm") -> out += "tyres"
+      w.startsWith("lavag") -> out += "truck_wash"
+      w.startsWith("offic") || w.startsWith("mecca") -> out += "truck_repair"
+      w.startsWith("gasol") || w.startsWith("diesel") || w.startsWith("benzi") || w.startsWith("carbur") || w.startsWith("distrib") -> out += "fuel"
+      w.startsWith("parche") || w.startsWith("sosta") -> { out += "truck_parking"; out += "rest_area" }
+      w.startsWith("ristor") || w.startsWith("mangi") || w == "bar" -> out += "food"
+      w.startsWith("docc") -> out += "shower"
+      w == "wc" || w.startsWith("bagn") -> out += "toilets"
+      w.startsWith("albergo") || w.startsWith("hotel") || w.startsWith("motel") -> out += "hotel"
+      w.startsWith("farmac") -> out += "pharmacy"
+      w.startsWith("bancom") -> out += "atm"
+      w.startsWith("camper") -> { out += "camper_site"; out += "camper_service"; out += "camper_parking" }
+    }
+  }
+  return out
+}
+
+// ------------------------------------------------------------------------------ the buttons
+
+/** A round button of the driving screen: [content] is its sign, [size] grows and shrinks with animation. */
+@Composable
+fun RoundBtn(
+    size: Dp,
+    color: Color,
+    description: String,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+  val s by animateDpAsState(size, label = "btn")
+  // the gestures read the newest actions (the lambdas change at every recomposition)
+  val tap by rememberUpdatedState(onClick)
+  val longTap by rememberUpdatedState(onLongClick)
+  Box(
+      modifier.size(s).shadow(8.dp, CircleShape).clip(CircleShape).background(color).border(1.dp, Nm.Line, CircleShape)
+          .semantics { contentDescription = description }
+          .pointerInput(onLongClick != null) {
+            val press: ((Offset) -> Unit)? = if (onLongClick == null) null else ({ _: Offset -> longTap?.invoke(); Unit })
+            detectTapGestures(onTap = { tap() }, onLongPress = press)
+          },
+      contentAlignment = Alignment.Center,
+  ) { content() }
+}
+
+/** A button of the bar that appears with a touch on the map: a sign and a word under it. */
+data class BarButton(val label: String, val icon: ImageVector?, val text: String?, val color: Color, val onClick: () -> Unit)
+
+/**
+ * The buttons that are needed only now and then while driving (2D/3D, satellite, day/night,
+ * voice, end), in one bar at the bottom left that appears with a touch on the map and goes away
+ * after a few seconds; in the room left of the round buttons, so it never squeezes nor overlaps them.
+ */
+@Composable
+fun ControlsBar(visible: Boolean, items: List<BarButton>, maxWidth: Dp, modifier: Modifier = Modifier) {
+  // one line when it fits, else two (an upright phone): never under the round buttons at the right
+  val itemW = 62.dp
+  val gap = 4.dp
+  val perRow = ((maxWidth - 12.dp + gap) / (itemW + gap)).toInt().coerceIn(1, items.size.coerceAtLeast(1))
+  androidx.compose.animation.AnimatedVisibility(
+      visible,
+      modifier,
+      enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.slideInVertically { it / 2 },
+      exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.slideOutVertically { it / 2 },
+  ) {
+    Column(
+        Modifier.shadow(10.dp, RoundedCornerShape(24.dp)).clip(RoundedCornerShape(24.dp)).background(Nm.PanelSolid)
+            .border(1.dp, Nm.Line, RoundedCornerShape(24.dp)).padding(horizontal = 6.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(gap),
+    ) {
+      for (line in items.chunked(perRow)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+          for (b in line) {
+            Column(
+                Modifier.width(itemW).heightIn(min = 60.dp).clip(RoundedCornerShape(16.dp)).clickable(onClick = b.onClick)
+                    .semantics { contentDescription = b.label }.padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+              Box(Modifier.size(34.dp).clip(CircleShape).background(b.color), contentAlignment = Alignment.Center) {
+                if (b.icon != null) Icon(b.icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                else Text(b.text ?: "", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+              }
+              Spacer(Modifier.height(3.dp))
+              Text(b.label, color = Nm.Text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The right side of the driving screen under the manoeuvre bar, laid out so nothing overlaps:
+ * the speedometer at the top (when it is not beside the manoeuvre bar), the places' column under
+ * it, the round buttons ([rail], each told its size) at the bottom, and the bar of [ControlsBar]
+ * at the bottom left. Lying down the buttons stand left of the places' column (the height is
+ * short); upright they are under it and the column stops above them.
+ */
+@Composable
+fun DriveSide(
+    landscape: Boolean,
+    arcInside: Boolean,
+    arcHeight: Dp,
+    arcWidth: Dp,
+    showPoi: Boolean,
+    railCount: Int,
+    railSize: Dp,
+    barVisible: Boolean,
+    bar: List<BarButton>,
+    barBottom: Dp,
+    modifier: Modifier = Modifier,
+    arc: @Composable () -> Unit,
+    poi: @Composable (width: Dp, maxHeight: Dp) -> Unit,
+    rail: @Composable (size: Dp) -> Unit,
+) {
+  BoxWithConstraints(modifier.fillMaxSize()) {
+    val boxH = maxHeight
+    val colW = (arcWidth + 24.dp).coerceIn(220.dp, 270.dp).coerceAtMost(maxWidth * if (landscape) 0.38f else 0.5f)
+    val top = if (arcInside) arcHeight + 12.dp else 4.dp
+    // the round buttons smaller when they would not fit (a phone lying down), never below 40 dp
+    val n = railCount.coerceAtLeast(1)
+    val railRoom = if (landscape) boxH - top - 4.dp else boxH * 0.6f
+    val railFit = minOf(railSize, (railRoom - 10.dp * (n - 1)) / n).coerceAtLeast(40.dp)
+    if (arcInside) Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp)) { arc() }
+    if (landscape) {
+      Row(Modifier.align(Alignment.TopEnd).fillMaxHeight().padding(top = top), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom), horizontalAlignment = Alignment.End) {
+          rail(railFit)
+        }
+        if (showPoi) poi(colW, (boxH - top - 4.dp).coerceAtLeast(0.dp))
+      }
+    } else {
+      val railH = (railFit + 10.dp) * n
+      val room = boxH - top - railH - 12.dp
+      if (showPoi && room >= 64.dp) Box(Modifier.align(Alignment.TopEnd).padding(top = top)) { poi(colW, room) }
+      Column(Modifier.align(Alignment.BottomEnd), verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.End) {
+        rail(railFit)
+      }
+    }
+    // the bar at the bottom left, in the room the buttons (and lying down the places) leave
+    val reserved = railFit + 10.dp + (if (landscape && showPoi) colW + 10.dp else 0.dp)
+    ControlsBar(barVisible, bar, (maxWidth - reserved - 8.dp).coerceAtLeast(140.dp),
+        Modifier.align(Alignment.BottomStart).padding(bottom = barBottom))
   }
 }

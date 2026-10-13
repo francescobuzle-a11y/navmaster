@@ -49,6 +49,9 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -491,7 +494,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onQuickReport = { vm.quickReport(nav.analysis?.edgeAt(traveled)?.country ?: here?.iso) },
           pendingReport = nav.pendingReport, onUndoReport = vm::undoReport, liveListening = nav.liveListening,
           stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true },
-          destination = plan.stops.lastOrNull()?.coordinate, onPoiPins = { drivePins = it })
+          destination = plan.stops.lastOrNull()?.coordinate, onPoiPins = { drivePins = it },
+          satellite = satellite, onSatellite = { satellite = !satellite })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -764,13 +768,17 @@ private fun NavigatingOverlay(
     section: Triple<RouteLimit, Int?, Int?>? = null,
     destination: GeographicCoordinate? = null,
     onPoiPins: (List<PoiPin>) -> Unit = {},
+    satellite: Boolean = false,
+    onSatellite: () -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
   // buttons: shown for a few seconds after the map is touched (and at the start), then only the
   // ones that are needed right now (the "centre" one when the map was moved by hand)
   var controls by remember { mutableStateOf(true) }
-  LaunchedEffect(lastMapTap) {
+  // a touch on the bar of the controls keeps it open a little longer
+  var barTouch by remember { mutableStateOf(0L) }
+  LaunchedEffect(lastMapTap, barTouch) {
     controls = true
     delay(8_000)
     controls = false
@@ -814,7 +822,15 @@ private fun NavigatingOverlay(
   // be read nor so big it hides the road; smaller while the junction view is open
   val shortSide = minOf(maxWidth, maxHeight)
   val arcFull = (shortSide * 0.36f).coerceIn(150.dp, 230.dp)
-  val arcW = if (jv != null) (arcFull * 0.78f).coerceAtLeast(140.dp) else arcFull
+  // looking at the places (the magnifier's panels open): the speedometer smaller and up, the
+  // buttons smaller, with an animation; smaller also with the junction view
+  var poiPanelOpen by remember { mutableStateOf(false) }
+  val arcTarget = when {
+    jv != null -> (arcFull * 0.78f).coerceAtLeast(140.dp)
+    poiPanelOpen -> (arcFull * 0.72f).coerceAtLeast(130.dp)
+    else -> arcFull
+  }
+  val arcW by androidx.compose.animation.core.animateDpAsState(arcTarget, label = "arc")
   val arcH = arcW * 0.733f
   // beside the manoeuvre bar when lying down without the junction view; else at the top right of
   // the map, under the bar and its banners
@@ -859,79 +875,117 @@ private fun NavigatingOverlay(
       if (section != null) SectionBanner(section.first, traveled, section.second, section.third)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
-    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-      val boxH = maxHeight
-      // the speedometer at the top right of the map (upright, or with the junction view open)
-      if (!arcBeside) speedArc(Modifier.align(Alignment.TopEnd).padding(top = 4.dp))
-      // places along the route: a column at the right under the speedometer, never in the middle
-      // of the road ahead; it stops above the round buttons of the same side (their number changes)
-      if (jv == null) {
-        val buttons = (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) + (if (!mapState.isTrackingUser) 1 else 0) +
-            (if (controls) 3 else 0) + (if (!controls && muted) 1 else 0)
-        val top = if (arcBeside) 4.dp else arcH + 12.dp
-        val room = boxH - top - 68.dp * buttons - 16.dp
-        val colW = (arcFull + 24.dp).coerceIn(220.dp, 270.dp).coerceAtMost(maxWidth * 0.5f)
-        val spm = ui.progress?.let { pr -> if (pr.distanceRemaining > 1) pr.durationRemaining / pr.distanceRemaining else null }
-        if (room >= 64.dp) {
-          PoiColumn(
-              pois = pois,
-              traveledM = traveled,
-              route = analysis?.let { it.route.geometry },
-              here = ui.location?.coordinates,
-              destination = destination,
-              secondsPerMetre = spm,
-              canType = simulating || (speedKmh ?: 0) < 8,
-              width = colW,
-              maxHeight = room,
-              modifier = Modifier.align(Alignment.TopEnd).padding(top = top),
-              onPoi = onPoi,
-              onAll = onPois,
-              onPins = onPoiPins,
-          )
-        } else {
-          LaunchedEffect(Unit) { onPoiPins(emptyList()) }
-        }
-      } else {
-        LaunchedEffect(Unit) { onPoiPins(emptyList()) }
-      }
-      Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
-          horizontalAlignment = Alignment.End) {
-        // always there: report something on the road, and the settings (changed any time while driving)
-        if (settings.liveReports) {
-          Box(
-              // touch: the choice of what to report; long press: police (or a danger) at once, undoable
-              Modifier.size(56.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.Amber).border(1.dp, Nm.Line, CircleShape)
-                  .pointerInput(Unit) {
-                    detectTapGestures(onTap = { onReport() }, onLongPress = { onQuickReport() })
-                  },
-              contentAlignment = Alignment.Center,
-          ) { Text("⚠", fontSize = 26.sp, color = Color.Black) }
-        }
-        RoundAction(Icons.Rounded.Settings, "Impostazioni", size = 56.dp, onClick = onSettings)
-        if (stopsCount > 0) StopsButton(stopsCount, onStops)
-        // the map was moved by hand: "centre" stays until the driver uses it
-        if (!mapState.isTrackingUser) RoundAction(Icons.Rounded.MyLocation, "Centra") { mapState.recenter(true) }
-        androidx.compose.animation.AnimatedVisibility(controls, enter = androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.fadeOut()) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        // 2D / 3D in one touch: the label says the view it switches to
-        val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
-        Box(
-            Modifier.size(64.dp).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.Panel).border(1.dp, Nm.Line, CircleShape)
-                .clickable {
-                  AppGraph.settings.update {
-                    it.copy(driveView = if (is3d) app.navmaster.truck.settings.DriveView.VIEW_2D else app.navmaster.truck.settings.DriveView.VIEW_3D)
-                  }
-                  mapState.recenter(true)
+    Box(Modifier.weight(1f).fillMaxWidth()) {
+      val spm = ui.progress?.let { pr -> if (pr.distanceRemaining > 1) pr.durationRemaining / pr.distanceRemaining else null }
+      val route = analysis?.let { it.route.geometry }
+      val hereNow = androidx.compose.runtime.rememberUpdatedState(ui.location?.coordinates)
+      val source = remember(route, destination) { AppPoiSource(route, { hereNow.value }, destination) }
+      val tracking = mapState.isTrackingUser
+      val railCount = (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) + (if (!tracking) 1 else 0) +
+          (if (!controls && muted) 1 else 0)
+      val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
+      val nightMode = settings.nightMode
+      // the controls needed now and then: in one bar that a touch on the map brings up
+      val bar = listOf(
+          BarButton("Vista", null, if (is3d) "2D" else "3D", Nm.Raised) {
+            barTouch = System.currentTimeMillis()
+            AppGraph.settings.update {
+              it.copy(driveView = if (is3d) app.navmaster.truck.settings.DriveView.VIEW_2D else app.navmaster.truck.settings.DriveView.VIEW_3D)
+            }
+            mapState.recenter(true)
+          },
+          BarButton(if (satellite) "Mappa" else "Satellite", Icons.Rounded.Layers, null, if (satellite) Nm.Accent else Nm.Raised) {
+            barTouch = System.currentTimeMillis()
+            onSatellite()
+          },
+          BarButton(
+              when (nightMode) {
+                app.navmaster.truck.settings.NightMode.AUTO -> "Auto"
+                app.navmaster.truck.settings.NightMode.DAY -> "Giorno"
+                app.navmaster.truck.settings.NightMode.NIGHT -> "Notte"
+              },
+              when (nightMode) {
+                app.navmaster.truck.settings.NightMode.AUTO -> Icons.Rounded.BrightnessAuto
+                app.navmaster.truck.settings.NightMode.DAY -> Icons.Rounded.LightMode
+                app.navmaster.truck.settings.NightMode.NIGHT -> Icons.Rounded.DarkMode
+              },
+              null, Nm.Raised,
+          ) {
+            barTouch = System.currentTimeMillis()
+            AppGraph.settings.update {
+              it.copy(nightMode = when (it.nightMode) {
+                app.navmaster.truck.settings.NightMode.AUTO -> app.navmaster.truck.settings.NightMode.DAY
+                app.navmaster.truck.settings.NightMode.DAY -> app.navmaster.truck.settings.NightMode.NIGHT
+                app.navmaster.truck.settings.NightMode.NIGHT -> app.navmaster.truck.settings.NightMode.AUTO
+              })
+            }
+          },
+          BarButton(if (muted) "Muto" else "Voce", if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, null,
+              if (muted) Nm.Red else Nm.Raised) {
+            barTouch = System.currentTimeMillis()
+            vm.toggleMute()
+          },
+          BarButton("Termina", Icons.Rounded.Close, null, Nm.Red) { vm.stopNavigation() },
+      )
+      DriveSide(
+          landscape = landscape,
+          arcInside = !arcBeside,
+          arcHeight = arcH,
+          arcWidth = arcW,
+          showPoi = jv == null,
+          railCount = railCount,
+          railSize = if (poiPanelOpen) 46.dp else 56.dp,
+          barVisible = controls,
+          bar = bar,
+          barBottom = if (simulating) 84.dp else 6.dp,
+          arc = { speedArc(Modifier) },
+          poi = { w, h ->
+            PoiColumn(
+                pois = pois,
+                traveledM = traveled,
+                source = source,
+                settings = settings,
+                hasHere = ui.location != null,
+                hasDestination = destination != null,
+                secondsPerMetre = spm,
+                canType = simulating || (speedKmh ?: 0) < 8,
+                width = w,
+                maxHeight = h,
+                onPoi = onPoi,
+                onAll = onPois,
+                onPins = onPoiPins,
+                onOpen = { poiPanelOpen = it },
+                onRemember = { text ->
+                  AppGraph.settings.update { st -> st.copy(poiRecent = (listOf(text) + st.poiRecent.filter { !it.equals(text, true) }).take(5)) }
                 },
-            contentAlignment = Alignment.Center,
-        ) { Text(if (is3d) "2D" else "3D", color = Nm.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold) }
-        RoundAction(if (ui.isMuted == true) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, "Voce") { vm.toggleMute() }
-        RoundAction(Icons.Rounded.Close, "Termina", container = Nm.Red) { vm.stopNavigation() }
-        }
-        }
-        // muted: a small reminder stays even when the buttons are away
-        if (!controls && ui.isMuted == true) RoundAction(Icons.Rounded.VolumeOff, "Voce", size = 48.dp, container = Nm.Red) { vm.toggleMute() }
-      }
+            )
+          },
+          rail = { size ->
+            // always there: report something on the road (touch: what; long press: police at once,
+            // undoable), the settings; the stops; "centre" when the map was moved by hand
+            if (settings.liveReports) {
+              RoundBtn(size, Nm.Amber, "Segnala", onLongClick = onQuickReport, onClick = onReport) {
+                Text("⚠", fontSize = (size.value * 0.46f).sp, color = Color.Black)
+              }
+            }
+            RoundBtn(size, Nm.PanelSolid, "Impostazioni", onClick = onSettings) {
+              Icon(Icons.Rounded.Settings, null, tint = Nm.Text, modifier = Modifier.size(size * 0.48f))
+            }
+            if (stopsCount > 0) StopsButton(stopsCount, onStops)
+            if (!tracking) {
+              RoundBtn(size, Nm.PanelSolid, "Centra", onClick = { mapState.recenter(true) }) {
+                Icon(Icons.Rounded.MyLocation, null, tint = Nm.Text, modifier = Modifier.size(size * 0.48f))
+              }
+            }
+            // muted: a small reminder stays while the bar is away
+            if (!controls && muted) {
+              RoundBtn(maxOf(size * 0.86f, 44.dp), Nm.Red, "Voce disattivata", onClick = { vm.toggleMute() }) {
+                Icon(Icons.Rounded.VolumeOff, null, tint = Color.White, modifier = Modifier.size(size * 0.42f))
+              }
+            }
+          },
+      )
+      if (jv != null) LaunchedEffect(Unit) { onPoiPins(emptyList()) }
       if (simulating) {
         SimControls(simSpeed, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             onPrevManeuver = { vm.simManeuver(false) }, onBack = { vm.simJump(-500.0) }, onSlower = vm::simSlower,

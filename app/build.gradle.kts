@@ -71,6 +71,9 @@ android {
     buildConfig = true
   }
 
+  // the screenshot tests of the driving screen (src/test, Robolectric): they need the app's resources
+  testOptions { unitTests { isIncludeAndroidResources = true } }
+
   packaging {
     resources {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -117,6 +120,24 @@ dependencies {
 
   implementation(platform(libs.okhttp.bom))
   implementation(libs.okhttp)
+
+  // screenshot and layout tests of the driving screen (Robolectric, no emulator), run by the CI
+  // only when asked ([ui] in the bundle's message, see app.yml); the APK does not contain them
+  val robolectricVersion = providers.gradleProperty("robolectricVersion").getOrElse("4.14.1")
+  testImplementation("junit:junit:4.13.2")
+  testImplementation("org.robolectric:robolectric:$robolectricVersion")
+  testImplementation("androidx.test:core:1.6.1")
+  testImplementation(platform(libs.compose.bom))
+  testImplementation("androidx.compose.ui:ui-test-junit4")
+  debugImplementation(platform(libs.compose.bom))
+  debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.withType<Test>().configureEach {
+  maxHeapSize = "3g"
+  // real drawing (shadows, rounded corners, text) in the pictures
+  systemProperty("robolectric.graphicsMode", "NATIVE")
+  systemProperty("robolectric.pixelCopyRenderMode", "hardware")
 }
 
 /**
