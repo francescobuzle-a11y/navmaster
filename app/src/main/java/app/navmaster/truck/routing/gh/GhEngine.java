@@ -414,6 +414,18 @@ public final class GhEngine implements Closeable {
       protected WeightingFactory createWeightingFactory() {
         return new NmWeightingFactory(getBaseGraph(), getEncodingManager());
       }
+
+      @Override
+      protected com.graphhopper.routing.Router doCreateRouter(com.graphhopper.storage.BaseGraph graph,
+          com.graphhopper.routing.util.EncodingManager encodingManager, com.graphhopper.storage.index.LocationIndex locationIndex,
+          java.util.Map<String, Profile> profilesByName, com.graphhopper.util.details.PathDetailsBuilderFactory pathDetailsBuilderFactory,
+          com.graphhopper.util.TranslationMap translationMap, com.graphhopper.routing.RouterConfig routerConfig,
+          WeightingFactory weightingFactory, java.util.Map<String, com.graphhopper.storage.RoutingCHGraph> chGraphs,
+          java.util.Map<String, com.graphhopper.routing.lm.LandmarkStorage> landmarks) {
+        // snaps the border points of a trip between countries onto the motorway itself (NmRouter)
+        return new NmRouter(graph, encodingManager, locationIndex, profilesByName,
+            pathDetailsBuilderFactory, translationMap, routerConfig, weightingFactory, chGraphs, landmarks);
+      }
     };
     gh.init(cfg);
     gh.setAllowWrites(false);
@@ -432,6 +444,8 @@ public final class GhEngine implements Closeable {
     public int[] waypointIndex = new int[0];
     public double distanceM;
     public long timeMs;
+    /** The weight of the route (the time plus the penalties of the profile: ramps, roads off the motorway…), in seconds. */
+    public double weightS;
     public long computeMs;
     public String error;
     /** Why GraphHopper gave no alternatives (when asked and it could not), for the log. */
@@ -733,6 +747,9 @@ public final class GhEngine implements Closeable {
       }
     }
     req.getHints().putObject(NmWeightingFactory.SPEC, spec);
+    // a piece of a trip between countries: its border point lies on the stub of a motorway that
+    // GraphHopper marked as a subnetwork (one way, cut at the border): snapped onto it all the same
+    if (spec.borderPiece) req.getHints().putObject(NmRouter.SNAP_SUBNETWORKS, true);
     // a search that finds nothing stops instead of going on for minutes on the tablet
     req.getHints().putObject("timeout_ms", spec.timeoutMs > 0 ? spec.timeoutMs : DEFAULT_TIMEOUT_MS);
     // tests on the computer: without the landmarks (plain A*, same routes, slower)
@@ -786,6 +803,7 @@ public final class GhEngine implements Closeable {
     }
     r.distanceM = best.getDistance();
     r.timeMs = best.getTime();
+    r.weightS = best.getRouteWeight();
     r.path = best;
     return r;
   }

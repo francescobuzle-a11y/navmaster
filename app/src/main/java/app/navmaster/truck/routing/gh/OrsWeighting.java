@@ -95,6 +95,14 @@ public final class OrsWeighting implements Weighting {
    * built for every lorry. Such limits never close the road nor send the route off the motorway.
    */
   static final double IMPLAUSIBLE_MOTORWAY_HEIGHT = 4.6, IMPLAUSIBLE_MOTORWAY_WIDTH = 3.0;
+  /**
+   * "More motorway" (TruckSpec.route == GhEngine.ROUTE_MOTORWAY, the driver's choice): on a
+   * motorway and its ramps no height, width or length limit closes the road, whatever its value
+   * and in every country (a bridge or a narrow passage signed on a motorway is checked by the
+   * driver, the route never leaves the motorway for it); weight, axle load, ADR and the bans for
+   * lorries still count. Elsewhere the limits of the vehicle stay barriers.
+   */
+  private final boolean motorwayFree;
   // ORS-GH RoadAccess ordinals
   static final int RA_DESTINATION = 1, RA_CUSTOMERS = 2, RA_PRIVATE = 6;
 
@@ -138,6 +146,7 @@ public final class OrsWeighting implements Weighting {
         : truck && kind == Kind.FASTEST && !old ? Kind.RECOMMENDED : kind;
     this.turns = turns;
     this.spec = spec;
+    motorwayFree = spec != null && spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest;
     access = ev.getBooleanEncodedValue(truck ? GhEngine.ORS_HGV_ACCESS : GhEngine.ORS_CAR_ACCESS);
     speed = ev.getDecimalEncodedValue(truck ? GhEngine.ORS_HGV_SPEED : GhEngine.ORS_CAR_SPEED);
     priority = ev.hasEncodedValue(GhEngine.ORS_HGV_PRIORITY) ? ev.getIntEncodedValue(GhEngine.ORS_HGV_PRIORITY) : null;
@@ -280,9 +289,11 @@ public final class OrsWeighting implements Weighting {
     if (truck && typeNo != null && edge.get(typeNo)) return false;
     if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return false;
     boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY;
-    if (below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT)) return false;
-    if (below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH)) return false;
-    if (below(edge, maxLength, s.lengthM) || below(edge, maxWeight, s.weightT) || below(edge, maxAxleLoad, s.axleLoadT)) return false;
+    boolean free = motorway && motorwayFree;
+    if (!free && below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT)) return false;
+    if (!free && below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH)) return false;
+    if (!free && below(edge, maxLength, s.lengthM)) return false;
+    if (below(edge, maxWeight, s.weightT) || below(edge, maxAxleLoad, s.axleLoadT)) return false;
     // ADR tunnel categories A..E are ordinals 0..4: code B (1) is barred from B, C, D and E
     if (s.tunnelCode >= 'B' && s.tunnelCode <= 'E' && hazmatTunnel != null
         && edge.get(hazmatTunnel).ordinal() >= s.tunnelCode - 'A') return false;
@@ -307,12 +318,13 @@ public final class OrsWeighting implements Weighting {
     if (truck && typeNo != null && edge.get(typeNo)) return "bus".equals(s.vehicleType) ? "divieto per gli autobus" : "divieto per i mezzi pesanti";
     if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return "divieto per le merci pericolose";
     boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY;
+    boolean free = motorway && motorwayFree;
     java.util.Locale it = java.util.Locale.ITALIAN;
-    if (below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT))
+    if (!free && below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT))
       return String.format(it, "altezza massima %.2f m", edge.get(maxHeight));
-    if (below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH))
+    if (!free && below(edge, maxWidth, s.widthM) && !(motorway && edge.get(maxWidth) < IMPLAUSIBLE_MOTORWAY_WIDTH))
       return String.format(it, "larghezza massima %.2f m", edge.get(maxWidth));
-    if (below(edge, maxLength, s.lengthM)) return String.format(it, "lunghezza massima %.1f m", edge.get(maxLength));
+    if (!free && below(edge, maxLength, s.lengthM)) return String.format(it, "lunghezza massima %.1f m", edge.get(maxLength));
     if (below(edge, maxWeight, s.weightT)) return String.format(it, "peso massimo %.1f t", edge.get(maxWeight));
     if (below(edge, maxAxleLoad, s.axleLoadT)) return String.format(it, "peso per asse massimo %.1f t", edge.get(maxAxleLoad));
     if (s.tunnelCode >= 'B' && s.tunnelCode <= 'E' && hazmatTunnel != null

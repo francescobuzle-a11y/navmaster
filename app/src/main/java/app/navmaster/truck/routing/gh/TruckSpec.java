@@ -49,6 +49,12 @@ public final class TruckSpec {
    * the weighting the graphs' landmarks were prepared with (OrsWeighting.STRONG_OTHER).
    */
   public int motorwayLevel = 3;
+  /**
+   * The route is a piece of a trip between countries (GhCross): a point of it is a border
+   * crossing, to be snapped onto the road that continues abroad even where GraphHopper marked it
+   * as a subnetwork (NmRouter.SNAP_SUBNETWORKS).
+   */
+  public boolean borderPiece = false;
   /** Roads (edge ids) made twice as costly: those of the routes already found, to find another one. */
   public com.carrotsearch.hppc.IntHashSet penalized = null;
   /**
@@ -79,6 +85,8 @@ public final class TruckSpec {
     t.penalized = penalized;
     t.soft = soft;
     t.timeoutMs = timeoutMs;
+    t.motorwayLevel = motorwayLevel;
+    t.borderPiece = borderPiece;
     return t;
   }
 

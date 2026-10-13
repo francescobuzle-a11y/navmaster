@@ -142,6 +142,11 @@ class OfflineRouteProvider(
             }
             .getOrNull()?.takeIf { it.isNotEmpty() }
         if (local != null) {
+          // "more motorway" with the old graph of a country: said, so that the driver updates it
+          gh.mildMotorway.takeIf { it.isNotEmpty() && spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest }?.let {
+            note = "In ${it.joinToString(", ")} il grafo è vecchio: «Più autostrada» lì è più blando e i livelli non valgono. " +
+                "Tocca «Aggiorna» su quel Paese in «Mappe d'Europa»."
+          }
           mark(local, "GH")
           return@withContext local.also(onRoutes)
         }

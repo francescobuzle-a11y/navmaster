@@ -172,7 +172,12 @@ public final class GhCross {
         trip.error = "manca il grafo di " + pc.get(k);
         return trip;
       }
-      GhEngine.Result r = e.routes(pp.get(k), ph.get(k), spec, 1).get(0);
+      // the pieces start or end at a border crossing: snapped onto the motorway's stub there
+      TruckSpec piece = spec.copy();
+      piece.borderPiece = true;
+      GhEngine.Result r = e.routes(pp.get(k), ph.get(k), piece, 1).get(0);
+      // a start or an end snapped into a dead end: as GraphHopper snaps by itself
+      if (!r.ok()) r = e.routes(pp.get(k), ph.get(k), spec, 1).get(0);
       if (!r.ok()) {
         trip.error = pc.get(k) + ": " + r.error;
         return trip;
@@ -251,34 +256,55 @@ public final class GhCross {
         // these choices: e.g. a lorry avoiding tolls into Austria)
         TruckSpec probe = spec.copy();
         probe.timeoutMs = spec.timeoutMs > 0 ? Math.min(spec.timeoutMs, CANDIDATE_TIMEOUT_MS) : CANDIDATE_TIMEOUT_MS;
+        probe.borderPiece = true;
         int failedInARow = 0;
         for (Crossing c : cands) {
           if (failedInARow >= 3) break;
           if (DEBUG) System.out.println("CROSS try " + c);
           GhEngine.Result r1 = ex.routes(Arrays.asList(cur, new double[] {c.lat, c.lon}), Arrays.asList(i == 0 ? Double.NaN : chosen.get(i - 1).ab, c.ab), probe, 1).get(0);
+          if (!r1.ok() && i == 0) {
+            // the start snapped into a dead end: as GraphHopper snaps by itself
+            TruckSpec plain = probe.copy();
+            plain.borderPiece = false;
+            r1 = ex.routes(Arrays.asList(cur, new double[] {c.lat, c.lon}), Arrays.asList(Double.NaN, c.ab), plain, 1).get(0);
+          }
           if (!r1.ok()) {
             if (DEBUG) System.out.println("CROSS   no way to it: " + r1.error);
             failedInARow++;
             continue;
           }
+          // "more motorway": the crossings compared by the weight of the profile (the roads off
+          // the motorway and the ramps cost more), so that the border is crossed on the motorway
+          // whenever the driver asked for it; otherwise by time
+          boolean byWeight = spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest;
           double s;
           if (last) {
             GhEngine.Result r2 = ey.routes(Arrays.asList(new double[] {c.lat, c.lon}, q), Arrays.asList(c.ab, Double.NaN), probe, 1).get(0);
+            if (!r2.ok()) {
+              TruckSpec plain = probe.copy();
+              plain.borderPiece = false;
+              r2 = ey.routes(Arrays.asList(new double[] {c.lat, c.lon}, q), Arrays.asList(c.ab, Double.NaN), plain, 1).get(0);
+            }
             if (!r2.ok()) {
               if (DEBUG) System.out.println("CROSS   no way from it: " + r2.error);
               failedInARow++;
               continue;
             }
-            s = r1.timeMs / 1000.0 + r2.timeMs / 1000.0;
+            s = cost(r1, byWeight) + cost(r2, byWeight);
           } else {
-            s = r1.timeMs / 1000.0 + rest(c, q, spec);
+            s = cost(r1, byWeight) + rest(c, q, spec);
+            // "more motorway", a border before the last one: the roads after the crossing are not
+            // computed here (only guessed), so a crossing off the motorway pays the exit and the
+            // entrance it implies (about 1.2 km of ramps at the level's price), as the weighting would
+            if (byWeight && !c.hw.startsWith("motorway") && !c.hw.startsWith("trunk"))
+              s += OrsWeighting.LEVEL_LINK_S_PER_M[Math.max(1, Math.min(5, spec.motorwayLevel)) - 1] * 1200;
           }
           failedInARow = 0;
-          if (DEBUG) System.out.println("CROSS " + c + ": " + Math.round(s) + " s (" + Math.round(r1.timeMs / 1000.0) + " s to it)");
+          if (DEBUG) System.out.println("CROSS " + c + ": " + Math.round(s) + (byWeight ? " (weight)" : " s") + " (" + Math.round(cost(r1, byWeight)) + " to it)");
           if (s < pickS) {
             pickS = s;
             pick = c;
-            pickT = r1.timeMs / 1000.0;
+            pickT = cost(r1, byWeight);
           }
         }
         if (pick == null) {
@@ -296,6 +322,11 @@ public final class GhCross {
     }
     if (best == null) trip.error = "nessun valico percorribile tra " + a + " e " + b + " con queste misure";
     return best;
+  }
+
+  /** The cost of a piece for the choice of the crossings: its weight (seconds, "more motorway") or its time. */
+  static double cost(GhEngine.Result r, boolean byWeight) {
+    return byWeight && r.weightS > 0 ? r.weightS : r.timeMs / 1000.0;
   }
 
   /** How good a crossing looks before any route: the way through it, main roads first. */

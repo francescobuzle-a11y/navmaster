@@ -177,10 +177,13 @@ class LimitsIndex(regions: RegionManager) {
                 implausible++
                 continue
               }
-              // a doubtful limit (not plausible, contradictory, not confirmed) is told, never a block
+              // a doubtful limit (not plausible, contradictory, not confirmed) is told, never a block;
+              // on a motorway (every country) a height, width or length limit is told as a warning
+              // to check on the spot, never a block: the route stays on the motorway
+              val sizeOnMotorway = hereEdge?.roadClass == "motorway" && (kind == "maxheight" || kind == "maxwidth" || kind == "maxlength")
               out += RouteLimit(kind, value, c.getString(3), c.getString(5), cond, lo, p.lat, p.lng,
-                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)) && ver != "dubbio", osm.ifBlank { null },
-                  ver)
+                  blocks(kind, value, vehicle, weightT) && (cond == null || conditionalActive(cond, at)) && ver != "dubbio" && !sizeOnMotorway,
+                  osm.ifBlank { null }, ver)
             }
           }
       out

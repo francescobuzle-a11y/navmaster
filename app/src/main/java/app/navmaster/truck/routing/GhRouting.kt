@@ -94,9 +94,19 @@ class GhRouting(private val context: Context, private val regions: RegionManager
   @Synchronized
   fun routes(points: List<DoubleArray>, headings: List<Double>, spec: TruckSpec, maxPaths: Int = 1): List<GhEngine.Result>? {
     problem = null
+    mildMotorway = emptyList()
     return try {
       routesIn(points, headings, spec, maxPaths).also {
         if (it == null && problem == null) problem = "GraphHopper non ha dato un percorso (motivo non noto: vedi il registro NavMasterRoute)"
+        if (it != null && spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest) {
+          // the countries of the route (also the ones crossed in between) whose graph is older
+          // than the strong "more motorway": there the preference is the mild one of openrouteservice
+          val crossed = it.firstOrNull()?.let { r -> synchronized(trips) { trips[r] }?.countries } ?: emptyList()
+          val ids = (crossed + points.mapNotNull { p -> regions.regionAt(p[0], p[1])?.id }).distinct()
+          mildMotorway = ids.filter { id -> !strongGraph(id) }
+              .map { id -> regions.installed.value.firstOrNull { r -> r.id == id }?.label ?: id }
+          if (mildMotorway.isNotEmpty()) Log.w(TAG, "more motorway: mild preference (old graph) in $mildMotorway")
+        }
       }
     } catch (t: Throwable) {
       Log.e(TAG, "GraphHopper route failed", t)
@@ -253,6 +263,22 @@ class GhRouting(private val context: Context, private val regions: RegionManager
    * strong "more motorway" preference (GhEngine.STRONG_MOTORWAY_MARK): then the route asked "more
    * motorway" is computed on the tablet, where that preference lives, rather than online.
    */
+  /**
+   * The countries of the last route asked "more motorway" whose graph was built before the strong
+   * preference (GhEngine.STRONG_MOTORWAY_MARK): there the route prefers the motorway only mildly
+   * until the driver taps "Aggiorna" in "Mappe d'Europa". Empty when every graph is up to date.
+   */
+  @Volatile var mildMotorway: List<String> = emptyList()
+    private set
+
+  /** The graph of the installed country [id] carries the strong "more motorway" preference. */
+  private fun strongGraph(id: String): Boolean {
+    val region = regions.installed.value.firstOrNull { it.id == id } ?: return true
+    val props = File(File(region.dir, "gh"), "properties")
+    return runCatching { props.length() < 4_000_000 && props.readBytes().toString(Charsets.ISO_8859_1).contains(GhEngine.STRONG_MOTORWAY_MARK) }
+        .getOrDefault(true)
+  }
+
   @Synchronized
   fun strongMotorwayFor(points: List<DoubleArray>, spec: TruckSpec): Boolean {
     if (spec.route != GhEngine.ROUTE_MOTORWAY || spec.shortest) return false
