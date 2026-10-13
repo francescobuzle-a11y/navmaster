@@ -77,6 +77,37 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: {name: apk, path: out/*.apk, retention-days: 5}
 
+      # the screenshot tests of the driving screen (Robolectric, a few minutes, no emulator): only
+      # when the bundle asks for them with [ui] in its message; the pictures and the outcome go into
+      # the release of this build
+      - name: Prove grafiche (solo con [ui] nel messaggio)
+        id: ui
+        continue-on-error: true
+        run: |
+          git log -1 --format=%B | grep -qF '[ui]' || { echo "nessuna prova grafica richiesta"; exit 0; }
+          echo "ran=1" >> $GITHUB_OUTPUT
+          RV=$(curl -sf https://repo1.maven.org/maven2/org/robolectric/robolectric/maven-metadata.xml | grep -o '<version>[^<]*' | sed 's/<version>//' | grep -vE 'alpha|beta|rc|SNAPSHOT' | tail -1)
+          echo "Robolectric ${RV:-predefinito}"
+          mkdir -p shots
+          set +e
+          gradle :app:testDebugUnitTest --tests 'app.navmaster.truck.ui.*' ${RV:+-ProbolectricVersion=$RV} --no-daemon --stacktrace > shots/ui-test-log.txt 2>&1
+          rc=$?
+          set -e
+          tail -60 shots/ui-test-log.txt
+          cp app/build/shots/*.png app/build/shots/*.txt shots/ 2>/dev/null || true
+          for f in app/build/test-results/testDebugUnitTest/*.xml; do [ -f "$f" ] && cp "$f" shots/; done
+          (cd shots && ls -la)
+          echo "esito gradle: $rc" >> shots/ui-test-log.txt
+      - name: Prove grafiche nella release
+        if: steps.ui.outputs.ran == '1'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-${{ github.run_number }}
+          files: |
+            shots/*.png
+            shots/*.txt
+            shots/*.xml
+
   # the emulator run (about 30 minutes) only when asked: [preview] in the commit message or the
   # "preview" choice of a manual / bundle run
   preview:
