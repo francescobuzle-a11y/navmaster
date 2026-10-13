@@ -104,10 +104,12 @@ private fun tagPin(ring: Int, tag: String?, glyph: (android.graphics.Canvas, Flo
   val pinW = 132f
   val h = 162
   val r = pinW / 2f - 4f
+  // white on dark colours, dark on light ones (the light blue, violet, grey of the places)
+  val luma = (0.299 * ((ring shr 16) and 0xFF) + 0.587 * ((ring shr 8) and 0xFF) + 0.114 * (ring and 0xFF)) / 255.0
   val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     textSize = 44f
     typeface = Typeface.DEFAULT_BOLD
-    color = 0xFFFFFFFF.toInt()
+    color = if (luma > 0.62) 0xFF111111.toInt() else 0xFFFFFFFF.toInt()
   }
   val tagW = tag?.let { tp.measureText(it) + 32f } ?: 0f
   val half = if (tag == null) pinW / 2f else pinW / 2f + 6f + tagW
@@ -226,3 +228,53 @@ fun RouteFeaturePins(a: app.navmaster.truck.routing.RouteAnalysis) {
   TagPinLayer("nm-pin-toll-end", remember(a) { tolls.map { a.pointAt(it.endM).let { p -> p.lat to p.lng } } }, endPin, true)
   TagPinLayer("nm-pin-toll-start", remember(a) { tolls.map { a.pointAt(it.startM).let { p -> p.lat to p.lng } } }, startPin, true)
 }
+
+/** A line sign of PoiGlyphs drawn on a pin (dark lines, scaled to the disc). */
+private fun drawGlyph(d: String): (android.graphics.Canvas, Float, Float, Float) -> Unit = { c, cx, cy, r ->
+  val path = runCatching { androidx.core.graphics.PathParser.createPathFromPathData(d) }.getOrNull()
+  if (path != null) {
+    val s = r * 1.25f / 24f
+    val m = android.graphics.Matrix()
+    m.setScale(s, s)
+    m.postTranslate(cx - 12f * s, cy - 12f * s)
+    path.transform(m)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      style = Paint.Style.STROKE
+      strokeWidth = 2.4f * s
+      strokeCap = Paint.Cap.ROUND
+      strokeJoin = Paint.Join.ROUND
+      color = 0xFF111111.toInt()
+    }
+    c.drawPath(path, p)
+  }
+}
+
+/**
+ * The places of the driving panel on the map (DriveHud.PoiColumn): a pin of the colour of the
+ * kind with its sign and a tag with the distance, at most three; one layer each, always there
+ * (empty when there is no place), so the map is not rebuilt when they change.
+ */
+@Composable
+@MaplibreComposable
+fun DrivePoiPins(pins: List<PoiPin>) {
+  for (i in 0 until 3) {
+    val p = pins.getOrNull(i)
+    val pinImg = remember(p?.glyph, p?.color, p?.tag) {
+      p?.let { tagPin(it.color.toArgbInt(), it.tag, drawGlyph(it.glyph)) }
+    }
+    val json = remember(p?.lat, p?.lon) { points(if (p == null) emptyList() else listOf(p.lat to p.lon)) }
+    val src = rememberJsonSource(json)
+    val img = pinImg ?: remember { tagPin(0x00000000, null) { _, _, _, _ -> } }
+    SymbolLayer(
+        id = "nm-drive-poi-$i",
+        source = src,
+        iconImage = image(img.painter, DpSize((38f * img.widthFactor).dp, 47.dp), alpha = 1f),
+        iconAnchor = const(SymbolAnchor.Bottom),
+        iconAllowOverlap = const(true),
+        iconIgnorePlacement = const(true),
+    )
+  }
+}
+
+private fun androidx.compose.ui.graphics.Color.toArgbInt(): Int =
+    android.graphics.Color.argb((alpha * 255).toInt(), (red * 255).toInt(), (green * 255).toInt(), (blue * 255).toInt())

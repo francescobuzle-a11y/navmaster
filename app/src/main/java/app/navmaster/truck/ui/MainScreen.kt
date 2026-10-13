@@ -180,6 +180,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
   var openPoi by remember { mutableStateOf<RoutePoi?>(null) }
+  // the places of the driving panel shown on the map (DriveHud.PoiColumn → DrivePoiPins)
+  var drivePins by remember { mutableStateOf<List<PoiPin>>(emptyList()) }
   var reportOpen by remember { mutableStateOf(initialSheet == "report") }
   var stopsOpen by remember { mutableStateOf(initialSheet == "stops") }
   var poiOpen by remember { mutableStateOf(initialSheet == "pois") }
@@ -471,6 +473,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         RoadPins(cams, livePins) { ev ->
           nav.analysis?.pointAt(ev.startM.coerceAtLeast(0.0))?.let { it.lat to it.lng } ?: (ev.e.lat to ev.e.lon)
         }
+        DrivePoiPins(drivePins)
       }
     }
     }
@@ -487,7 +490,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
           onQuickReport = { vm.quickReport(nav.analysis?.edgeAt(traveled)?.country ?: here?.iso) },
           pendingReport = nav.pendingReport, onUndoReport = vm::undoReport, liveListening = nav.liveListening,
-          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true })
+          stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true },
+          destination = plan.stops.lastOrNull()?.coordinate, onPoiPins = { drivePins = it })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -758,6 +762,8 @@ private fun NavigatingOverlay(
     onStops: () -> Unit = {},
     onPois: () -> Unit = {},
     section: Triple<RouteLimit, Int?, Int?>? = null,
+    destination: GeographicCoordinate? = null,
+    onPoiPins: (List<PoiPin>) -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
@@ -804,10 +810,36 @@ private fun NavigatingOverlay(
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
   // the junction view fits the screen: about a third of the height upright, never taller than wide
   val jvHeight = (maxHeight.value * 0.40f).coerceIn(200f, 400f).coerceAtMost(maxWidth.value * 0.78f).dp
+  // the speedometer (DriveHud.SpeedArc): about a third of the short side, never so small it cannot
+  // be read nor so big it hides the road; smaller while the junction view is open
+  val shortSide = minOf(maxWidth, maxHeight)
+  val arcFull = (shortSide * 0.36f).coerceIn(150.dp, 230.dp)
+  val arcW = if (jv != null) (arcFull * 0.78f).coerceAtLeast(140.dp) else arcFull
+  val arcH = arcW * 0.733f
+  // beside the manoeuvre bar when lying down without the junction view; else at the top right of
+  // the map, under the bar and its banners
+  val arcBeside = landscape && jv == null
+  val muted = ui.isMuted == true
+  val sectionAvg = section?.third
+  val sectionLimit = section?.second
+  val speedArc: @Composable (Modifier) -> Unit = { m ->
+    SpeedArc(speedKmh, limitKmh, vehicle.topSpeedKmh, settings.speedWarningKmh, sectionAvg, sectionLimit, arcW, muted, m,
+        onSay = { vm.say(it) })
+  }
   Column(Modifier.fillMaxSize()) {
   Row(Modifier.weight(1f).fillMaxWidth()) {
   Column(Modifier.weight(1f).fillMaxHeight()) {
-    TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+    if (arcBeside) {
+      Row(Modifier.fillMaxWidth()) {
+        Box(Modifier.weight(1f)) {
+          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+        }
+        Spacer(Modifier.width(10.dp))
+        speedArc(Modifier)
+      }
+    } else {
+      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+    }
     // the lane bar from 2 km; once the junction view is open it carries the lanes itself (one
     // picture, in the same place, upright and sideways)
     if (laneGuide != null && jv == null) {
@@ -827,17 +859,40 @@ private fun NavigatingOverlay(
       if (section != null) SectionBanner(section.first, traveled, section.second, section.third)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
-    Box(Modifier.weight(1f).fillMaxWidth()) {
-      // the speed is in the bottom bar when the driver keeps it there, else under the limit sign
-      val speedInBar = settings.tripFields.contains("SPEED")
-      SpeedPanel(if (speedInBar) null else speedKmh, limitKmh, vehicle.topSpeedKmh, Modifier.align(Alignment.BottomStart).padding(bottom = 8.dp), settings.speedWarningKmh)
-      // places along the route: a narrow panel at the edge (the right one unless the driver chose
-      // the left), under the manoeuvre bar, never in the middle of the road ahead
-      val atRight = settings.poiRailSide != app.navmaster.truck.settings.PoiSide.LEFT
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+      val boxH = maxHeight
+      // the speedometer at the top right of the map (upright, or with the junction view open)
+      if (!arcBeside) speedArc(Modifier.align(Alignment.TopEnd).padding(top = 4.dp))
+      // places along the route: a column at the right under the speedometer, never in the middle
+      // of the road ahead; it stops above the round buttons of the same side (their number changes)
       if (jv == null) {
-        PoiRail(pois, traveled, settings.poiRailCount, settings.poiRailSeconds, settings.poiRailOpacity, atRight, narrow = !landscape,
-            modifier = Modifier.align(if (atRight) Alignment.TopEnd else Alignment.TopStart).padding(top = if (atRight) 4.dp else 34.dp), onPoi = onPoi,
-            onAll = onPois)
+        val buttons = (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) + (if (!mapState.isTrackingUser) 1 else 0) +
+            (if (controls) 3 else 0) + (if (!controls && muted) 1 else 0)
+        val top = if (arcBeside) 4.dp else arcH + 12.dp
+        val room = boxH - top - buttons * 68.dp - 16.dp
+        val colW = (arcFull + 24.dp).coerceIn(220.dp, 270.dp).coerceAtMost(maxWidth * 0.5f)
+        val spm = ui.progress?.let { pr -> if (pr.distanceRemaining > 1) pr.durationRemaining / pr.distanceRemaining else null }
+        if (room >= 64.dp) {
+          PoiColumn(
+              pois = pois,
+              traveledM = traveled,
+              route = analysis?.let { it.route.geometry },
+              here = ui.location?.coordinates,
+              destination = destination,
+              secondsPerMetre = spm,
+              canType = simulating || (speedKmh ?: 0) < 8,
+              width = colW,
+              maxHeight = room,
+              modifier = Modifier.align(Alignment.TopEnd).padding(top = top),
+              onPoi = onPoi,
+              onAll = onPois,
+              onPins = onPoiPins,
+          )
+        } else {
+          LaunchedEffect(Unit) { onPoiPins(emptyList()) }
+        }
+      } else {
+        LaunchedEffect(Unit) { onPoiPins(emptyList()) }
       }
       Column(Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
           horizontalAlignment = Alignment.End) {

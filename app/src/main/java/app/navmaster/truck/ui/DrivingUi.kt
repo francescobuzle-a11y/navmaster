@@ -317,7 +317,9 @@ fun PoiRow(p: RoutePoi, traveledM: Double, onClick: () -> Unit) {
 fun PoiSheet(p: RoutePoi, traveledM: Double, onAddStop: () -> Unit, onClose: () -> Unit) {
   val cat = PoiCategories.byId(p.poi.cat)
   AdaptiveSheet(p.poi.title.ifBlank { cat?.label ?: "Punto di interesse" }, onClose) {
-    Caption("${cat?.icon ?: ""} ${cat?.label ?: p.poi.cat} · tra ${Fmt.distanceText(p.alongM - traveledM)}", color = Nm.Text, size = 16)
+    // a place found near the vehicle or the destination (offRouteM < 0): its straight distance
+    val where = if (p.offRouteM < 0) "a ${Fmt.distanceText(p.alongM - traveledM)} in linea d'aria" else "tra ${Fmt.distanceText(p.alongM - traveledM)}"
+    Caption("${cat?.icon ?: ""} ${cat?.label ?: p.poi.cat} · $where", color = Nm.Text, size = 16)
     p.poi.brand?.let { KeyValue("Marchio", it) }
     p.poi.hours?.let { KeyValue("Orari", it) }
     p.poi.phone?.let { KeyValue("Telefono", it) }

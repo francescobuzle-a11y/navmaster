@@ -208,6 +208,8 @@ data class Settings(
     /** Opacity of the panel, percent. */
     val poiRailOpacity: Int = 70,
     val poiRailSide: PoiSide = PoiSide.AUTO,
+    /** The last searches of the magnifier while driving (newest first). */
+    val poiRecent: List<String> = emptyList(),
     val driveTimeReminder: Boolean = true,
     /** The vehicles the offline route calculation is downloaded for. */
     val offlineVehicles: OfflineVehicles = OfflineVehicles.AUTO,

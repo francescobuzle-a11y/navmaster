@@ -1,0 +1,727 @@
+package app.navmaster.truck.ui
+
+import android.media.AudioManager
+import android.media.ToneGenerator
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.navmaster.truck.AppGraph
+import app.navmaster.truck.data.RouteMatcher
+import app.navmaster.truck.poi.Poi
+import app.navmaster.truck.poi.RoutePoi
+import app.navmaster.truck.settings.PoiCategories
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import uniffi.ferrostar.GeographicCoordinate
+import kotlin.math.cos
+import kotlin.math.sin
+
+// ------------------------------------------------------------------------------------ the glyphs
+
+/**
+ * The signs of the kinds of place, drawn as lines (24×24, as the icons of the app): the same in
+ * the panel and on the map pins, a colour for each kind.
+ */
+object PoiGlyphs {
+  const val FUEL = "M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3 21h12M6 8h6M14 10h2a2 2 0 0 1 2 2v4a1.5 1.5 0 0 0 3 0V8l-3-3"
+  const val DROP = "M12 3c3 4 6 7 6 11a6 6 0 0 1-12 0c0-4 3-7 6-11z"
+  const val PARKING = "M8 20V4h5a4 4 0 0 1 0 8H8"
+  const val SERVICES = "M3 21h18M5 21V9l7-5 7 5v12M9 21v-6h6v6"
+  const val FOOD = "M7 3v8M5 3v5a2 2 0 0 0 4 0V3M7 11v10M17 3c-2 2-2 6 0 8v10"
+  const val SHOWER = "M4 20V8a4 4 0 0 1 8 0M10 8h4M12 12v1M15 12v1M18 12v1M13.5 15v1M16.5 15v1"
+  const val CAMPER = "M3 17V7h12l4 4v6M3 17h18M6 10h4M5 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0M14 18a2 2 0 1 0 4 0a2 2 0 1 0-4 0"
+  const val WC = "M6 3h5v8H6zM4 11h12a5 5 0 0 1-5 5H9M9 16l-1 5h6l-1-5"
+  const val REPAIR = "M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"
+  const val BED = "M3 18V7M3 14h18v4M21 14v-3a3 3 0 0 0-3-3h-7v6M7 11.5a1.5 1.5 0 1 0 0 .01"
+  const val PIN = "M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11zM12 10.5a1.5 1.5 0 1 0 0 .01"
+  const val SEARCH = "M10.5 4a6.5 6.5 0 1 0 0 13a6.5 6.5 0 1 0 0-13M15.5 15.5L21 21"
+  const val CLOSE = "M6 6l12 12M18 6L6 18"
+
+  val Blue = Color(0xFF3D8BFD)
+  val LightBlue = Color(0xFF5FA8FF)
+  val Violet = Color(0xFFB9A4FF)
+  val Teal = Color(0xFF1FB5A8)
+  val Orange = Color(0xFFFF8A3D)
+  val Cyan = Color(0xFF36C2D9)
+  val Green = Color(0xFF2EB85C)
+  val Grey = Color(0xFFC9D1D9)
+  val Amber = Color(0xFFFFB300)
+
+  /** The sign and the colour of a place of the database ([cat] of poi.sqlite). */
+  fun of(cat: String): Pair<String, Color> = when (cat) {
+    "fuel" -> FUEL to Blue
+    "hgv_charging" -> FUEL to LightBlue
+    "truck_parking", "camper_parking" -> PARKING to Violet
+    "services", "rest_area" -> SERVICES to Teal
+    "food", "supermarket" -> FOOD to Orange
+    "shower" -> SHOWER to Cyan
+    "toilets" -> WC to Grey
+    "truck_repair", "tyres", "truck_wash", "weighbridge", "camper_shop" -> REPAIR to Amber
+    "hotel" -> BED to Violet
+    "campsite", "camper_site", "camper_service" -> CAMPER to Green
+    else -> PIN to Grey
+  }
+
+  private val cache = HashMap<String, ImageVector>()
+
+  /** The sign as a vector (white lines, tinted by Icon). */
+  fun vector(d: String): ImageVector = synchronized(cache) {
+    cache.getOrPut(d) {
+      ImageVector.Builder(defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
+          .addPath(
+              pathData = addPathNodes(d),
+              fill = null,
+              stroke = SolidColor(Color.White),
+              strokeLineWidth = 2.2f,
+              strokeLineCap = StrokeCap.Round,
+              strokeLineJoin = StrokeJoin.Round,
+          )
+          .build()
+    }
+  }
+}
+
+@Composable
+fun Glyph(d: String, color: Color, size: Dp, modifier: Modifier = Modifier, description: String? = null) {
+  Icon(PoiGlyphs.vector(d), description, modifier.size(size), tint = color)
+}
+
+/** A sign on a coloured tile (dark lines on the colour of the kind). */
+@Composable
+fun GlyphTile(d: String, color: Color, size: Dp, modifier: Modifier = Modifier) {
+  Box(modifier.size(size).clip(RoundedCornerShape(size * 0.3f)).background(color), contentAlignment = Alignment.Center) {
+    Glyph(d, Color(0xFF0E1216), size * 0.58f)
+  }
+}
+
+// ------------------------------------------------------------------------------- the speedometer
+
+/** How the vehicle's speed stands against its limit. */
+enum class SpeedState { OK, OVER, FAR, SECTION }
+
+/**
+ * The speedometer at the top right while driving: half a dial of lit segments (5 km/h each, up to
+ * 130 or 150), a white mark on the limit of THIS vehicle (a lorry has its 80 where the sign says
+ * 130), the speed in big figures and the limit sign under it. Amber a little over the limit (one
+ * soft beep when over the tolerance of the settings), red from 10 km/h over (and the voice
+ * "Rallenta"), blue on a stretch with average speed control (the average under the speed).
+ * [width] gives its size: the height is about three quarters of it.
+ */
+@Composable
+fun SpeedArc(
+    speedKmh: Int?,
+    limitKmh: Int?,
+    vehicleMaxKmh: Int,
+    toleranceKmh: Int,
+    sectionAvg: Int?,
+    sectionLimit: Int?,
+    width: Dp,
+    muted: Boolean,
+    modifier: Modifier = Modifier,
+    onSay: (String) -> Unit = {},
+) {
+  val effective = limitKmh?.let { minOf(it, vehicleMaxKmh) }
+  val forVehicle = limitKmh != null && vehicleMaxKmh < limitKmh
+  val over = if (speedKmh != null && effective != null) speedKmh - effective else 0
+  val state = when {
+    effective != null && over >= 10 -> SpeedState.FAR
+    effective != null && over >= 1 -> SpeedState.OVER
+    sectionAvg != null -> SpeedState.SECTION
+    else -> SpeedState.OK
+  }
+  // sounds: a soft beep entering amber beyond the tolerance, the voice entering red (said again
+  // by the voice queue only after two minutes)
+  val tone = remember { runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 55) }.getOrNull() }
+  DisposableEffect(Unit) { onDispose { tone?.release() } }
+  var beepedAt by remember { mutableStateOf(0L) }
+  val beyondTolerance = state == SpeedState.OVER && over > toleranceKmh
+  LaunchedEffect(beyondTolerance, state == SpeedState.FAR, muted) {
+    if (muted) return@LaunchedEffect
+    if (state == SpeedState.FAR && effective != null) {
+      onSay("Rallenta, limite $effective.")
+    } else if (beyondTolerance && System.currentTimeMillis() - beepedAt > 30_000) {
+      beepedAt = System.currentTimeMillis()
+      runCatching { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 160) }
+    }
+  }
+
+  val lit = when (state) {
+    SpeedState.OK -> Nm.Accent
+    SpeedState.OVER -> Nm.Amber
+    SpeedState.FAR -> Color.White
+    SpeedState.SECTION -> Nm.Blue
+  }
+  val track = if (state == SpeedState.FAR) Color(0x40FFFFFF) else Color(0xFF2A323C)
+  val bg = if (state == SpeedState.FAR) Nm.RedDark else Color(0xF0171C22)
+  val edge = when (state) {
+    SpeedState.OVER -> Nm.Amber
+    SpeedState.SECTION -> Nm.Blue.copy(alpha = 0.8f)
+    SpeedState.FAR -> Nm.Red
+    SpeedState.OK -> Color(0x1FFFFFFF)
+  }
+  val numberColor = if (state == SpeedState.OVER) Nm.Amber else Color.White
+  val scaleMax = if ((effective ?: 0) > 115 || (speedKmh ?: 0) > 125) 150 else 130
+  val height = width * 0.733f
+  val w = width.value
+  Box(
+      modifier.animateContentSize().size(width, height).shadow(10.dp, RoundedCornerShape(width * 0.11f))
+          .clip(RoundedCornerShape(width * 0.11f)).background(bg).border(if (state == SpeedState.OK) 1.dp else 2.dp, edge, RoundedCornerShape(width * 0.11f)),
+  ) {
+    Canvas(Modifier.fillMaxSize()) {
+      val cx = size.width / 2f
+      val cy = size.height * 0.70f
+      val r = size.width * 0.36f
+      val stroke = size.width * 0.058f
+      val n = scaleMax / 5
+      val seg = 180f / n
+      val gap = seg * 0.26f
+      val shown = speedKmh ?: 0
+      for (i in 0 until n) {
+        val on = (i + 1) * 5 <= shown + 2
+        drawArc(
+            color = if (on) lit else track,
+            startAngle = 180f + i * seg + gap / 2f,
+            sweepAngle = seg - gap,
+            useCenter = false,
+            topLeft = Offset(cx - r, cy - r),
+            size = Size(2 * r, 2 * r),
+            style = Stroke(width = stroke, cap = StrokeCap.Butt),
+        )
+      }
+      if (effective != null) {
+        val a = Math.toRadians(180.0 + 180.0 * (effective.coerceIn(0, scaleMax).toDouble() / scaleMax))
+        val r1 = r - stroke * 0.95f
+        val r2 = r + stroke * 0.95f
+        drawLine(
+            if (state == SpeedState.FAR) Color(0xFF0E1216) else Color.White,
+            Offset(cx + r1 * cos(a).toFloat(), cy + r1 * sin(a).toFloat()),
+            Offset(cx + r2 * cos(a).toFloat(), cy + r2 * sin(a).toFloat()),
+            strokeWidth = size.width * 0.016f,
+            cap = StrokeCap.Round,
+        )
+      }
+    }
+    Column(Modifier.fillMaxWidth().padding(top = height * 0.30f), horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(speedKmh?.toString() ?: "–", color = numberColor, fontSize = (w * 0.235f).sp, fontWeight = FontWeight.Bold,
+          lineHeight = (w * 0.235f).sp)
+      Text("km/h", color = if (state == SpeedState.FAR) Color(0xDDFFFFFF) else Nm.Muted, fontSize = (w * 0.055f).sp, fontWeight = FontWeight.SemiBold)
+    }
+    Row(
+        Modifier.align(Alignment.BottomCenter).padding(bottom = height * 0.05f),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(width * 0.03f),
+    ) {
+      if (effective != null) {
+        val sign = width * 0.13f
+        Box(
+            Modifier.size(sign).clip(CircleShape).background(Color.White).border(sign * 0.13f, NmRed, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Text(effective.toString(), color = Color.Black, fontSize = (w * 0.052f).sp, fontWeight = FontWeight.Bold) }
+      }
+      val label = when {
+        sectionAvg != null -> "media $sectionAvg" + (sectionLimit?.let { " / $it" } ?: "")
+        forVehicle -> "limite del mezzo"
+        effective != null -> "limite"
+        else -> null
+      }
+      if (label != null) {
+        Text(label, color = if (state == SpeedState.FAR) Color.White else if (sectionAvg != null) Color(0xFF8DB8FF) else Nm.Muted,
+            fontSize = (w * 0.052f).sp, fontWeight = if (sectionAvg != null) FontWeight.Bold else FontWeight.Normal)
+      }
+    }
+  }
+}
+
+// ------------------------------------------------------------------------------ places while driving
+
+/** A pin of a place on the map while driving (the panel's places, with their distance on a tag). */
+data class PoiPin(val key: String, val lat: Double, val lon: Double, val glyph: String, val color: Color, val tag: String)
+
+/** The quick choices of the magnifier: what the driver looks for, in one touch. */
+enum class QuickPoi(val label: String, val glyph: String, val color: Color, val cats: Set<String>, val subs: Set<String> = emptySet()) {
+  FUEL("Gasolio", PoiGlyphs.FUEL, PoiGlyphs.Blue, setOf("fuel")),
+  ADBLUE("AdBlue", PoiGlyphs.DROP, PoiGlyphs.LightBlue, setOf("fuel"), setOf("fuel:adblue")),
+  PARKING("Posti TIR", PoiGlyphs.PARKING, PoiGlyphs.Violet, setOf("truck_parking", "services", "rest_area"),
+      setOf("services:hgv", "rest_area:hgv")),
+  SERVICES("Area servizio", PoiGlyphs.SERVICES, PoiGlyphs.Teal, setOf("services")),
+  FOOD("Ristoro", PoiGlyphs.FOOD, PoiGlyphs.Orange, setOf("food")),
+  SHOWER("Docce", PoiGlyphs.SHOWER, PoiGlyphs.Cyan, setOf("shower")),
+  CAMPER("Camper", PoiGlyphs.CAMPER, PoiGlyphs.Green, setOf("camper_site", "camper_parking", "camper_service", "campsite")),
+  WC("WC", PoiGlyphs.WC, PoiGlyphs.Grey, setOf("toilets")),
+  REPAIR("Officina", PoiGlyphs.REPAIR, PoiGlyphs.Amber, setOf("truck_repair", "tyres")),
+}
+
+/** Where the magnifier's search looks. */
+enum class SearchScope(val label: String) {
+  ROUTE("Lungo il percorso"),
+  HERE("Vicino a me"),
+  DESTINATION("Vicino alla destinazione"),
+}
+
+private enum class PanelMode { LIST, CHOOSE, SEARCH, RESULTS }
+
+/**
+ * The places while driving, in a column at the right under the speedometer: the nearest of the
+ * driver's kinds in a big card, the next ones in a line each, "altri" for the whole list and the
+ * magnifier. The magnifier opens "Cosa cerchi?" (quick choices: fuel, AdBlue, lorry parking…, and
+ * "Cerca" for a name or a kind along the route, near the vehicle or near the destination); a
+ * choice shows only those places, in the column and on the map. It never grows beyond
+ * [maxHeight] (the room left by the buttons under it).
+ */
+@Composable
+fun PoiColumn(
+    pois: List<RoutePoi>,
+    traveledM: Double,
+    route: List<GeographicCoordinate>?,
+    here: GeographicCoordinate?,
+    destination: GeographicCoordinate?,
+    secondsPerMetre: Double?,
+    canType: Boolean,
+    width: Dp,
+    maxHeight: Dp,
+    modifier: Modifier = Modifier,
+    onPoi: (RoutePoi) -> Unit,
+    onAll: () -> Unit,
+    onPins: (List<PoiPin>) -> Unit,
+) {
+  val settings by AppGraph.settings.settings.collectAsState()
+  val alpha = (settings.poiRailOpacity.coerceIn(40, 100)) / 100f
+  val panel = Color(0xFF171C22).copy(alpha = maxOf(alpha, 0.88f))
+  var mode by remember { mutableStateOf(PanelMode.LIST) }
+  var quick by remember { mutableStateOf<QuickPoi?>(null) }
+  var query by remember { mutableStateOf("") }
+  var scope by remember { mutableStateOf(SearchScope.ROUTE) }
+  var results by remember { mutableStateOf<List<RoutePoi>?>(null) }
+  var resultsTitle by remember { mutableStateOf("") }
+  var resultsGlyph by remember { mutableStateOf(PoiGlyphs.SEARCH to PoiGlyphs.Green) }
+  val scopeAll = rememberCoroutineScope()
+  val matcher = remember(route) { route?.takeIf { it.size > 1 }?.let { lazy { RouteMatcher(it) } } }
+  val truckOnly = settings.poiOnlyTruckFriendly && AppGraph.profiles.garage.value.active.type.heavy
+
+  // the nearest of each kind ahead (a parking, a fuel station, a service area…), as the side panel did
+  val ahead = remember(pois, (traveledM / 100).toInt()) {
+    pois.filter { it.alongM > traveledM + 50 && it.alongM < traveledM + 80_000 }
+        .groupBy { it.poi.cat }.values.map { it.first() }.sortedBy { it.alongM }
+  }
+
+  // after a while the list folds to its first line (the setting of the side panel), opened again
+  // by new places ahead or a touch
+  var folded by remember { mutableStateOf(false) }
+  val keys = ahead.take(3).map { it.poi.key }
+  var seen by remember { mutableStateOf(emptySet<String>()) }
+  LaunchedEffect(keys) {
+    if (keys.any { it !in seen }) folded = false
+    seen = seen + keys
+  }
+  LaunchedEffect(folded, keys, mode, settings.poiRailSeconds) {
+    if (!folded && mode == PanelMode.LIST && settings.poiRailSeconds > 0) {
+      delay(settings.poiRailSeconds * 1000L)
+      folded = true
+    }
+  }
+
+  fun eta(p: RoutePoi): String? =
+      if (p.offRouteM < 0) null else secondsPerMetre?.let { Fmt.duration((p.alongM - traveledM).coerceAtLeast(0.0) * it) }
+
+  fun distOf(p: RoutePoi): String = Fmt.distanceText((p.alongM - traveledM).coerceAtLeast(0.0))
+
+  fun runQuick(q: QuickPoi) {
+    quick = q
+    resultsTitle = "${q.label} sul percorso"
+    resultsGlyph = q.glyph to q.color
+    results = null
+    mode = PanelMode.RESULTS
+    val m = matcher ?: run { results = emptyList(); return }
+    scopeAll.launch {
+      results = withContext(Dispatchers.IO) {
+        runCatching {
+          AppGraph.poi.alongRoute(m.value, q.cats, truckOnly && q != QuickPoi.CAMPER, maxOf(settings.poiMaxDetourM, 1500), q.subs)
+              .filter { it.alongM > traveledM + 30 }.take(8)
+        }.getOrDefault(emptyList())
+      }
+    }
+  }
+
+  fun runSearch() {
+    val text = query.trim()
+    if (text.length < 2) return
+    quick = null
+    resultsTitle = "«$text» · " + scope.label.lowercase()
+    resultsGlyph = PoiGlyphs.SEARCH to PoiGlyphs.Green
+    results = null
+    mode = PanelMode.RESULTS
+    AppGraph.settings.update { st -> st.copy(poiRecent = (listOf(text) + st.poiRecent.filter { !it.equals(text, true) }).take(5)) }
+    val sc = scope
+    scopeAll.launch {
+      results = withContext(Dispatchers.IO) {
+        runCatching { searchPlaces(text, sc, matcher?.value, here, destination, traveledM) }.getOrDefault(emptyList())
+      }
+    }
+  }
+
+  // the pins on the map: the places shown in the column (the first ones)
+  val pinSource = when (mode) {
+    PanelMode.RESULTS -> results.orEmpty().filter { it.offRouteM >= 0 }.take(3)
+    else -> ahead.take(2)
+  }
+  val pinKey = pinSource.map { it.poi.key + ":" + distOf(it) }
+  LaunchedEffect(pinKey) {
+    onPins(pinSource.map { p ->
+      val (g, c) = if (mode == PanelMode.RESULTS && quick != null) quick!!.glyph to quick!!.color else PoiGlyphs.of(p.poi.cat)
+      PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, distOf(p))
+    })
+  }
+  DisposableEffect(Unit) { onDispose { onPins(emptyList()) } }
+
+  val lensSize = 56.dp
+  Column(modifier.width(width).heightIn(max = maxHeight).animateContentSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    when (mode) {
+      PanelMode.LIST -> {
+        val room = maxHeight - lensSize - 8.dp
+        val bigH = 150.dp
+        val rowH = 60.dp
+        val showBig = !folded && room >= bigH && ahead.isNotEmpty()
+        val maxRows = if (folded) 1 else ((room - (if (showBig) bigH else 0.dp)) / rowH).toInt().coerceAtLeast(0)
+        val rows = ahead.drop(if (showBig) 1 else 0).take(minOf(maxRows, (settings.poiRailCount - 1).coerceAtLeast(if (showBig) 0 else 1)))
+        if (showBig) BigPoiCard(ahead.first(), distOf(ahead.first()), eta(ahead.first()), panel) { onPoi(ahead.first()) }
+        for (p in rows) PoiLine(p, distOf(p), null, panel, highlight = null) { if (folded) folded = false else onPoi(p) }
+        val more = ahead.size - (if (showBig) 1 else 0) - rows.size
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+          if (more > 0 && !folded) {
+            Text("altri $more ›", color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(14.dp)).background(panel).clickable(onClick = onAll)
+                    .padding(horizontal = 14.dp, vertical = 12.dp))
+          }
+          Spacer(Modifier.weight(1f))
+          LensButton(lensSize) { mode = PanelMode.CHOOSE }
+        }
+      }
+      PanelMode.CHOOSE -> ChoosePanel(panel, maxHeight,
+          onPick = { runQuick(it) }, onSearch = { mode = PanelMode.SEARCH }, onClose = { mode = PanelMode.LIST })
+      PanelMode.SEARCH -> SearchPanel(panel, query, { query = it }, scope, { scope = it }, destination != null, here != null,
+          canType, settings.poiRecent, onRecent = { query = it; runSearch() }, onGo = { runSearch() }, onBack = { mode = PanelMode.CHOOSE })
+      PanelMode.RESULTS -> {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(panel).border(1.dp, resultsGlyph.second, RoundedCornerShape(16.dp))
+                .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+          GlyphTile(resultsGlyph.first, resultsGlyph.second, 32.dp)
+          Spacer(Modifier.width(10.dp))
+          Text(resultsTitle, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f))
+          IconButtonSmall(PoiGlyphs.CLOSE, "Togli il filtro") { mode = PanelMode.LIST; results = null; quick = null }
+        }
+        val list = results
+        val room = maxHeight - 48.dp - lensSize - 16.dp
+        when {
+          list == null -> Row(Modifier.clip(RoundedCornerShape(14.dp)).background(panel).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(22.dp), strokeWidth = 3.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("Cerco…", color = Nm.Text, fontSize = 14.sp)
+          }
+          list.isEmpty() -> Text("Niente trovato: prova un'altra zona.", color = Nm.Text, fontSize = 14.sp,
+              modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(panel).padding(14.dp))
+          else -> {
+            for ((i, p) in list.take((room / 60.dp).toInt().coerceAtLeast(1)).withIndex()) {
+              PoiLine(p, distOf(p), eta(p), panel, highlight = if (i == 0) resultsGlyph.second else null) { onPoi(p) }
+            }
+          }
+        }
+        Row(Modifier.fillMaxWidth()) {
+          Spacer(Modifier.weight(1f))
+          LensButton(lensSize) { mode = PanelMode.CHOOSE }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun LensButton(size: Dp, onClick: () -> Unit) {
+  Box(
+      Modifier.size(size).shadow(8.dp, CircleShape).clip(CircleShape).background(Nm.AccentDark).clickable(onClick = onClick),
+      contentAlignment = Alignment.Center,
+  ) { Glyph(PoiGlyphs.SEARCH, Color.White, size * 0.5f, description = "Cerca punti di interesse") }
+}
+
+@Composable
+private fun IconButtonSmall(d: String, description: String, onClick: () -> Unit) {
+  Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+    Glyph(d, Color(0xFFC9D1D9), 20.dp, description = description)
+  }
+}
+
+@Composable
+private fun BigPoiCard(p: RoutePoi, dist: String, eta: String?, bg: Color, onClick: () -> Unit) {
+  val (g, c) = PoiGlyphs.of(p.poi.cat)
+  val cat = PoiCategories.byId(p.poi.cat)
+  Column(
+      Modifier.fillMaxWidth().shadow(8.dp, RoundedCornerShape(20.dp)).clip(RoundedCornerShape(20.dp)).background(bg)
+          .border(1.dp, c.copy(alpha = 0.7f), RoundedCornerShape(20.dp)).clickable(onClick = onClick).padding(12.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      GlyphTile(g, c, 46.dp)
+      Spacer(Modifier.width(12.dp))
+      Column {
+        Text(dist, color = Nm.Text, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
+        val where = if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m dalla strada" else "sul percorso"
+        Text(listOfNotNull(eta, where).joinToString(" · "), color = Nm.Muted, fontSize = 13.sp)
+      }
+    }
+    Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+        overflow = TextOverflow.Ellipsis)
+    val badges = app.navmaster.truck.poi.poiBadges(p.poi.flags).take(3)
+    if (badges.isNotEmpty()) {
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        for (b in badges) {
+          Text(b, color = Color(0xFFC9D1D9), fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+              modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Nm.Raised).padding(horizontal = 8.dp, vertical = 3.dp))
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PoiLine(p: RoutePoi, dist: String, eta: String?, bg: Color, highlight: Color?, onClick: () -> Unit) {
+  val (g, c) = PoiGlyphs.of(p.poi.cat)
+  val cat = PoiCategories.byId(p.poi.cat)
+  Row(
+      Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(16.dp)).background(bg)
+          .border(1.dp, highlight ?: Color(0x1AFFFFFF), RoundedCornerShape(16.dp)).clickable(onClick = onClick)
+          .padding(horizontal = 10.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    GlyphTile(g, c, 36.dp)
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.weight(1f)) {
+      Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+          overflow = TextOverflow.Ellipsis)
+      val tags = app.navmaster.truck.poi.poiBadges(p.poi.flags).take(2) +
+          listOfNotNull(if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m" else null, if (p.offRouteM < 0) "in linea d'aria" else null)
+      if (tags.isNotEmpty()) Text(tags.joinToString(" · "), color = Nm.Muted, fontSize = 12.sp, maxLines = 1)
+    }
+    Column(horizontalAlignment = Alignment.End) {
+      Text(dist, color = Nm.Amber, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+      if (eta != null) Text(eta, color = Nm.Muted, fontSize = 12.sp)
+    }
+  }
+}
+
+@Composable
+private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, onSearch: () -> Unit, onClose: () -> Unit) {
+  // the tiles a little lower when the room is short (a phone, or the buttons open under it)
+  val tileH = if (maxHeight < 360.dp) 54.dp else 66.dp
+  Column(
+      Modifier.fillMaxWidth().shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(bg)
+          .border(1.dp, Nm.Accent.copy(alpha = 0.6f), RoundedCornerShape(22.dp)).padding(start = 12.dp, end = 6.dp, bottom = 12.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text("COSA CERCHI?", color = Color(0xFF8FE0AE), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp,
+          modifier = Modifier.weight(1f).padding(start = 4.dp))
+      IconButtonSmall(PoiGlyphs.CLOSE, "Chiudi", onClose)
+    }
+    Column(Modifier.padding(end = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      for (row in QuickPoi.entries.chunked(3)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          for (q in row) {
+            Column(
+                Modifier.weight(1f).height(tileH).clip(RoundedCornerShape(14.dp)).background(Color(0xFF1E252D)).clickable { onPick(q) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+              Glyph(q.glyph, q.color, 24.dp, description = q.label)
+              Spacer(Modifier.height(4.dp))
+              Text(q.label, color = Nm.Text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+          }
+        }
+      }
+      Row(
+          Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp)).background(Nm.AccentDark).clickable(onClick = onSearch),
+          horizontalArrangement = Arrangement.Center,
+          verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Glyph(PoiGlyphs.SEARCH, Color.White, 22.dp)
+        Spacer(Modifier.width(10.dp))
+        Text("Cerca", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+      }
+    }
+  }
+}
+
+@Composable
+private fun SearchPanel(
+    bg: Color,
+    query: String,
+    onQuery: (String) -> Unit,
+    scope: SearchScope,
+    onScope: (SearchScope) -> Unit,
+    hasDestination: Boolean,
+    hasHere: Boolean,
+    canType: Boolean,
+    recent: List<String>,
+    onRecent: (String) -> Unit,
+    onGo: () -> Unit,
+    onBack: () -> Unit,
+) {
+  Column(
+      Modifier.fillMaxWidth().shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(bg)
+          .border(1.dp, Nm.Accent.copy(alpha = 0.6f), RoundedCornerShape(22.dp)).padding(start = 12.dp, end = 6.dp, bottom = 12.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text("CERCA", color = Color(0xFF8FE0AE), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp,
+          modifier = Modifier.weight(1f).padding(start = 4.dp))
+      IconButtonSmall(PoiGlyphs.CLOSE, "Indietro", onBack)
+    }
+    Column(Modifier.padding(end = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      OutlinedTextField(
+          query, onQuery, singleLine = true, enabled = canType,
+          label = { Text(if (canType) "Nome o tipo di posto" else "Per scrivere fermati (o usa le ricerche recenti)") },
+          keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+          keyboardActions = KeyboardActions(onSearch = { onGo() }),
+          modifier = Modifier.fillMaxWidth(),
+          colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent,
+              disabledTextColor = Nm.Muted),
+      )
+      // where to look: along the route, around the vehicle, around the destination
+      for (s in SearchScope.entries) {
+        val usable = when (s) {
+          SearchScope.ROUTE -> true
+          SearchScope.HERE -> hasHere
+          SearchScope.DESTINATION -> hasDestination
+        }
+        if (!usable) continue
+        val on = s == scope
+        Text(s.label, color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp))
+                .background(if (on) Nm.Accent.copy(alpha = 0.18f) else Color(0xFF1E252D))
+                .border(1.dp, if (on) Nm.Accent else Color.Transparent, RoundedCornerShape(12.dp))
+                .clickable { onScope(s) }.padding(horizontal = 12.dp, vertical = 12.dp))
+      }
+      Row(
+          Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp))
+              .background(if (query.trim().length >= 2) Nm.AccentDark else Color(0xFF2A323C)).clickable(enabled = query.trim().length >= 2, onClick = onGo),
+          horizontalArrangement = Arrangement.Center,
+          verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Glyph(PoiGlyphs.SEARCH, Color.White, 22.dp)
+        Spacer(Modifier.width(10.dp))
+        Text("Cerca", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+      }
+      if (recent.isNotEmpty()) {
+        Text("Ricerche recenti", color = Nm.Muted, fontSize = 12.sp, modifier = Modifier.padding(start = 2.dp))
+        for (r in recent.take(3)) {
+          Text(r, color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF1E252D))
+                  .clickable { onRecent(r) }.padding(horizontal = 12.dp, vertical = 12.dp))
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The search of the magnifier: places whose name matches [text] and places of the kinds whose name
+ * matches it ("lavaggio" → lorry wash, "gommista" → tyres), along the route ahead, near the
+ * vehicle (25 km) or near the destination (10 km). Places off the route carry offRouteM = -1 and
+ * their straight distance in alongM (counted from [traveledM]).
+ */
+fun searchPlaces(
+    text: String,
+    scope: SearchScope,
+    m: RouteMatcher?,
+    here: GeographicCoordinate?,
+    destination: GeographicCoordinate?,
+    traveledM: Double,
+): List<RoutePoi> {
+  val words = text.lowercase().split(' ', ',', '.').filter { it.length >= 4 }
+  val cats = PoiCategories.all.filter { c ->
+    val l = c.label.lowercase()
+    words.any { w -> l.contains(w.take(6)) || w.contains(l.take(6)) }
+  }.map { it.id }.toSet() +
+      (if (words.any { it.startsWith("gomm") }) setOf("tyres") else emptySet()) +
+      (if (words.any { it.startsWith("lavag") }) setOf("truck_wash") else emptySet()) +
+      (if (words.any { it.startsWith("offic") || it.startsWith("mecca") }) setOf("truck_repair") else emptySet())
+  val byName: List<Poi> = AppGraph.poi.search(text, 200)
+  val out = LinkedHashMap<String, RoutePoi>()
+  when (scope) {
+    SearchScope.ROUTE -> {
+      val mm = m ?: return emptyList()
+      if (cats.isNotEmpty()) for (p in AppGraph.poi.alongRoute(mm, cats, false, 1500)) out.putIfAbsent(p.poi.key, p)
+      for (p in byName) {
+        val (d, along) = mm.nearest(p.coordinate) ?: continue
+        if (d <= 1500) out.putIfAbsent(p.key, RoutePoi(p, along, d))
+      }
+      return out.values.filter { it.alongM > traveledM + 30 }.sortedBy { it.alongM }.take(8)
+    }
+    else -> {
+      val c = (if (scope == SearchScope.HERE) here else destination) ?: return emptyList()
+      val radius = if (scope == SearchScope.HERE) 25_000.0 else 10_000.0
+      if (cats.isNotEmpty()) {
+        for ((p, d) in AppGraph.poi.near(c.lat, c.lng, radius, cats, limit = 60)) out.putIfAbsent(p.key, RoutePoi(p, traveledM + d, -1.0))
+      }
+      for (p in byName) {
+        val d = app.navmaster.truck.core.Geo.dist(c.lat, c.lng, p.lat, p.lon)
+        if (d <= radius) out.putIfAbsent(p.key, RoutePoi(p, traveledM + d, -1.0))
+      }
+      return out.values.sortedBy { it.alongM }.take(8)
+    }
+  }
+}
