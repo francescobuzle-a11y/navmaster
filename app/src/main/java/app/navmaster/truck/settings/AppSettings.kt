@@ -205,6 +205,9 @@ data class Settings(
     val camperEveningFromHour: Int = 17,
     /** Seconds the panel stays open when new places come up (0 = always open). */
     val poiRailSeconds: Int = 5,
+    /** The places on the map while driving: the name on the pin, and a touch on the pin opens the place (stop here). */
+    val poiPinNames: Boolean = true,
+    val poiPinTap: Boolean = true,
     /** Opacity of the panel, percent. */
     val poiRailOpacity: Int = 70,
     val poiRailSide: PoiSide = PoiSide.AUTO,

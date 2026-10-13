@@ -488,7 +488,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         RoadPins(cams, livePins) { ev ->
           nav.analysis?.pointAt(ev.startM.coerceAtLeast(0.0))?.let { it.lat to it.lng } ?: (ev.e.lat to ev.e.lon)
         }
-        DrivePoiPins(drivePins)
+        DrivePoiPins(drivePins) { pin -> if (settings.poiPinTap) openPoi = pin.poi }
       }
     }
     }

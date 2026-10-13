@@ -439,6 +439,8 @@ private fun PoiPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
           Pill(if (sec == 0) "Sempre" else "$sec s", s.poiRailSeconds == sec) { set { it.copy(poiRailSeconds = sec) } }
         }
       }
+      ToggleRow("Nome sui segnaposti della mappa", "Accanto al simbolo del posto, con la distanza", s.poiPinNames) { v -> set { it.copy(poiPinNames = v) } }
+      ToggleRow("Tocco sul segnaposto", "Apre la scheda del posto, da cui aggiungerlo come tappa", s.poiPinTap) { v -> set { it.copy(poiPinTap = v) } }
       Stepper("Opacità", s.poiRailOpacity.toDouble(), "%", 10.0, 20.0, 100.0, 0) { v -> set { it.copy(poiRailOpacity = v.toInt()) } }
       PoiRailPreview(s.poiRailOpacity, Modifier.fillMaxWidth().padding(vertical = 6.dp))
       Caption("Lato dello schermo", size = 14)

@@ -256,8 +256,8 @@ private fun drawGlyph(d: String): (android.graphics.Canvas, Float, Float, Float)
  */
 @Composable
 @MaplibreComposable
-fun DrivePoiPins(pins: List<PoiPin>) {
-  for (i in 0 until 3) {
+fun DrivePoiPins(pins: List<PoiPin>, onPick: (PoiPin) -> Unit = {}) {
+  for (i in 0 until 8) {
     val p = pins.getOrNull(i)
     val pinImg = remember(p?.glyph, p?.color, p?.tag) {
       p?.let { tagPin(it.color.toArgbInt(), it.tag, drawGlyph(it.glyph)) }
@@ -272,6 +272,8 @@ fun DrivePoiPins(pins: List<PoiPin>) {
         iconAnchor = const(SymbolAnchor.Bottom),
         iconAllowOverlap = const(true),
         iconIgnorePlacement = const(true),
+        // a touch on the pin opens the place (its card, "stop here")
+        onClick = { _ -> if (p != null) { onPick(p); org.maplibre.compose.util.ClickResult.Consume } else org.maplibre.compose.util.ClickResult.Pass },
     )
   }
 }

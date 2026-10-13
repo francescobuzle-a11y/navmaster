@@ -49,6 +49,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -297,7 +301,7 @@ fun SpeedArc(
 // ------------------------------------------------------------------------------ places while driving
 
 /** A pin of a place on the map while driving (the panel's places, with their distance on a tag). */
-data class PoiPin(val key: String, val lat: Double, val lon: Double, val glyph: String, val color: Color, val tag: String)
+data class PoiPin(val key: String, val lat: Double, val lon: Double, val glyph: String, val color: Color, val tag: String, val poi: RoutePoi)
 
 /** The quick choices of the magnifier: what the driver looks for, in one touch. */
 enum class QuickPoi(val label: String, val glyph: String, val color: Color, val cats: Set<String>, val subs: Set<String> = emptySet()) {
@@ -409,9 +413,9 @@ fun PoiColumn(
   LaunchedEffect(mode) { onOpen(mode != PanelMode.LIST) }
 
   // the nearest of each kind ahead (a parking, a fuel station, a service area…), as the side panel did
+  // every place ahead (80 km), nearest first: a list to scroll, as the magnifier's results
   val ahead = remember(pois, (traveledM / 100).toInt()) {
-    pois.filter { it.alongM > traveledM + 50 && it.alongM < traveledM + 80_000 }
-        .groupBy { it.poi.cat }.values.map { it.first() }.sortedBy { it.alongM }
+    pois.filter { it.alongM > traveledM + 50 && it.alongM < traveledM + 80_000 }.sortedBy { it.alongM }.take(40)
   }
 
   // after a while the list folds to its first line (the setting of the side panel), opened again
@@ -458,16 +462,20 @@ fun PoiColumn(
   }
 
   // the pins on the map: the places shown in the column (the first ones)
+  // the pins on the map: the places of the next 3 km (seen well before they are reached), with
+  // the name when the settings say so; the magnifier's results all (the first 8)
   val pinSource = when (mode) {
-    PanelMode.RESULTS -> found?.list.orEmpty().take(3)
-    else -> ahead.take(2)
+    PanelMode.RESULTS -> found?.list.orEmpty().take(8)
+    else -> ahead.filter { it.alongM < traveledM + 3_000 }.take(8)
   }
-  val pinKey = pinSource.map { it.poi.key + ":" + distOf(it) }
+  val pinKey = pinSource.map { it.poi.key + ":" + distOf(it) } + settings.poiPinNames.toString()
   LaunchedEffect(pinKey) {
     onPins(pinSource.map { p ->
       val q = quick
       val (g, c) = if (mode == PanelMode.RESULTS && q != null) q.glyph to q.color else PoiGlyphs.of(p.poi.cat)
-      PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, distOf(p))
+      val name = p.poi.title.trim()
+      val tag = if (settings.poiPinNames && name.isNotEmpty()) (if (name.length > 16) name.take(15) + "…" else name) + " · " + distOf(p) else distOf(p)
+      PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, tag, p)
     })
   }
   DisposableEffect(Unit) { onDispose { onPins(emptyList()); onOpen(false) } }
@@ -499,20 +507,27 @@ fun PoiColumn(
           LensButton(44.dp) { mode = PanelMode.CHOOSE }
         }
       } else {
-        val room = maxHeight - lensSize - 8.dp
-        val bigH = 150.dp
-        val rowH = 60.dp
-        val showBig = !folded && room >= bigH && ahead.isNotEmpty()
-        val maxRows = if (folded) 1 else ((room - (if (showBig) bigH else 0.dp)) / rowH).toInt().coerceAtLeast(0)
-        val rows = ahead.drop(if (showBig) 1 else 0).take(minOf(maxRows, (settings.poiRailCount - 1).coerceAtLeast(if (showBig) 0 else 1)))
-        if (showBig) BigPoiCard(ahead.first(), distOf(ahead.first()), eta(ahead.first()), panel) { onPoi(ahead.first()) }
-        for (p in rows) PoiLine(p, distOf(p), null, panel, highlight = null) { if (folded) folded = false else onPoi(p) }
-        val more = ahead.size - (if (showBig) 1 else 0) - rows.size
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-          if (more > 0 && !folded) {
-            Text("altri $more ›", color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+        // the places ahead, one line each, scrolling in the room there is (the first lines fade
+        // out at the edges instead of being cut); the arrow folds the list to its tab
+        val listState = rememberScrollState()
+        Column(
+            Modifier.weight(1f, fill = false).fadeEdges(listState).verticalScroll(listState),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          for (p in ahead) PoiLine(p, distOf(p), eta(p), panel, highlight = null) { onPoi(p) }
+          if (ahead.isEmpty()) Text("Nessun posto in vista lungo il percorso.", color = Nm.Muted, fontSize = 13.sp,
+              modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(panel).padding(12.dp))
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          if (ahead.isNotEmpty()) {
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(panel).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp))
+                    .clickable { folded = true }.semantics { contentDescription = "Riduci i punti di interesse" },
+                contentAlignment = Alignment.Center,
+            ) { Text("▴", color = Nm.Text, fontSize = 18.sp) }
+            Text("tutti ›", color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(14.dp)).background(panel).clickable(onClick = onAll)
-                    .padding(horizontal = 14.dp, vertical = 12.dp))
+                    .padding(horizontal = 12.dp, vertical = 12.dp))
           }
           Spacer(Modifier.weight(1f))
           LensButton(lensSize) { mode = PanelMode.CHOOSE }
@@ -536,8 +551,9 @@ fun PoiColumn(
         }
         val f = found
         // the list scrolls in the room left between the title and the magnifier
+        val resultsState = rememberScrollState()
         Column(
-            Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+            Modifier.weight(1f, fill = false).fadeEdges(resultsState).verticalScroll(resultsState),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           when {
@@ -568,6 +584,26 @@ fun PoiColumn(
   }
 }
 
+/**
+ * The lines that scroll out of a list fade away at its top and bottom edges (no sharp cut): only
+ * at the edge there is more to scroll towards.
+ */
+private fun Modifier.fadeEdges(state: androidx.compose.foundation.ScrollState, edge: Dp = 22.dp): Modifier =
+    graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }.drawWithContent {
+      drawContent()
+      val px = edge.toPx()
+      if (state.value > 0) {
+        drawRect(
+            Brush.verticalGradient(0f to Color.Transparent, 1f to Color.Black, startY = 0f, endY = px),
+            size = Size(size.width, px), blendMode = BlendMode.DstIn)
+      }
+      if (state.value < state.maxValue) {
+        drawRect(
+            Brush.verticalGradient(0f to Color.Black, 1f to Color.Transparent, startY = size.height - px, endY = size.height),
+            topLeft = Offset(0f, size.height - px), size = Size(size.width, px), blendMode = BlendMode.DstIn)
+      }
+    }
+
 @Composable
 private fun LensButton(size: Dp, onClick: () -> Unit) {
   Box(
@@ -580,38 +616,6 @@ private fun LensButton(size: Dp, onClick: () -> Unit) {
 private fun IconButtonSmall(d: String, description: String, onClick: () -> Unit) {
   Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
     Glyph(d, Color(0xFFC9D1D9), 20.dp, description = description)
-  }
-}
-
-@Composable
-private fun BigPoiCard(p: RoutePoi, dist: String, eta: String?, bg: Color, onClick: () -> Unit) {
-  val (g, c) = PoiGlyphs.of(p.poi.cat)
-  val cat = PoiCategories.byId(p.poi.cat)
-  Column(
-      Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(bg)
-          .border(1.dp, c.copy(alpha = 0.7f), RoundedCornerShape(20.dp)).clickable(onClick = onClick).padding(12.dp),
-      verticalArrangement = Arrangement.spacedBy(6.dp),
-  ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      GlyphTile(g, c, 46.dp)
-      Spacer(Modifier.width(12.dp))
-      Column {
-        Text(dist, color = Nm.Text, fontSize = 28.sp, fontWeight = FontWeight.Bold, lineHeight = 28.sp)
-        val where = if (p.offRouteM > 150) "a ${p.offRouteM.toInt()} m dalla strada" else "sul percorso"
-        Text(listOfNotNull(eta, where).joinToString(" · "), color = Nm.Muted, fontSize = 13.sp)
-      }
-    }
-    Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-        overflow = TextOverflow.Ellipsis)
-    val badges = app.navmaster.truck.poi.poiBadges(p.poi.flags).take(3)
-    if (badges.isNotEmpty()) {
-      Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        for (b in badges) {
-          Text(b, color = Color(0xFFC9D1D9), fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-              modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(Nm.Raised).padding(horizontal = 8.dp, vertical = 3.dp))
-        }
-      }
-    }
   }
 }
 
