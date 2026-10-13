@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import app.navmaster.truck.nav.MoreRoutes
 import app.navmaster.truck.nav.PlanState
 import app.navmaster.truck.nav.RouteVariant
+import app.navmaster.truck.nav.VariantKind
 import app.navmaster.truck.nav.TurnItem
 import app.navmaster.truck.nav.TurnList
 import app.navmaster.truck.routing.Criticality
