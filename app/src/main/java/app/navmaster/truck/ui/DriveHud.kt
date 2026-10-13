@@ -437,7 +437,7 @@ fun PoiColumn(
 
   fun runQuick(q: QuickPoi) {
     quick = q
-    resultsTitle = "${q.label} sul percorso"
+    resultsTitle = q.label
     resultsGlyph = q.glyph to q.color
     found = null
     mode = PanelMode.RESULTS
@@ -622,13 +622,26 @@ private fun PoiLine(p: RoutePoi, dist: String, eta: String?, bg: Color, highligh
 private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, onSearch: () -> Unit, onClose: () -> Unit) {
   // the tiles lower when the room is short (lying down, a phone): the panel scrolls if still too tall
   val tileH = if (maxHeight < 330.dp) 50.dp else 64.dp
+  // very short (a phone lying down): «Cerca» goes into the title line, always in sight
+  val searchOnTop = maxHeight < 300.dp
   Column(
       Modifier.fillMaxWidth().heightIn(max = maxHeight).clip(RoundedCornerShape(22.dp)).background(bg)
           .border(1.dp, Nm.Accent.copy(alpha = 0.6f), RoundedCornerShape(22.dp)).padding(start = 12.dp, end = 6.dp, bottom = 12.dp),
   ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Text("COSA CERCHI?", color = Color(0xFF8FE0AE), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp,
-          modifier = Modifier.weight(1f).padding(start = 4.dp))
+          modifier = Modifier.weight(1f).padding(start = 4.dp), maxLines = 1)
+      if (searchOnTop) {
+        Row(
+            Modifier.height(36.dp).clip(RoundedCornerShape(12.dp)).background(Nm.AccentDark).clickable(onClick = onSearch)
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Glyph(PoiGlyphs.SEARCH, Color.White, 16.dp)
+          Spacer(Modifier.width(6.dp))
+          Text("Cerca", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+      }
       IconButtonSmall(PoiGlyphs.CLOSE, "Chiudi", onClose)
     }
     Column(Modifier.padding(end = 6.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -647,7 +660,7 @@ private fun ChoosePanel(bg: Color, maxHeight: Dp, onPick: (QuickPoi) -> Unit, on
           }
         }
       }
-      Row(
+      if (!searchOnTop) Row(
           Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp)).background(Nm.AccentDark).clickable(onClick = onSearch),
           horizontalArrangement = Arrangement.Center,
           verticalAlignment = Alignment.CenterVertically,
@@ -776,7 +789,8 @@ fun searchPlaces(
 
 /** The kinds of place a search text names ("gasolio", "parcheggio", "lavaggio camion"…). */
 fun categoriesFor(text: String): Set<String> {
-  val words = text.lowercase().split(' ', ',', '.').filter { it.length >= 3 }
+  // two letters are enough for «wc»; the names of the kinds are matched from four letters
+  val words = text.lowercase().split(' ', ',', '.').filter { it.length >= 2 }
   val out = HashSet<String>()
   for (c in PoiCategories.all) {
     val l = c.label.lowercase()
@@ -842,7 +856,10 @@ fun ControlsBar(visible: Boolean, items: List<BarButton>, maxWidth: Dp, modifier
   // one line when it fits, else two (an upright phone): never under the round buttons at the right
   val itemW = 62.dp
   val gap = 4.dp
-  val perRow = ((maxWidth - 12.dp + gap) / (itemW + gap)).toInt().coerceIn(1, items.size.coerceAtLeast(1))
+  val fit = ((maxWidth - 12.dp + gap) / (itemW + gap)).toInt().coerceIn(1, items.size.coerceAtLeast(1))
+  // the lines evenly filled (3 + 2, not 4 + 1)
+  val lines = (items.size + fit - 1) / fit
+  val perRow = ((items.size + lines - 1) / lines).coerceAtLeast(1)
   androidx.compose.animation.AnimatedVisibility(
       visible,
       modifier,
@@ -903,7 +920,9 @@ fun DriveSide(
 ) {
   BoxWithConstraints(modifier.fillMaxSize()) {
     val boxH = maxHeight
-    val colW = (arcWidth + 24.dp).coerceIn(220.dp, 270.dp).coerceAtMost(maxWidth * if (landscape) 0.38f else 0.5f)
+    // the column keeps its width when the speedometer shrinks (the magnifier's panels need it)
+    val colW = (maxWidth * (if (landscape) 0.22f else 0.34f)).coerceIn(230.dp, 290.dp)
+        .coerceAtMost(maxWidth * if (landscape) 0.38f else 0.5f)
     val top = if (arcInside) arcHeight + 12.dp else 4.dp
     // the round buttons smaller when they would not fit (a phone lying down), never below 40 dp
     val n = railCount.coerceAtLeast(1)
