@@ -351,7 +351,7 @@ class JvGeo(
 
       // ---- the roads of the map
       class TRoad(var pts: List<Pt>, val half: Double, val lanesF: Int, val lanesB: Int, val oneway: Boolean, val motor: Boolean,
-                  val bridge: Boolean, val link: Boolean, val turnLanes: String) {
+                  val bridge: Boolean, val link: Boolean, val turnLanes: String, val synthetic: Boolean = false) {
         var dash = 0.0
         var dashSide = 0
       }
@@ -415,9 +415,36 @@ class JvGeo(
       // the carriageway's edges at the node (metres from the route's line, left positive)
       val leftNode = if (twoWay) profile.left[kNode] * 2 else profile.left[kNode]
       val rightNode = if (twoWay) 0.0 else profile.right[kNode]
+      // no road of the map goes on from the junction (the map's roads are not there, or the data
+      // stop): the road left is drawn going straight on, with the lanes that do not leave, so that
+      // the carriageway never ends in a wall at the node (a clean schematic, not an invented map)
+      val sideRouteEarly = sideOf(JvMath.at(route, rc, nodeS + 60))
+      if (inp.takeBranch && roads.none { r -> r.pts.any { JvMath.dist(it, node) < 8 } }) {
+        val fl = hypot(fx0, fy0).takeIf { it > 1e-6 } ?: 1.0
+        val ux = fx0 / fl
+        val uy = fy0 / fl
+        val nx = -uy
+        val ny = ux
+        // the lanes that go on: the carriageway at the node without the ones leaving on the route's side
+        val leaving = active.size.coerceIn(1, (lanesAtNode - 1).coerceAtLeast(1))
+        val keepL: Double
+        val keepR: Double
+        if (twoWay) { keepL = leftNode; keepR = rightNode } else if (sideRouteEarly < 0) { keepL = leftNode; keepR = rightNode + leaving * LANE } else { keepL = leftNode - leaving * LANE; keepR = rightNode }
+        val mid = (keepL + keepR) / 2
+        val halfS = ((keepL - keepR) / 2).coerceAtLeast(LANE / 2)
+        val pts = (0..90).map { i -> Pt(node.x + ux * i * 4.0 + nx * mid, node.y + uy * i * 4.0 + ny * mid) }
+        val t = TRoad(pts, halfS, if (twoWay) (lanesAtNode) else (lanesAtNode - leaving).coerceAtLeast(1), if (twoWay) lanesAtNode else 0,
+            !twoWay, inp.motorway, false, false, "", synthetic = true)
+        // the dashed edge towards the route, until the route is clear of the road
+        val lat = after.map { q -> JvMath.lineDist(q, pts) }
+        t.dash = lat.indices.firstOrNull { lat[it] >= halfS + outRaw.half(it) + 1.0 }?.let { it * 3.0 } ?: 60.0
+        t.dashSide = sideRouteEarly
+        roads += t
+      }
       // roads of the map that leave from (or arrive at) the junction: they start at the edge of the
       // carriageway, not in its middle, until they really move away from it
       for (t in roads) {
+        if (t.synthetic) continue
         val rev = JvMath.dist(t.pts.last(), node) < 6 && JvMath.dist(t.pts.first(), node) >= 6
         var p = if (rev) t.pts.reversed() else t.pts
         if (JvMath.dist(p.first(), node) >= 6) continue
@@ -615,13 +642,14 @@ class JvGeo(
       }
       // the gore: the white nose between the two roads, from the node to where they part
       val goreOther = left?.takeIf { JvMath.dist(it.pts.first(), node) < 8 || JvMath.dist(it.pts.last(), node) < 8 }
-      if (goreOther != null && inp.takeBranch) {
+      if (goreOther != null && inp.takeBranch && !twoWay) {
         val o = if (JvMath.dist(goreOther.pts.first(), node) < 8) goreOther.pts else goreOther.pts.reversed()
         val oc = JvMath.cum(o)
         // the painted nose: from the node to where the two edges are 4 m apart
         val bInnerAll = JvMath.offset(branch) { i -> if (side > 0) op.right[i] else op.left[i] }
         val oInnerAll = JvMath.offset(o) { side * goreOther.half }
-        val kG = bInnerAll.indices.firstOrNull { it > kSplit && JvMath.lineDist(bInnerAll[it], oInnerAll) >= 4.0 } ?: (kSplit * 2).coerceAtMost(branch.size - 1)
+        val kG = (bInnerAll.indices.firstOrNull { it > kSplit && JvMath.lineDist(bInnerAll[it], oInnerAll) >= 4.0 } ?: (kSplit * 2))
+            .coerceAtMost(min(branch.size - 1, kSplit + 20))
         val kO = oc.indexOfFirst { it >= bc[kG] }.let { if (it < 0) o.size - 1 else it }
         if (kO > 1 && kG > 1) shapes += Shape(GORE, oInnerAll.subList(0, kO + 1) + bInnerAll.subList(0, kG + 1).reversed(), layer = 2)
       }

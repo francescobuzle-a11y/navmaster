@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -211,11 +212,17 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
           modifier = Modifier.align(Alignment.BottomStart).padding(8.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000))
               .padding(horizontal = 8.dp, vertical = 2.dp))
       // the signs over the lanes (destination:lanes): one panel over each group of lanes
+      // the lines of the panels fit the band: as many towns as the height allows, never cut
+      val townSp = if (signsDp.value >= 100f) 17 else if (signsDp.value >= 86f) 15 else 14
+      val lineDp = townSp * 1.32f
+      val maxTowns = ((signsDp.value - 16f - 28f - 2f) / lineDp).toInt().coerceIn(1, 3)
+      val maxLaneTowns = ((signsDp.value - 16f - 22f - 24f) / (lineDp * 0.9f)).toInt().coerceIn(1, 2)
       if (hasSigns && laneGantry) LaneGantry(scene, night,
-          Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 50.dp, end = 14.dp, top = 8.dp, bottom = 8.dp))
+          Modifier.align(Alignment.TopCenter).fillMaxWidth().height(signsDp).clipToBounds().padding(start = 50.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+          maxLaneTowns, townSp - 2)
       // the signs, on a gantry above the road
       else if (hasSigns && signsNow) Row(
-          Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 50.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+          Modifier.align(Alignment.TopCenter).fillMaxWidth().height(signsDp).clipToBounds().padding(start = 50.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
           verticalAlignment = Alignment.Top,
       ) {
@@ -231,7 +238,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
             SignPanel(m, oBg, oFg, arrow = 0f, exitNumber = null,
                 refs = ((o?.branches ?: emptyList()) + scene.mainRefs).distinct().take(3),
                 towns = o?.towards?.take(2) ?: emptyList(),
-                taken = scene.side == 0 && scene.exit.not(), country = scene.country, night = night)
+                taken = scene.side == 0 && scene.exit.not(), country = scene.country, night = night, maxTowns = maxTowns, townSp = townSp)
           }
         }
         val branch: @Composable (Modifier) -> Unit = { m ->
@@ -241,7 +248,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
               exitNumber = sign?.exitNumbers?.firstOrNull(),
               refs = (sign?.branches.orEmpty() + scene.branchRefs).distinct().take(3),
               towns = (sign?.towards.orEmpty() + sign?.exitNames.orEmpty()).distinct().take(3),
-              taken = true, country = scene.country, night = night)
+              taken = true, country = scene.country, night = night, maxTowns = maxTowns, townSp = townSp)
         }
         // the panels in the same order as the roads: the branch on its own side
         if (scene.side < 0) {
@@ -308,7 +315,7 @@ private fun LaneRow(arrows: List<String>, active: List<Int>, vehicleLane: Int?, 
 @Composable
 private fun SignPanel(
     modifier: Modifier, bg: Color, fg: Color, arrow: Float, exitNumber: String?, refs: List<String>, towns: List<String>,
-    taken: Boolean, country: String?, night: Boolean = false,
+    taken: Boolean, country: String?, night: Boolean = false, maxTowns: Int = 3, townSp: Int = 17,
 ) {
   val bg = dimSign(nightSign(bg, night), taken, night)
   val fg = dimSign(nightSign(fg, night), taken, night)
@@ -325,10 +332,12 @@ private fun SignPanel(
             modifier = Modifier.clip(RoundedCornerShape(3.dp)).background(SignYellow).padding(horizontal = 4.dp))
         Spacer(Modifier.width(6.dp))
       }
-      Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { for (r in refs.take(3)) RefPlate(r, country, night = night) }
+      Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { for (r in refs.take(if (exitNumber != null) 2 else 3)) RefPlate(r, country, night = night) }
     }
-    for (t in towns.take(3)) {
-      Text(t, color = fg, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    // the towns that fit the band; when there are more, the last line carries them together
+    val shown = if (towns.size <= maxTowns) towns else towns.take(maxTowns - 1) + towns.drop(maxTowns - 1).joinToString(" · ")
+    for (t in shown) {
+      Text(t, color = fg, fontSize = townSp.sp, lineHeight = (townSp * 1.25f).sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
   }
 }
@@ -338,7 +347,7 @@ private fun SignPanel(
  * going to the same place, a down arrow over every lane, the panels of the lanes to take lit.
  */
 @Composable
-private fun LaneGantry(scene: JunctionScene, night: Boolean, modifier: Modifier) {
+private fun LaneGantry(scene: JunctionScene, night: Boolean, modifier: Modifier, maxTowns: Int = 2, townSp: Int = 15) {
   val lanes = scene.laneSigns ?: return
   val active = scene.laneSignsActive
   // consecutive lanes with the same destinations share one panel
@@ -364,8 +373,9 @@ private fun LaneGantry(scene: JunctionScene, night: Boolean, modifier: Modifier)
         if (d.refs.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
           for (r in d.refs.take(2)) RefPlate(r, scene.country, night = night)
         }
-        for (t in d.towns.take(2)) {
-          Text(t, color = fg, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val shown = if (d.towns.size <= maxTowns) d.towns else d.towns.take(maxTowns - 1) + d.towns.drop(maxTowns - 1).joinToString(" · ")
+        for (t in shown) {
+          Text(t, color = fg, fontSize = townSp.sp, lineHeight = (townSp * 1.25f).sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         // one arrow over each lane of the group, pointing down on it
         Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
