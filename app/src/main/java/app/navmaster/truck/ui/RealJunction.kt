@@ -180,7 +180,6 @@ internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, night: Boo
     }
   }
   fun poly(p: ScreenPoly): Path = Path().apply { moveTo(p.xs[0], p.ys[0]); for (i in 1 until p.n) lineTo(p.xs[i], p.ys[i]); close() }
-  fun poly(p: ScreenPoly): Path = Path().apply { moveTo(p.xs[0], p.ys[0]); for (i in 1 until p.n) lineTo(p.xs[i], p.ys[i]); close() }
   // the vehicle: a solid blue arrow on its lane, where it really is
   for (p in frame.vehicle) {
     when (p.kind) {
