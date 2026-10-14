@@ -597,7 +597,8 @@ class JvGeo(
           lanesAtNode, twoWay, lht, active, arrowsAtNode)
       val gS = nodeS + split
       val s0 = (gS - 520).coerceAtLeast(0.0)
-      val s1 = min(nodeS + (bc.lastOrNull() ?: 0.0), gS + 28)
+      // the arrow goes on along the road taken, up to where the manoeuvre is done (250 m past the gore)
+      val s1 = min(nodeS + (bc.lastOrNull() ?: 0.0) - 8, gS + 250)
       // where the lanes to take end up in the road taken: spread over its lanes
       val nOut = outLanesFirst.coerceAtLeast(1)
       for ((ai, lane) in active.take(3).withIndex()) {

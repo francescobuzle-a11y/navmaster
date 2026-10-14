@@ -16,10 +16,22 @@ import app.navmaster.truck.ui.jv.JvGeo
 import app.navmaster.truck.ui.jv.JvInput
 import app.navmaster.truck.ui.jv.JvProject
 import app.navmaster.truck.ui.jv.JvRoad
+import app.navmaster.truck.ui.jv.JvCam
+import app.navmaster.truck.ui.jv.ScreenPoly
+import app.navmaster.truck.ui.jv.SignLayout
+import app.navmaster.truck.ui.jv.SignSpec
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
 import kotlin.math.sin
 
 /** The real junction of a scene, with the drawings of its last picture kept (one per camera position and panel size). */
 internal class RealJv(val geo: JvGeo) {
+  val cam = JvCam()
   var cacheKey = ""
   var cache: List<Pair<Path, Int>>? = null
   var cacheFrame: JvFrame? = null
@@ -76,25 +88,42 @@ internal fun realJunctionOf(scene: JunctionScene, md: JvModel): RealJv? {
   return RealJv(geo)
 }
 
+/** The ARGB of a Compose colour, for the pure-Kotlin sign layout. */
+internal fun Color.argb(): Long = (this.toArgb().toLong() and 0xFFFFFFFFL)
+
+private fun colorOf(c: Long) = Color(c.toInt())
+
+/** The 3x3 homography of SignLayout as the 4x4 matrix of the canvas (with its perspective row). */
+private fun matrixOf(m: DoubleArray): androidx.compose.ui.graphics.Matrix {
+  val v = FloatArray(16)
+  v[0] = m[0].toFloat(); v[4] = m[1].toFloat(); v[12] = m[2].toFloat()
+  v[1] = m[3].toFloat(); v[5] = m[4].toFloat(); v[13] = m[5].toFloat()
+  v[3] = m[6].toFloat(); v[7] = m[7].toFloat(); v[15] = m[8].toFloat()
+  v[10] = 1f
+  return androidx.compose.ui.graphics.Matrix(v)
+}
+
 /**
  * Draws [rj] as the driver needs it: the road seen from above and behind the vehicle, with its real
  * lanes (the ones opening before the exit too), the road going on ahead, the arrows painted on the
- * lanes and the lanes to take painted violet with the arrow into the road to take. The camera waits
- * before the gore, then goes with the vehicle (the blue arrow on its lane). [vehAlong]: where the
- * vehicle is (metres of the route).
+ * lanes and the lanes to take painted violet with the arrow into the road to take; over the road
+ * the gantry with the direction signs ([signs]), in perspective, that the vehicle drives under at
+ * the gore; the vehicle itself a solid blue arrow on its lane. The camera goes with the vehicle
+ * all the way. [vehAlong]: where the vehicle is (metres of the route).
  */
-internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, night: Boolean, signsSpace: Float, vehLane: Int? = null) {
+internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, night: Boolean, signs: List<SignSpec>,
+                                        vehLane: Int? = null, text: TextMeasurer? = null) {
   val w = size.width.toDouble()
   val h = size.height.toDouble()
   if (w < 10 || h < 10) return
   val geo = rj.geo
-  // the camera moves with the vehicle: a new drawing every metre, not at every frame
-  val vehKey = vehAlong.toLong()
-  val key = "$vehKey:${size.width.toInt()}x${size.height.toInt()}:${signsSpace.toInt()}:$vehLane"
+  // the camera moves with the vehicle: a new drawing every half metre (smooth at any speed)
+  val vehKey = (vehAlong * 2).toLong()
+  val key = "$vehKey:${size.width.toInt()}x${size.height.toInt()}:$vehLane:${signs.size}"
   var frame = rj.cacheFrame
   var cached = rj.cache
   if (key != rj.cacheKey || cached == null || frame == null) {
-    frame = JvProject.frame(geo, vehAlong, w, h, signsSpace.toDouble(), vehLane) ?: return
+    frame = JvProject.frame(geo, vehAlong, w, h, 0.0, vehLane, signs, rj.cam) ?: return
     // one drawing for all the shapes of a kind in a layer (a few drawings instead of a thousand)
     val out = ArrayList<Pair<Path, Int>>()
     var curPath: Path? = null
@@ -175,10 +204,69 @@ internal fun DrawScope.drawRealJunction(rj: RealJv, vehAlong: Double, night: Boo
       }
     }
   }
-  // the vehicle: a blue arrow on its lane, where it really is
-  frame.vehicle?.let { v ->
-    val car = Path().apply { moveTo(v[0], v[1]); lineTo(v[2], v[3]); lineTo(v[4], v[5]); lineTo(v[6], v[7]); close() }
-    drawPath(car, Color(0xFF1E88E5))
-    drawPath(car, Color.White, style = Stroke((w * 0.005).toFloat().coerceAtLeast(2f)))
+  fun poly(p: ScreenPoly): Path = Path().apply { moveTo(p.xs[0], p.ys[0]); for (i in 1 until p.n) lineTo(p.xs[i], p.ys[i]); close() }
+  // the gantry: posts and beam in grey steel
+  val steel = if (night) Color(0xFF454B53) else Color(0xFF8B9198)
+  val shade = if (night) Color(0xFF2C3137) else Color(0xFF666C73)
+  for (p in frame.gantry) drawPath(poly(p), if (p.kind == JvProject.GANTRY) steel else shade)
+  // the panels: drawn flat in their own units, put in perspective by the canvas
+  for (q in frame.signs) {
+    val d = SignLayout.layout(q.spec)
+    val m = matrixOf(SignLayout.homography(d.w, d.h, q.q))
+    withTransform({ transform(m); clipRect(0f, 0f, d.w.toFloat(), d.h.toFloat()) }) {
+      for (r in d.rects) {
+        val c = colorOf(r.color).let { if (night) it.copy(red = it.red * 0.8f, green = it.green * 0.8f, blue = it.blue * 0.8f) else it }
+        if (r.strokeW > 0) drawRoundRect(c, Offset(r.x.toFloat(), r.y.toFloat()), Size(r.w.toFloat(), r.h.toFloat()),
+            CornerRadius(r.r.toFloat()), style = Stroke(r.strokeW.toFloat()))
+        else drawRoundRect(c, Offset(r.x.toFloat(), r.y.toFloat()), Size(r.w.toFloat(), r.h.toFloat()), CornerRadius(r.r.toFloat()))
+      }
+      if (text != null) for (t in d.texts) {
+        var sz = t.size.toFloat()
+        var style = TextStyle(color = colorOf(t.color), fontSize = sz.toSp(), fontWeight = FontWeight.Bold)
+        var measured = text.measure(t.text, style, maxLines = 1)
+        if (t.maxW > 0 && measured.size.width > t.maxW) {
+          sz *= (t.maxW / measured.size.width).toFloat()
+          style = style.copy(fontSize = sz.toSp())
+          measured = text.measure(t.text, style, maxLines = 1)
+        }
+        val x = if (t.align == 0) t.x + (t.maxW - measured.size.width) / 2 else t.x
+        // the text's own height sits a little under the top asked (the ascent of a bold sans)
+        drawText(measured, topLeft = Offset(x.toFloat(), (t.y - sz * 0.12).toFloat()))
+      }
+      for (a in d.arrows) {
+        val c = colorOf(a.color)
+        val s = a.size.toFloat()
+        val cx = a.cx.toFloat()
+        val cy = a.cy.toFloat()
+        val path = Path()
+        if (a.kind == 2) {
+          path.moveTo(cx - s * 0.12f, cy - s * 0.5f); path.lineTo(cx + s * 0.12f, cy - s * 0.5f); path.lineTo(cx + s * 0.12f, cy + s * 0.05f)
+          path.lineTo(cx + s * 0.38f, cy + s * 0.05f); path.lineTo(cx, cy + s * 0.5f); path.lineTo(cx - s * 0.38f, cy + s * 0.05f)
+          path.lineTo(cx - s * 0.12f, cy + s * 0.05f); path.close()
+        } else {
+          val ang = Math.toRadians(45.0 * a.kind)
+          fun pt(fx: Double, fy: Double): Offset {
+            val x = fx * kotlin.math.cos(ang) - fy * kotlin.math.sin(ang)
+            val y = fx * kotlin.math.sin(ang) + fy * kotlin.math.cos(ang)
+            return Offset((cx + x * s).toFloat(), (cy - y * s).toFloat())
+          }
+          val pts = listOf(pt(-0.12, -0.5), pt(0.12, -0.5), pt(0.12, 0.05), pt(0.4, 0.05), pt(0.0, 0.5), pt(-0.4, 0.05), pt(-0.12, 0.05))
+          path.moveTo(pts[0].x, pts[0].y); for (o in pts.drop(1)) path.lineTo(o.x, o.y); path.close()
+        }
+        drawPath(path, c)
+      }
+    }
+  }
+  // the vehicle: a solid blue arrow on its lane, where it really is
+  for (p in frame.vehicle) {
+    when (p.kind) {
+      JvProject.VEH_SHADOW -> drawPath(poly(p), Color(0x50000000))
+      JvProject.VEH_SIDE -> drawPath(poly(p), Color(0xFF0D47A1))
+      JvProject.VEH_TOP -> {
+        val path = poly(p)
+        drawPath(path, Color(0xFF2196F3))
+        drawPath(path, Color.White, style = Stroke((w * 0.004).toFloat().coerceAtLeast(1.5f)))
+      }
+    }
   }
 }

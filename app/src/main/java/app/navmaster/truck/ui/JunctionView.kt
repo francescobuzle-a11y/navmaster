@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.navmaster.truck.routing.EdgeSign
+import app.navmaster.truck.ui.jv.SignSpec
 import kotlin.math.max
 import kotlin.math.min
 import uniffi.ferrostar.LaneInfo
@@ -124,8 +125,20 @@ private fun dimSign(c: Color, taken: Boolean, night: Boolean): Color =
 @Composable
 fun RefPlate(ref: String, country: String?, big: Boolean = false, night: Boolean = false) {
   val r = ref.uppercase()
+  val (bg, fg) = refPlateColors(ref, country)
+  Text(
+      r, color = nightSign(fg, night), fontSize = if (big) 18.sp else 14.sp, fontWeight = FontWeight.Bold,
+      modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(nightSign(bg, night))
+          .border(1.5.dp, nightSign(fg, night).copy(alpha = 0.9f), RoundedCornerShape(4.dp))
+          .padding(horizontal = 6.dp, vertical = 1.dp),
+  )
+}
+
+/** Background and text colour of a road-number plate, the way the country paints it. */
+fun refPlateColors(ref: String, country: String?): Pair<Color, Color> {
+  val r = ref.uppercase()
   val c = country?.uppercase()
-  val (bg, fg) = when {
+  return when {
     r.startsWith("E") && r.drop(1).firstOrNull()?.isDigit() == true -> SignGreen to Color.White
     r.startsWith("A") && r.drop(1).firstOrNull()?.isDigit() == true ->
       (if (c == "DE" || c == "FR" || c == "AT" || c == "ES" || c == "PT" || c == "NL" || c == "BE" || c == "LU" || c == "PL") SignBlue
@@ -135,12 +148,59 @@ fun RefPlate(ref: String, country: String?, big: Boolean = false, night: Boolean
         (if (r.startsWith("N")) Color.White else Color.Black)
     else -> SignBlue to Color.White
   }
-  Text(
-      r, color = nightSign(fg, night), fontSize = if (big) 18.sp else 14.sp, fontWeight = FontWeight.Bold,
-      modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(nightSign(bg, night))
-          .border(1.5.dp, nightSign(fg, night).copy(alpha = 0.9f), RoundedCornerShape(4.dp))
-          .padding(horizontal = 6.dp, vertical = 1.dp),
-  )
+}
+
+/**
+ * The panels of the gantry of the real junction view, in the scene (3D): the signs over the lanes
+ * (destination:lanes) when mapped, else the branch's sign over the lanes to take and the main
+ * road's over the others.
+ */
+private fun signSpecsOf(scene: JunctionScene, geo: app.navmaster.truck.ui.jv.JvGeo): List<SignSpec> {
+  val n = geo.lanesAtNode
+  val country = scene.country
+  fun plates(refs: List<String>) = refs.map { refPlateColors(it, country).let { (b, f) -> b.argb() to f.argb() } }
+  val lanes = scene.laneSigns
+  if (!scene.turn && lanes != null && lanes.isNotEmpty()) {
+    val active = scene.laneSignsActive
+    val groups = mutableListOf<MutableList<Int>>()
+    for (i in lanes.indices) {
+      val g = groups.lastOrNull()
+      if (g != null && lanes[g.first()].samePanel(lanes[i])) g += i else groups += mutableListOf(i)
+    }
+    // the lanes of the sign and the lanes of the drawing may differ: spread over the drawing's
+    val k = if (lanes.size > 0) n.toDouble() / lanes.size else 1.0
+    return groups.map { g ->
+      val d = lanes[g.first()]
+      val motorwayRef = d.refs.any { it.uppercase().let { r -> (r.startsWith("A") || r.startsWith("E")) && r.getOrNull(1)?.isDigit() == true } }
+      val (bg, fg) = d.colour?.let { osmSignColors(it) } ?: signColors(country, motorwayRef)
+      val taken = active == null || g.any { active.getOrNull(it) == true }
+      SignSpec((g.first() * k).toInt().coerceIn(0, n - 1), ((g.last() + 1) * k).toInt().minus(1).coerceIn(0, n - 1), bg.argb(), fg.argb(),
+          null, d.refs.take(2), d.towns.take(2), 2, taken, g.map { active?.getOrNull(it) ?: true }, plates(d.refs.take(2)))
+    }
+  }
+  val act = geo.active.ifEmpty { listOf(if (scene.side < 0) 0 else n - 1) }
+  val mainLanes = (0 until n).filter { it !in act }
+  val out = ArrayList<SignSpec>()
+  val (mainBg, mainFg) = signColors(country, scene.motorway)
+  val o = scene.otherSign
+  if (mainLanes.isNotEmpty() && (scene.mainRefs.isNotEmpty() || o?.branches?.isNotEmpty() == true || o?.towards?.isNotEmpty() == true)) {
+    val (oBg, oFg) = o?.colour?.let { osmSignColors(it) } ?: (mainBg to mainFg)
+    val refs = ((o?.branches ?: emptyList()) + scene.mainRefs).distinct().take(3)
+    out += SignSpec(mainLanes.first(), mainLanes.last(), oBg.argb(), oFg.argb(), null, refs, o?.towards?.take(2) ?: emptyList(), 0,
+        scene.side == 0 && !scene.exit, refColors = plates(refs))
+  }
+  val sign = scene.sign
+  val branchMotorway = scene.branchRefs.any { it.uppercase().let { r -> (r.startsWith("A") || r.startsWith("E")) && r.getOrNull(1)?.isDigit() == true } } ||
+      (scene.motorway && !scene.exit)
+  val (brBg, brFg) = signColors(country, branchMotorway || scene.motorway)
+  val (sBg, sFg) = sign?.colour?.let { osmSignColors(it) } ?: (brBg to brFg)
+  val refs = (sign?.branches.orEmpty() + scene.branchRefs).distinct().take(3)
+  val towns = (sign?.towards.orEmpty() + sign?.exitNames.orEmpty()).distinct().take(3)
+  if (refs.isNotEmpty() || towns.isNotEmpty() || sign?.exitNumbers?.isNotEmpty() == true) {
+    out += SignSpec(act.first(), act.last(), sBg.argb(), sFg.argb(), sign?.exitNumbers?.firstOrNull(), refs, towns,
+        if (scene.side < 0) -1 else if (scene.side > 0) 1 else 0, true, refColors = plates(refs))
+  }
+  return out
 }
 
 /**
@@ -183,19 +243,27 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
   // the lanes at the gore, as a row under the picture: the arrows of every lane, the ones to take lit
   val rowLanes = real.value?.geo?.let { g -> g.arrowsAtNode.ifEmpty { List(g.lanesAtNode) { "through" } } to g.active }
       ?: (scene.lanes.takeIf { it.size >= 2 }?.let { l -> l.map { it.directions.firstOrNull() ?: "straight" } to l.indices.filter { l[it].active } })
+  // the real view hangs the signs in the scene; the standard drawing keeps them in a band on top
+  val rjNow = real.value
+  val signSpecs = androidx.compose.runtime.remember(rjNow, scene.sign, scene.otherSign, scene.laneSigns, scene.laneSignsActive, scene.mainRefs, scene.branchRefs) {
+    if (rjNow != null && hasSigns) signSpecsOf(scene, rjNow.geo) else emptyList()
+  }
+  val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
   Column(
       modifier.shadow(10.dp, RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(Color(0xFF0C1117)),
   ) {
     BoxWithConstraints(if (fill) Modifier.weight(1f).fillMaxWidth() else Modifier.fillMaxWidth().height(height)) {
       // the signs take a part of the picture that suits its height (small phones, big tablets)
-      val signsDp = if (hasSigns) (maxHeight.value * 0.36f).coerceIn(72f, 110f).dp else 0.dp
+      val signsDp = if (hasSigns && rjNow == null) (maxHeight.value * 0.36f).coerceIn(72f, 110f).dp else 0.dp
       val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { signsDp.toPx() }
       Canvas(Modifier.fillMaxSize()) {
         val rj = real.value
-        if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), night, signsPx, scene.vehicleLane)
-        else drawJunctionScheme(model, dist.toDouble().coerceAtMost(400.0), true, night, signsPx)
-        // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
-        if (hasSigns) drawGantry(signsPx, night)
+        if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), night, signSpecs, scene.vehicleLane, textMeasurer)
+        else {
+          drawJunctionScheme(model, dist.toDouble().coerceAtMost(400.0), true, night, signsPx)
+          // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
+          if (hasSigns) drawGantry(signsPx, night)
+        }
       }
       Text("×", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
           modifier = Modifier.align(Alignment.TopStart).padding(6.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000))
@@ -205,7 +273,8 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
           modifier = Modifier.align(Alignment.BottomStart).padding(8.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000))
               .padding(horizontal = 8.dp, vertical = 2.dp))
       // the signs over the lanes (destination:lanes): one panel over each group of lanes
-      if (hasSigns && laneGantry) LaneGantry(scene, night,
+      if (rjNow != null) Unit
+      else if (hasSigns && laneGantry) LaneGantry(scene, night,
           Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(start = 50.dp, end = 14.dp, top = 8.dp, bottom = 8.dp))
       // the signs, on a gantry above the road
       else if (hasSigns && signsNow) Row(
