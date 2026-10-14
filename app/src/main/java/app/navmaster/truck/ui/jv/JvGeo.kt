@@ -119,6 +119,29 @@ class JvGeo(
 
   fun along(s: Double): Pt = if (s <= nodeS) JvMath.at(route, rc, s) else JvMath.at(branch, bc, s - nodeS)
 
+  /**
+   * The route's own line at [s] (the road taken is drawn moved beside the road left, [branch];
+   * the route itself goes on without a step at the node): the camera, the vehicle and the trail
+   * follow this line, with [extraRaw] sideways, so that nothing jumps at the node.
+   */
+  fun alongRaw(s: Double): Pt = JvMath.at(route, rc, s)
+
+  /**
+   * The sideways offset from [alongRaw] for lane [lane] (null: the lanes to take): the lane itself
+   * before the node, then gliding onto the middle of the road taken (where it was moved to).
+   */
+  fun extraRaw(s: Double, lane: Int?): Double {
+    if (s <= nodeS) return if (lane == null) activeOffAt(s) else laneOffAt(s, lane)
+    val lo = if (lane == null) actOff else laneOff(lane)
+    val g = JvMath.glide(s - nodeS)
+    var i = 0
+    while (i < bc.size - 1 && bc[i + 1] < s - nodeS) i++
+    // the road taken runs beside the road left ([branchShift] from the route's line): the lane
+    // keeps its distance from that road's middle at the node and glides onto the middle
+    val sh0 = branchShift.getOrElse(0) { 0.0 }
+    return branchShift.getOrElse(i) { 0.0 } + (lo - sh0) * g
+  }
+
   /** Sideways offset (metres, positive to the left of the route's line) of the middle of lane [i] at the gore. */
   fun laneOff(i: Int): Double = laneOffAt(nodeS - 3, i)
 
@@ -424,6 +447,14 @@ class JvGeo(
         val lat = latRaw.indices.map { i -> (max(0, i - 5)..min(latRaw.size - 1, i + 5)).map { latRaw[it] }.average() }
         val otherHalf = left?.half ?: (lanesAtNode - 1).coerceAtLeast(1) * LANE / 2
         shift = DoubleArray(after.size) { i -> side * max(0.0, (otherHalf + outRaw.half(i)) - lat[i]) }
+        // at the node the road taken continues the carriageway's own edge (the road left can be
+        // mapped a little off the route's line): the correction fades with the shift itself
+        val want = if (side > 0) leftNode - outRaw.half(0) else rightNode + outRaw.half(0)
+        val sh0 = shift[0]
+        if (abs(sh0) > 0.5) {
+          val c = want - sh0
+          for (i in shift.indices) shift[i] += c * (shift[i] / sh0)
+        }
         branch = JvMath.offset(after) { i -> shift[i] }
         split = latRaw.indices.firstOrNull { latRaw[it] >= otherHalf + outRaw.half(it) + 1.0 }?.let { it * 3.0 } ?: 40.0
       } else {
@@ -630,14 +661,16 @@ class JvGeo(
         val sh = s1 - 11.0
         val n = 120
         val ss = (0 until n).map { s0 + it * (sh - s0) / (n - 1) } + s1
-        val body = ss.map { geo0.along(it) }
-        // in its lane before the node, then gliding into its lane of the road taken
+        // on the route's own line (no step at the node), the lane as a sideways offset: its lane
+        // before the node, then gliding into its lane of the road taken (moved beside the road left)
+        val body = ss.map { geo0.alongRaw(it) }
         val lo = geo0.laneOff(lane)
         val offs = ss.map { s ->
           val g = JvMath.glide(s - nodeS)
           val ii = bc.indexOfFirst { it >= s - nodeS }.coerceIn(0, op.n.size - 1)
           val outOff = op.left[ii] - (outLane + 0.5) * LANE
-          if (s <= nodeS) geo0.laneOffAt(s, lane) else (lo - shift.getOrElse(ii) { 0.0 }) * g + outOff * (1 - g)
+          val sh0 = shift.getOrElse(0) { 0.0 } + (op.left[0] - (outLane + 0.5) * LANE)
+          if (s <= nodeS) geo0.laneOffAt(s, lane) else shift.getOrElse(ii) { 0.0 } + outOff + (lo - sh0) * g
         }
         // the offsets smoothed (±36 m): the trail changes lane gently, never with a kink
         val smooth = offs.indices.map { i -> (max(0, i - 8)..min(offs.size - 1, i + 8)).map { offs[it] }.average() }

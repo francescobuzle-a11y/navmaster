@@ -65,9 +65,9 @@ object JvProject {
     val endS = geo.nodeS + (geo.bc.lastOrNull() ?: 0.0)
     // with the vehicle all the way: never ahead of the end of the road taken
     val sCam = (vehS - BACK).coerceIn(0.0, max(0.0, endS - 60))
-    val camP = geo.along(sCam)
-    val a0 = geo.along(sCam - 6)
-    val a1 = geo.along(sCam + 44)
+    val camP = geo.alongRaw(sCam)
+    val a0 = geo.alongRaw(sCam - 6)
+    val a1 = geo.alongRaw(sCam + 44)
     var fx = a1.x - a0.x
     var fy = a1.y - a0.y
     val fl = hypot(fx, fy).takeIf { it > 1e-6 } ?: 1.0
@@ -79,7 +79,7 @@ object JvProject {
     // the camera over that lane (a little towards the middle), then over the road taken; it
     // slides from one lane to the next instead of jumping
     val lane = vehLane?.takeIf { it in 0 until geo.lanesAtNode }
-    fun laneR(sAt: Double): Double = -geo.laneExtra(sAt, lane)
+    fun laneR(sAt: Double): Double = -geo.extraRaw(sAt, lane)
     val camXT = laneR(sCam + BACK) * 0.6
     val camX = if (cam == null) camXT else {
       if (cam.x.isNaN() || abs(sCam - cam.s) > 200) cam.x = camXT
@@ -181,8 +181,8 @@ object JvProject {
     // the vehicle: a solid arrow on its lane, where it really is (shadow, sides, top)
     val veh = ArrayList<ScreenPoly>()
     if (vehS > 0 && vehS < endS) {
-      val vp = geo.along(vehS)
-      val vq = geo.along(vehS + 6)
+      val vp = geo.alongRaw(vehS)
+      val vq = geo.alongRaw(vehS + 6)
       var dx = vq.x - vp.x
       var dyy = vq.y - vp.y
       val dl = hypot(dx, dyy).takeIf { it > 1e-6 } ?: 1.0
