@@ -200,6 +200,7 @@ class JvGeo(
     const val GORE = 6
     const val LANE_ARROW = 7
     const val LANE_ARROW_LIT = 8
+    private val MINOR = setOf("residential", "service", "living_street", "unclassified", "track", "path", "footway", "cycleway", "pedestrian")
     private val LEFTISH = setOf("left", "slight_left", "sharp_left", "merge_to_right")
     private val RIGHTISH = setOf("right", "slight_right", "sharp_right", "merge_to_left")
 
@@ -360,7 +361,7 @@ class JvGeo(
       var approachBest = Double.MAX_VALUE
       val probe = JvMath.at(route, rc, (nodeS - 30).coerceAtLeast(0.0))
       // only the roads of the junction itself (the ones that touch it) and the roads they go on
-      // into (two more roads of the map along each): the rest of the map around (the other
+      // into (up to five more roads of the map along each, so that none ends in a cut near by): the rest of the map around (the other
       // carriageway, bridges, side roads) would only clutter the picture, and cut where the map
       // has tunnels or where the data stop
       val rawAll = inp.roads.map { l -> l to l.lat.indices.map { loc(l.lat[it], l.lon[it]) } }
@@ -372,13 +373,15 @@ class JvGeo(
         if (lr.second.any { JvMath.dist(it, node) < 8 } || JvMath.lineDist(node, lr.second) < 8) chosen += i
         else if (!inp.exit && inp.takeBranch && JvMath.lineDist(farEnd, lr.second) < 8) chosen += i
       }
-      repeat(2) {
+      repeat(5) {
         val ends = chosen.flatMap { listOf(rawAll[it].second.first(), rawAll[it].second.last()) }
         for ((i, lr) in rawAll.withIndex()) {
           if (i in chosen) continue
+          // (the main roads and their ramps only: a side street would only clutter the picture)
+          if (lr.first.cls in MINOR) continue
           val a = lr.second.first()
           val b = lr.second.last()
-          if (ends.any { JvMath.dist(it, a) < 6 || JvMath.dist(it, b) < 6 } && JvMath.dist(a, node) < 700 && JvMath.dist(b, node) < 700) chosen += i
+          if (ends.any { JvMath.dist(it, a) < 6 || JvMath.dist(it, b) < 6 } && (JvMath.dist(a, node) < 800 || JvMath.dist(b, node) < 800)) chosen += i
         }
       }
       for ((l, raw) in chosen.map { rawAll[it] }) {

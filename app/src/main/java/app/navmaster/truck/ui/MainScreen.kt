@@ -331,6 +331,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // ---- the arrow along the route at every frame (see SmoothTrack)
   val track = remember { SmoothTrack() }
   val smoothLoc = remember { mutableStateOf<uniffi.ferrostar.UserLocation?>(null) }
+  // the same position, in metres of the route, for the junction view (read inside its drawing only)
+  val smoothAlong = remember { mutableStateOf(-1.0) }
   val trackAnalysis = nav.analysis
   val coreLoc = ui.location
   val measuredSpeed by vm.speedMs.collectAsState()
@@ -363,14 +365,14 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           track.target = f.alongM
           track.targetAt = f.atNanos
         }
-        track.speed = f.speedMs.coerceIn(0.0, 45.0)
+        track.speed = f.speedMs.coerceIn(0.0, 100.0)
         track.accuracy = f.accuracyM
       } else {
         if (traveled != track.target) {
           track.target = traveled
           track.targetAt = System.nanoTime()
         }
-        track.speed = maxOf(coreLoc?.speed?.value ?: 0.0, measuredSpeed ?: 0.0).coerceIn(0.0, 45.0)
+        track.speed = maxOf(coreLoc?.speed?.value ?: 0.0, measuredSpeed ?: 0.0).coerceIn(0.0, 100.0)
         track.accuracy = coreLoc?.horizontalAccuracy ?: 5.0
       }
       track.speedObj = coreLoc?.speed
@@ -380,6 +382,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     val a = trackAnalysis
     if (!trackOk || a == null) {
       smoothLoc.value = null
+      smoothAlong.value = -1.0
       return@LaunchedEffect
     }
     track.shown = -1.0
@@ -387,6 +390,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
         smoothLoc.value = track.step(t, a)
+        smoothAlong.value = track.shown
       }
     }
   }
@@ -507,7 +511,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           pendingReport = nav.pendingReport, onUndoReport = vm::undoReport, liveListening = nav.liveListening,
           stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true },
           destination = plan.stops.lastOrNull()?.coordinate, onPoiPins = { drivePins = it },
-          satellite = satellite, onSatellite = { satellite = !satellite })
+          satellite = satellite, onSatellite = { satellite = !satellite }, smoothAlong = smoothAlong)
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -773,6 +777,8 @@ private fun NavigatingOverlay(
     onSettings: () -> Unit = {},
     onReport: () -> Unit = {},
     onQuickReport: () -> Unit = {},
+    /** The vehicle along the route at every frame (metres; -1 when it is off the route), as the map's arrow. */
+    smoothAlong: androidx.compose.runtime.State<Double>? = null,
     pendingReport: app.navmaster.truck.live.LiveKind? = null,
     onUndoReport: () -> Unit = {},
     liveListening: Boolean = false,
@@ -879,7 +885,7 @@ private fun NavigatingOverlay(
       LaneStrip(laneGuide, (if (landscape) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp),
           vehicleLane = stripLane)
     }
-    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 6.dp), height = jvHeight)
+    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 6.dp), height = jvHeight, vehAlong = smoothAlong)
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
         RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
@@ -1045,7 +1051,7 @@ private fun NavigatingOverlay(
   if (jv != null && landscape) {
     // as on the reference device: a tall panel on the right, from the top down to the bottom bar,
     // the manoeuvre, the lanes and the map on the left
-    JunctionView(jv, night, Modifier.weight(0.72f).fillMaxHeight().padding(start = 10.dp, bottom = 8.dp), fill = true)
+    JunctionView(jv, night, Modifier.weight(0.72f).fillMaxHeight().padding(start = 10.dp, bottom = 8.dp), fill = true, vehAlong = smoothAlong)
   }
   }
     val drivenS = vm.nav.collectAsState().value.drivenS

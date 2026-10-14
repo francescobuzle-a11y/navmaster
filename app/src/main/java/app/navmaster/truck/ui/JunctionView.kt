@@ -157,7 +157,7 @@ fun refPlateColors(ref: String, country: String?): Pair<Color, Color> {
  */
 @Composable
 fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier, fill: Boolean = false,
-                 height: androidx.compose.ui.unit.Dp = 260.dp) {
+                 height: androidx.compose.ui.unit.Dp = 260.dp, vehAlong: androidx.compose.runtime.State<Double>? = null) {
   // the same manoeuvre keeps the same key while its point wobbles with the GPS by a few metres (a
   // key that changed at every 25 m boundary rebuilt the whole junction from the map again)
   val anchor = androidx.compose.runtime.remember { DoubleArray(1) { scene.maneuverAtM } }
@@ -199,7 +199,11 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
       val signsPx = with(androidx.compose.ui.platform.LocalDensity.current) { signsDp.toPx() }
       Canvas(Modifier.fillMaxSize()) {
         val rj = real.value
-        if (rj != null) drawRealJunction(rj, scene.maneuverAtM - dist.toDouble(), night, signsPx, scene.vehicleLane)
+        // the vehicle exactly where the map's arrow is, at every frame (the satellites' position
+        // carried on at the vehicle's speed); the guidance's distance, glided, only when that is not there
+        val along = vehAlong?.value?.takeIf { it >= 0 && kotlin.math.abs(it - (scene.maneuverAtM - scene.distanceM)) < 400 }
+            ?: (scene.maneuverAtM - dist.toDouble())
+        if (rj != null) drawRealJunction(rj, along, night, signsPx, scene.vehicleLane)
         else drawJunctionScheme(model, dist.toDouble().coerceAtMost(400.0), true, night, signsPx)
         // the gantry the signs hang on: posts at the sides of the road, a lattice beam across
         if (hasSigns) drawGantry(signsPx, night)
