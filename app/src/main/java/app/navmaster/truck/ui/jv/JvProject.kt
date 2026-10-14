@@ -12,8 +12,8 @@ import kotlin.math.tan
 /** A shape of the junction view on the screen: its kind and its outline (pixels). */
 class ScreenPoly(val kind: Int, val xs: FloatArray, val ys: FloatArray, val n: Int)
 
-/** A panel of the gantry on the screen: its four corners (top-left, top-right, bottom-right, bottom-left; pixels). */
-class ScreenQuad(val spec: SignSpec, val q: FloatArray)
+/** (Kept for the pictures' structure: no panel hangs in the scene, the signs stay in the band on top.) */
+class ScreenQuad(val q: FloatArray)
 
 /**
  * One picture of the junction view: the horizon, the shapes of the ground, the gantry, the panels
@@ -40,10 +40,9 @@ class JvCam {
  * little, the same lateral scale in every panel (the road at the vehicle takes the same share of the
  * width upright and sideways; a taller panel just sees farther ahead). It goes with the vehicle all
  * the way, from where the view opens (600 m before the junction) through the gore and into the road
- * taken, over the vehicle's own lane, sliding smoothly from one lane to the next. The gantry with
- * the direction signs stands over the road ahead of the vehicle, at the gore when the vehicle is
- * near, closer otherwise (so that the signs can be read from afar), and the vehicle drives under
- * it. Pure Kotlin: the tablet turns the polygons into paths, the computer into pictures.
+ * taken, over the vehicle's own lane, sliding smoothly from one lane to the next. The direction
+ * signs stay still in the band on top of the picture (they say which way to go, they are not part
+ * of the scene). Pure Kotlin: the tablet turns the polygons into paths, the computer into pictures.
  */
 object JvProject {
   const val CAM_H = 14.0
@@ -53,22 +52,13 @@ object JvProject {
   const val NEAR = 2.0
   /** The camera this far behind the vehicle. */
   const val BACK = 26.0
-  /** The gantry at most this far ahead of the vehicle (nearer than that it stands at the gore). */
-  const val SIGN_AHEAD = 18.0
-  /** Metres before the nose of the gore where the gantry really stands. */
-  const val SIGN_BEFORE_GORE = 14.0
-  /** The bottom of the panels above the road, and the height of the beam. */
-  const val SIGN_Z = 5.4
-  const val BEAM_H = 0.7
-
   const val GANTRY = 30
   const val GANTRY_SHADE = 31
   const val VEH_SHADOW = 40
   const val VEH_SIDE = 41
   const val VEH_TOP = 42
 
-  fun frame(geo: JvGeo, vehAlongAbs: Double, w: Double, h: Double, skyPx: Double, vehLane: Int?,
-            signs: List<SignSpec> = emptyList(), cam: JvCam? = null): JvFrame? {
+  fun frame(geo: JvGeo, vehAlongAbs: Double, w: Double, h: Double, skyPx: Double, vehLane: Int?, cam: JvCam? = null): JvFrame? {
     if (w < 10 || h < 10) return null
     val gS = geo.nodeS + geo.split
     val vehS = vehAlongAbs - geo.start
@@ -113,7 +103,7 @@ object JvProject {
     var f0 = (w / 2) * dT / HALF_VIEW_M * k
     var dy = f0 * (tanT - uT / dT)
     // the horizon: the vehicle sits low in the picture, the sky keeps the room asked
-    val horizonMin = max(h * 0.20, skyPx)
+    val horizonMin = max(h * 0.12, skyPx + h * 0.03)
     var horizon = max(horizonMin, h * 0.78 - dy)
     if (horizon + dy > h * 0.86) {
       f0 *= (h * 0.86 - horizon) / dy
@@ -186,62 +176,8 @@ object JvProject {
       out += ScreenPoly(sh.kind, xs, ys, m)
     }
 
-    // the gantry and its panels: over the road ahead of the vehicle, at the gore at the last
     val gantry = ArrayList<ScreenPoly>()
     val quads = ArrayList<ScreenQuad>()
-    if (signs.isNotEmpty() && geo.split > 0) {
-      val sG = min(vehS + SIGN_AHEAD, gS - SIGN_BEFORE_GORE).coerceAtLeast(10.0)
-      val gp = geo.along(sG)
-      val g0 = geo.along(sG - 4)
-      val g1 = geo.along(sG + 4)
-      var tx = g1.x - g0.x
-      var ty = g1.y - g0.y
-      val tl = hypot(tx, ty).takeIf { it > 1e-6 } ?: 1.0
-      tx /= tl
-      ty /= tl
-      val nx = -ty
-      val ny = tx
-      fun world(off: Double, ahead: Double = 0.0) = doubleArrayOf(gp.x + nx * off + tx * ahead, gp.y + ny * off + ty * ahead)
-      val kk = geo.profileIndex(min(sG, geo.nodeS))
-      val left = geo.profile.left[kk]
-      val right = geo.profile.right[kk]
-      val zTop = SIGN_Z + (signs.maxOfOrNull { it.heightM } ?: 4.6)
-      val postW = 0.55
-      for (off in listOf(left + 1.6, right - 1.6)) {
-        val a = world(off - postW / 2)
-        val b = world(off + postW / 2)
-        val c = world(off + postW / 2, -postW)
-        quad(GANTRY, proj(a[0], a[1], 0.0), proj(b[0], b[1], 0.0), proj(b[0], b[1], zTop + BEAM_H), proj(a[0], a[1], zTop + BEAM_H))?.let { gantry += it }
-        quad(GANTRY_SHADE, proj(b[0], b[1], 0.0), proj(c[0], c[1], 0.0), proj(c[0], c[1], zTop + BEAM_H), proj(b[0], b[1], zTop + BEAM_H))?.let { gantry += it }
-      }
-      val la = world(left + 1.6)
-      val ra = world(right - 1.6)
-      quad(GANTRY, proj(la[0], la[1], zTop), proj(ra[0], ra[1], zTop), proj(ra[0], ra[1], zTop + BEAM_H), proj(la[0], la[1], zTop + BEAM_H))?.let { gantry += it }
-      // the panels: each over the middle of its lanes at the gantry, as wide as they are
-      val sLane = min(sG, geo.nodeS - 3)
-      val placed = ArrayList<DoubleArray>()
-      for (s in signs) {
-        var c = (s.laneFrom..s.laneTo).map { geo.laneOffAt(sLane, it) }.average()
-        var l0 = c + s.widthM / 2
-        var r0 = c - s.widthM / 2
-        // not over another panel (the lanes of a narrower road), not beyond the posts
-        for (p in placed) {
-          if (r0 < p[0] && l0 > p[1]) { if (abs(c - (p[0] + p[1]) / 2) < 0.01 || c > (p[0] + p[1]) / 2) { r0 = p[0] + 0.25; l0 = r0 + s.widthM } else { l0 = p[1] - 0.25; r0 = l0 - s.widthM } }
-        }
-        placed += doubleArrayOf(l0, r0)
-        val z0 = SIGN_Z
-        val z1 = SIGN_Z + s.heightM
-        val pl = world(l0, 0.3)
-        val pr = world(r0, 0.3)
-        val tl0 = proj(pl[0], pl[1], z1)
-        val tr0 = proj(pr[0], pr[1], z1)
-        val br0 = proj(pr[0], pr[1], z0)
-        val bl0 = proj(pl[0], pl[1], z0)
-        if (tl0 == null || tr0 == null || br0 == null || bl0 == null) continue
-        quads += ScreenQuad(s, floatArrayOf(tl0[0], tl0[1], tr0[0], tr0[1], br0[0], br0[1], bl0[0], bl0[1]))
-      }
-    }
-
     // the vehicle: a solid arrow on its lane, where it really is (shadow, sides, top)
     val veh = ArrayList<ScreenPoly>()
     if (vehS > 0 && vehS < endS) {

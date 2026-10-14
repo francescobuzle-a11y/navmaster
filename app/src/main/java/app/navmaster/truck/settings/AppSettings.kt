@@ -175,6 +175,10 @@ data class Settings(
     val voiceLevel: VoiceLevel = VoiceLevel.ESSENTIAL,
     /** The picture of the junction with lanes and direction signs, at exits and complex turns. */
     val junctionView: Boolean = true,
+    /** The junction view opens this far before a motorway junction / another junction (metres), and at least this many seconds before. */
+    val junctionViewMotorwayM: Int = 1000,
+    val junctionViewRoadM: Int = 220,
+    val junctionViewSeconds: Int = 25,
     /** Fixed speed cameras (where the law allows the warning). */
     val speedCameras: Boolean = true,
     /**

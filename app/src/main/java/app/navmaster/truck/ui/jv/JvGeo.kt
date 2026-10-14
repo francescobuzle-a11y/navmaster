@@ -130,12 +130,17 @@ class JvGeo(
     val k = profileIndex(s.coerceAtMost(nodeS))
     val n = profile.n[k]
     val li = i.coerceIn(0, n - 1)
+    // a lane that is still opening (or closing) sits against the edge that moves: the edges taper
+    // smoothly, so the lane's middle never jumps from one lane to the next
     return when {
-      !twoWay -> profile.left[k] - (li + 0.5) * LANE
-      lht -> (n - li - 0.5) * LANE
-      else -> -(li + 0.5) * LANE
+      !twoWay -> (profile.left[k] - (li + 0.5) * LANE).coerceIn(profile.right[k] + LANE / 2, profile.left[k] - LANE / 2)
+      lht -> ((n - li - 0.5) * LANE).coerceIn(LANE / 2, (profile.left[k] - profile.right[k]) - LANE / 2)
+      else -> (-(li + 0.5) * LANE).coerceIn(-(profile.left[k] - profile.right[k]) + LANE / 2, -LANE / 2)
     }
   }
+
+  /** The middle of the lanes to take at [s] (metres of [route], before the node): where the vehicle is drawn when its lane is not known. */
+  fun activeOffAt(s: Double): Double = if (active.isEmpty()) laneOffAt(s, lanesAtNode / 2) else active.map { laneOffAt(s, it) }.average()
 
   /** The sample of [route] at [s] metres from its start. */
   fun profileIndex(s: Double): Int {
@@ -154,7 +159,7 @@ class JvGeo(
    */
   fun laneExtra(s: Double, lane: Int?): Double {
     val lo = if (lane == null) actOff else laneOff(lane)
-    if (s <= nodeS) return if (lane == null) actOff else laneOffAt(s, lane)
+    if (s <= nodeS) return if (lane == null) activeOffAt(s) else laneOffAt(s, lane)
     val g = JvMath.glide(s - nodeS)
     var i = 0
     while (i < bc.size - 1 && bc[i + 1] < s - nodeS) i++
@@ -331,10 +336,29 @@ class JvGeo(
       var approachOneway = inp.motorway
       var approachBest = Double.MAX_VALUE
       val probe = JvMath.at(route, rc, (nodeS - 30).coerceAtLeast(0.0))
-      for (l in inp.roads) {
-        if (l.tunnel) continue
-        val raw = l.lat.indices.map { loc(l.lat[it], l.lon[it]) }
-        if (raw.none { abs(it.x) < 800 && abs(it.y) < 800 }) continue
+      // only the roads of the junction itself (the ones that touch it) and the roads they go on
+      // into (two more roads of the map along each): the rest of the map around (the other
+      // carriageway, bridges, side roads) would only clutter the picture, and cut where the map
+      // has tunnels or where the data stop
+      val rawAll = inp.roads.map { l -> l to l.lat.indices.map { loc(l.lat[it], l.lon[it]) } }
+          .filter { (_, raw) -> raw.size >= 2 && raw.any { abs(it.x) < 800 && abs(it.y) < 800 } }
+      val chosen = LinkedHashSet<Int>()
+      // (and the roads where the route's road ends in the picture: the motorway a slip road joins)
+      val farEnd = JvMath.at(route, rc, min(rc.last(), nodeS + 450))
+      for ((i, lr) in rawAll.withIndex()) {
+        if (lr.second.any { JvMath.dist(it, node) < 8 } || JvMath.lineDist(node, lr.second) < 8) chosen += i
+        else if (!inp.exit && inp.takeBranch && JvMath.lineDist(farEnd, lr.second) < 8) chosen += i
+      }
+      repeat(2) {
+        val ends = chosen.flatMap { listOf(rawAll[it].second.first(), rawAll[it].second.last()) }
+        for ((i, lr) in rawAll.withIndex()) {
+          if (i in chosen) continue
+          val a = lr.second.first()
+          val b = lr.second.last()
+          if (ends.any { JvMath.dist(it, a) < 6 || JvMath.dist(it, b) < 6 } && JvMath.dist(a, node) < 700 && JvMath.dist(b, node) < 700) chosen += i
+        }
+      }
+      for ((l, raw) in chosen.map { rawAll[it] }) {
         val pts = JvMath.densify(raw, 4.0)
         val motor = l.cls == "motorway" || l.cls == "trunk"
         val dProbe = JvMath.lineDist(probe, pts)
@@ -615,9 +639,11 @@ class JvGeo(
           val outOff = op.left[ii] - (outLane + 0.5) * LANE
           if (s <= nodeS) geo0.laneOffAt(s, lane) else (lo - shift.getOrElse(ii) { 0.0 }) * g + outOff * (1 - g)
         }
-        val mid = JvMath.offset(body) { i -> offs[i] }
-        val half = LANE * 0.33
-        val hh = LANE * 0.72
+        // the offsets smoothed (±36 m): the trail changes lane gently, never with a kink
+        val smooth = offs.indices.map { i -> (max(0, i - 8)..min(offs.size - 1, i + 8)).map { offs[it] }.average() }
+        val mid = JvMath.offset(body) { i -> smooth[i] }
+        val half = LANE * 0.42
+        val hh = LANE * 0.78
         val left = JvMath.offset(mid) { half }
         val right = JvMath.offset(mid) { -half }
         val hl = JvMath.offset(mid) { hh }[n - 1]

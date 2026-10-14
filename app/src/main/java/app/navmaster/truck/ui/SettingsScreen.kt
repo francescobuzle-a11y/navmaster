@@ -268,6 +268,14 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Incroci e svincoli") {
     ToggleRow("Vista dello svincolo", "Agli svincoli e alle uscite: la strada con le corsie da prendere e i cartelli con le direzioni",
         s.junctionView) { v -> set { it.copy(junctionView = v) } }
+    if (s.junctionView) {
+      Caption("Si apre in autostrada da", Modifier.padding(top = 6.dp), size = 14)
+      Pills { for (m in listOf(600, 1000, 1500, 2000)) Pill("$m m", s.junctionViewMotorwayM == m) { set { it.copy(junctionViewMotorwayM = m) } } }
+      Caption("Sulle altre strade da", Modifier.padding(top = 6.dp), size = 14)
+      Pills { for (m in listOf(150, 220, 350, 500)) Pill("$m m", s.junctionViewRoadM == m) { set { it.copy(junctionViewRoadM = m) } } }
+      Caption("E comunque almeno", Modifier.padding(top = 6.dp), size = 14)
+      Pills { for (t in listOf(15, 25, 40)) Pill("$t s prima", s.junctionViewSeconds == t) { set { it.copy(junctionViewSeconds = t) } } }
+    }
   }
   Card("Tempi di guida") {
     ToggleRow("Promemoria delle pause", "Pausa dopo 4 h 30 di guida (reg. CE 561/2006) con i parcheggi adatti", s.driveTimeReminder) { v ->

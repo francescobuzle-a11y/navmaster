@@ -808,7 +808,9 @@ private fun NavigatingOverlay(
   val vehicleLane = if (hereEdge != null && (hereEdge.roadClass in setOf("motorway", "trunk") || hereEdge.isRamp) && hereLanes in 2..6)
     vm.laneTracker.lane(hereLanes, false, countryIso?.uppercase() in LEFT_HAND) else null
   // junction view and lane guidance only at motorway junctions and complicated multi-lane ones
-  val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso, vehicleLane)
+  val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso, vehicleLane,
+      settings.junctionViewMotorwayM.toDouble(), settings.junctionViewRoadM.toDouble(), settings.junctionViewSeconds.toDouble(),
+      (ui.location?.speed?.value?.takeIf { it >= 0 } ?: vm.speedMs.collectAsState().value ?: 0.0))
   val jv = if (settings.junctionView) scene else null
   // the lanes to keep, from 2 km before a motorway exit, fork or merge (400 m in town)
   val laneGuide = laneGuideOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled)
