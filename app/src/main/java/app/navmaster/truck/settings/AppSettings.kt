@@ -144,6 +144,8 @@ enum class DriveView(val label: String) {
 @Serializable
 data class Settings(
     val tollPolicy: TollPolicy = TollPolicy.ASK,
+    /** "Senza autostrade": no motorway at all, whatever it costs (the "more motorway" kind is then meaningless and not offered). */
+    val avoidMotorways: Boolean = false,
     /** Online, the route computed by openrouteservice (offline always GraphHopper). */
     val onlineRouting: Boolean = true,
     /** The kind of route computed first (the others are offered next to it). */

@@ -430,7 +430,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
             RouteOverlayBuilder(
                 // the route handed to the map once per route, not at every frame (see MapLines)
                 navigationPath = { state ->
-                  NmRouteLine(state.routeGeometry, "nm-route", Nm.Route, 13f, 3f)
+                  // under the names of roads, towns and motorways (the style's slot), over the roads
+                  org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
+                    NmRouteLine(state.routeGeometry, "nm-route", Nm.Route, 13f, 3f)
+                  }
                 }),
         navigationCameraOptions = cameraOptions,
         locationPuckStyle =
@@ -455,11 +458,13 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         },
     ) { _ ->
       if (!navigating) {
-        plan.variants.forEachIndexed { i, v ->
-          if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF8C97A3), 8f, 2f)
+        org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
+          plan.variants.forEachIndexed { i, v ->
+            if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF8C97A3), 8f, 2f)
+          }
+          plan.current?.let { NmRouteLine(it.route.geometry, "nm-preview", Nm.Route, 11f, 3f) }
         }
         plan.current?.let {
-          NmRouteLine(it.route.geometry, "nm-preview", Nm.Route, 11f, 3f)
           // where the toll starts and ends, the tunnels
           RouteFeaturePins(it.analysis)
         }

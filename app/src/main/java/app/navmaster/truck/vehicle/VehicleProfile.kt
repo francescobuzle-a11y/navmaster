@@ -142,6 +142,8 @@ enum class RouteKind(val label: String, val gh: Int) {
 /** Choices that change from trip to trip (and during a trip). */
 data class TripOptions(
     val avoidTolls: Boolean = false,
+    /** No motorway at all ("senza autostrade"): the motorways are closed to the route, whatever it costs. */
+    val avoidMotorways: Boolean = false,
     val shortest: Boolean = false,
     val route: RouteKind = RouteKind.FASTEST,
     val alternates: Int = 0,

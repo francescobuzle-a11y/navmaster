@@ -771,8 +771,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val exclusions = exclusionsFor(p.avoided, _plan.value.current?.analysis) +
             p.avoidAreas.map { Geo.squareAround(it.lat, it.lng, 60.0) }
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
-        val pref = settings.routeKind
-        val base = TripOptions(avoidTolls = avoidTolls, excludePolygons = exclusions, route = pref, motorwayLevel = settings.motorwayLevel)
+        // "no motorways": the "more motorway" kind makes no sense, the fastest takes its place
+        val avoidMotorways = settings.avoidMotorways
+        val pref = if (avoidMotorways && settings.routeKind == app.navmaster.truck.vehicle.RouteKind.MOTORWAY) app.navmaster.truck.vehicle.RouteKind.FASTEST else settings.routeKind
+        val base = TripOptions(avoidTolls = avoidTolls, avoidMotorways = avoidMotorways, excludePolygons = exclusions, route = pref, motorwayLevel = settings.motorwayLevel)
         // 1. the routes of the kind the driver prefers (the best one and an alternative) with the
         //    vehicle's measures: shown as soon as they are there, the driver can start at once
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))
@@ -785,7 +787,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
             buildVariant(kind, title, r, opts, departure)
 
         val first = mutableListOf<RouteVariant>()
-        main.firstOrNull()?.let { first += build(kindOf(pref), if (avoidTolls) "${pref.label} · senza pedaggi" else pref.label, it, base) }
+        val suffix = (if (avoidTolls) " · senza pedaggi" else "") + (if (avoidMotorways) " · senza autostrade" else "")
+        main.firstOrNull()?.let { first += build(kindOf(pref), pref.label + suffix, it, base) }
         var nAlt = 0
         for (r in main.drop(1)) {
           if (first.any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
@@ -801,6 +804,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val crowKm = (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0
         val kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
             .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
+            .filter { it != app.navmaster.truck.vehicle.RouteKind.MOTORWAY || !avoidMotorways }
         val tryNoToll = !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
         val extras = kinds.isNotEmpty() || tryNoToll
         Log.i(TAG, "plan: ${first.size} route(s) shown, then ${kinds.joinToString { it.name }}${if (tryNoToll) " + no toll" else ""} (crow ${crowKm.roundToInt()} km)")

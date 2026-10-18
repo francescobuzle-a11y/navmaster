@@ -37,6 +37,8 @@ public final class TruckSpec {
   public double topSpeedKmh = 90.0;
   public boolean avoidTolls = false;
   public boolean avoidFerries = false;
+  /** No motorway at all (the driver's choice "senza autostrade"): motorways are closed, their ramps open to reach a road beside. */
+  public boolean avoidMotorways = false;
   public boolean avoidUnpaved = true;
   /** Roads signed for lorries (hgv=designated) as a tie-breaker. */
   public boolean preferTruckRoutes = false;
@@ -79,7 +81,7 @@ public final class TruckSpec {
     TruckSpec t = new TruckSpec();
     t.hgv = hgv; t.vehicleType = vehicleType; t.heightM = heightM; t.widthM = widthM; t.lengthM = lengthM; t.weightT = weightT;
     t.axleLoadT = axleLoadT; t.hazmat = hazmat; t.tunnelCode = tunnelCode; t.hazmatWater = hazmatWater;
-    t.topSpeedKmh = topSpeedKmh; t.avoidTolls = avoidTolls; t.avoidFerries = avoidFerries; t.avoidUnpaved = avoidUnpaved;
+    t.topSpeedKmh = topSpeedKmh; t.avoidTolls = avoidTolls; t.avoidFerries = avoidFerries; t.avoidUnpaved = avoidUnpaved; t.avoidMotorways = avoidMotorways;
     t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest; t.route = route;
     t.avoidZones.addAll(avoidZones);
     t.penalized = penalized;
@@ -94,6 +96,6 @@ public final class TruckSpec {
   public String toString() {
     return "TruckSpec{hgv=" + hgv + (hgv && !"hgv".equals(vehicleType) ? "/" + vehicleType : "") + ", h=" + heightM + ", w=" + widthM + ", l=" + lengthM + ", t=" + weightT +
         ", axle=" + axleLoadT + ", hazmat=" + hazmat + (tunnelCode != 0 ? "/" + tunnelCode : "") + (hazmatWater ? "/water" : "") + ", v=" + topSpeedKmh + ", route=" + route + ", tolls=" + !avoidTolls +
-        ", ferries=" + !avoidFerries + ", unpaved=" + !avoidUnpaved + ", zones=" + avoidZones.size() + (soft ? ", soft" : "") + "}";
+        ", ferries=" + !avoidFerries + (avoidMotorways ? ", noMotorway" : "") + ", unpaved=" + !avoidUnpaved + ", zones=" + avoidZones.size() + (soft ? ", soft" : "") + "}";
   }
 }

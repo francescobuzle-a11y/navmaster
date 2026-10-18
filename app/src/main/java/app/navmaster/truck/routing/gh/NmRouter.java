@@ -2,15 +2,10 @@ package app.navmaster.truck.routing.gh;
 
 import com.graphhopper.GHRequest;
 import com.graphhopper.config.Profile;
-import com.graphhopper.routing.FlexiblePathCalculator;
 import com.graphhopper.routing.Router;
 import com.graphhopper.routing.RouterConfig;
-import com.graphhopper.routing.RoutingAlgorithmFactory;
 import com.graphhopper.routing.WeightingFactory;
-import com.graphhopper.routing.lm.LMRoutingAlgorithmFactory;
 import com.graphhopper.routing.lm.LandmarkStorage;
-import com.graphhopper.routing.querygraph.QueryGraph;
-import com.graphhopper.routing.weighting.custom.FindMinMax;
 import com.graphhopper.routing.util.EdgeFilter;
 import com.graphhopper.routing.util.EncodingManager;
 import com.graphhopper.storage.BaseGraph;
@@ -50,40 +45,23 @@ public class NmRouter extends Router {
     return request.getHints().getBool(SNAP_SUBNETWORKS, false);
   }
 
+  /**
+   * A request that snaps onto the subnetworks never uses the landmarks: the landmarks (LM) were
+   * prepared leaving the subnetworks out, so the nodes of a border stub have no landmark weights
+   * (GraphHopper stores "infinity" there), and the A* with landmarks that starts or ends on such
+   * a node is not exact: its estimate for the stub's nodes is enormous, the two searches meet and
+   * stop too early, and the route found depends on where it starts (from Lograto the A23 was left
+   * at Tarvisio for the SS54 and taken again at Coccau; from Canneto sull'Oglio it was not).
+   * Plain A* (the flex solver, beeline estimate) is exact on every node; a piece of a trip between
+   * countries costs a little more time, never a wrong road.
+   */
   @Override
   protected Solver createLMSolver(GHRequest request, Map<String, Profile> profilesByName, RouterConfig routerConfig,
       EncodingManager encodingManager, WeightingFactory weightingFactory, BaseGraph graph, LocationIndex locationIndex,
       Map<String, LandmarkStorage> landmarks) {
     if (!snapAll(request))
       return super.createLMSolver(request, profilesByName, routerConfig, encodingManager, weightingFactory, graph, locationIndex, landmarks);
-    return new LmSnapAllSolver(request, profilesByName, routerConfig, encodingManager, weightingFactory, graph, locationIndex, landmarks);
-  }
-
-  /** Router.LMSolver (private there, so written again) with the snap filter of this class. */
-  static final class LmSnapAllSolver extends FlexSolver {
-    private final Map<String, LandmarkStorage> landmarks;
-
-    LmSnapAllSolver(GHRequest request, Map<String, Profile> profilesByName, RouterConfig routerConfig,
-        EncodingManager encodingManager, WeightingFactory weightingFactory, BaseGraph graph, LocationIndex locationIndex,
-        Map<String, LandmarkStorage> landmarks) {
-      super(request, profilesByName, routerConfig, encodingManager, weightingFactory, graph, locationIndex);
-      this.landmarks = landmarks;
-    }
-
-    @Override
-    protected EdgeFilter createSnapFilter() {
-      return new AccessSnapFilter(weighting);
-    }
-
-    @Override
-    protected FlexiblePathCalculator createPathCalculator(QueryGraph queryGraph) {
-      LandmarkStorage lms = landmarks.get(profile.getName());
-      if (lms == null)
-        throw new IllegalArgumentException("Cannot find LM preparation for the requested profile: '" + profile.getName() + "'");
-      if (request.getCustomModel() != null) FindMinMax.checkLMConstraints(profile.getCustomModel(), request.getCustomModel(), lookup);
-      RoutingAlgorithmFactory algorithmFactory = new LMRoutingAlgorithmFactory(lms).setDefaultActiveLandmarks(routerConfig.getActiveLandmarkCount());
-      return new FlexiblePathCalculator(queryGraph, algorithmFactory, weighting, getAlgoOpts());
-    }
+    return createFlexSolver(request, profilesByName, routerConfig, encodingManager, weightingFactory, graph, locationIndex);
   }
 
   @Override

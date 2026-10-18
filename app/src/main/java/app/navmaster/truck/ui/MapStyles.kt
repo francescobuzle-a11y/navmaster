@@ -80,6 +80,7 @@ object MapStyles {
             put("attribution", ESRI_ATTRIBUTION)
           }
         }
+        put("nm-empty", json.parseToJsonElement(EMPTY_SOURCE))
         if (traffic != null) {
           putJsonObject("traffic") {
             put("type", "vector")
@@ -94,14 +95,20 @@ object MapStyles {
       }
       putJsonArray("layers") {
         var trafficAdded = traffic == null
+        var slotAdded = false
         for (l in layers) {
           val layer = l.jsonObject
           val type = layer["type"]?.jsonPrimitive?.contentOrNull
           val src = layer["source"]?.jsonPrimitive?.contentOrNull
-          // the traffic colours over the roads, under the names
-          if (!trafficAdded && type == "symbol") {
-            trafficAdded = true
-            add(json.parseToJsonElement(TRAFFIC_LAYER))
+          // the traffic colours and the routes over the roads, UNDER the names (of roads, towns,
+          // motorways): the route lines of the app hang below ROUTES_SLOT (Anchor.Below)
+          if (!slotAdded && type == "symbol") {
+            slotAdded = true
+            if (!trafficAdded) {
+              trafficAdded = true
+              add(json.parseToJsonElement(TRAFFIC_LAYER))
+            }
+            add(json.parseToJsonElement(SLOT_LAYER))
           }
           if (src == null) {
             add(layer)
@@ -124,9 +131,15 @@ object MapStyles {
             add(JsonObject(layer + mapOf("id" to JsonPrimitive("${layer["id"]?.jsonPrimitive?.contentOrNull}-$i"), "source" to JsonPrimitive("omt$i"))))
           }
         }
+        if (!slotAdded) add(json.parseToJsonElement(SLOT_LAYER))
       }
     }.toString()
   }
+
+  /** The layer the app's route lines are drawn below: under the names, over the roads. */
+  const val ROUTES_SLOT = "nm-routes-slot"
+  private const val EMPTY_SOURCE = """{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}"""
+  private const val SLOT_LAYER = """{"id":"$ROUTES_SLOT","type":"line","source":"nm-empty","paint":{"line-opacity":0}}"""
 
   /** Satellite only, for the small views of a difficult point (no offline map needed). */
   fun satelliteUri(context: Context): String {
@@ -148,5 +161,5 @@ object MapStyles {
           """"line-opacity":0.9}}"""
 
   private const val EMPTY =
-      """{"version":8,"name":"NavMaster vuota","sources":{},"layers":[{"id":"bg","type":"background","paint":{"background-color":"{BG}"}}]}"""
+      """{"version":8,"name":"NavMaster vuota","sources":{"nm-empty":$EMPTY_SOURCE},"layers":[{"id":"bg","type":"background","paint":{"background-color":"{BG}"}},$SLOT_LAYER]}"""
 }

@@ -135,10 +135,17 @@ public final class OrsWeighting implements Weighting {
     // for heavy vehicles "fastest" is "recommended" (the same weighting); graphs made before the
     // openrouteservice values keep the weighting their landmarks were prepared with
     boolean old = !ev.hasEncodedValue(GhEngine.ORS_ROAD_ACCESS);
-    // "more motorway" on the graphs made from 10/2026: the strong preference (STRONG_MOTORWAY),
-    // for lorries and for the other vehicles alike; before, openrouteservice's mild "recommended"
-    strong = kind == Kind.RECOMMENDED && ev.hasEncodedValue(GhEngine.STRONG_MOTORWAY_MARK);
-    int lvl = Math.max(1, Math.min(5, spec == null ? 3 : spec.motorwayLevel)) - 1;
+    // "more motorway": the strong preference (STRONG_MOTORWAY), for lorries and for the other
+    // vehicles alike, on every graph with openrouteservice's values. The graphs made from 10/2026
+    // carry the mark STRONG_MOTORWAY_MARK and their landmarks were prepared with it; on an older
+    // graph the landmarks were prepared with the mild preference, whose weights are never above
+    // these (the factors are >= 1), so the landmarks stay valid bounds and the route is the same,
+    // only found more slowly. (Before: the mild preference on the old graphs, and a route that
+    // left the motorway where the strong one would not.)
+    strong = kind == Kind.RECOMMENDED && !old;
+    // without a spec (the preparation of the landmarks at the import) level 2: the base every
+    // level above it only adds to, so that the landmarks stay exact bounds for levels 2 to 5
+    int lvl = Math.max(1, Math.min(5, spec == null ? 2 : spec.motorwayLevel)) - 1;
     strongTrunk = LEVEL_TRUNK[lvl];
     strongOther = LEVEL_OTHER[lvl];
     strongLink = LEVEL_LINK_S_PER_M[lvl];
@@ -213,7 +220,9 @@ public final class OrsWeighting implements Weighting {
     if (!(reverse ? edge.getReverse(access) : edge.get(access))) return Double.POSITIVE_INFINITY;
     boolean over = false;
     if (spec != null && !accept(edge)) {
-      if (!spec.soft) return Double.POSITIVE_INFINITY;
+      // the soft mode relaxes the measures of the vehicle only (a limit signed on the road, to
+      // be checked on the spot), never the driver's refusals (tolls, ferries, motorways) nor bans
+      if (!spec.soft || closedAnyway(edge)) return Double.POSITIVE_INFINITY;
       over = true;
     }
     double v = speed(edge, reverse);
@@ -283,11 +292,29 @@ public final class OrsWeighting implements Weighting {
     return !Double.isInfinite(limit) && limit > 0.0 && limit < measure;
   }
 
+  /**
+   * The road is closed to the trip whatever the vehicle's measures: a ban for the vehicle type or
+   * for dangerous goods, a toll road or a ferry the driver refused, a motorway the driver refused,
+   * a zone to avoid. Never relaxed, not even in the soft mode: "no tolls" means no tolls.
+   */
+  private boolean closedAnyway(EdgeIteratorState edge) {
+    TruckSpec s = spec;
+    if (truck && typeNo != null && edge.get(typeNo)) return true;
+    if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return true;
+    if (s.avoidTolls && toll != null) {
+      int t = edge.get(toll);
+      if (t == 1 || (truck && t == 2)) return true;
+    }
+    if (s.avoidFerries && ferry != null && edge.get(ferry)) return true;
+    if (s.avoidMotorways && roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY) return true;
+    if (!zones.isEmpty() && inZone(edge)) return true;
+    return false;
+  }
+
   /** HeavyVehicleEdgeFilter, AvoidFeaturesEdgeFilter, AvoidAreasEdgeFilter (and the safety additions). */
   private boolean accept(EdgeIteratorState edge) {
     TruckSpec s = spec;
-    if (truck && typeNo != null && edge.get(typeNo)) return false;
-    if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return false;
+    if (closedAnyway(edge)) return false;
     boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY;
     boolean free = motorway && motorwayFree;
     if (!free && below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT)) return false;
@@ -298,12 +325,6 @@ public final class OrsWeighting implements Weighting {
     if (s.tunnelCode >= 'B' && s.tunnelCode <= 'E' && hazmatTunnel != null
         && edge.get(hazmatTunnel).ordinal() >= s.tunnelCode - 'A') return false;
     if (s.hazmatWater && hazmatWater != null && edge.get(hazmatWater) == HazmatWater.NO) return false;
-    if (s.avoidTolls && toll != null) {
-      int t = edge.get(toll);
-      if (t == 1 || (truck && t == 2)) return false;
-    }
-    if (s.avoidFerries && ferry != null && edge.get(ferry)) return false;
-    if (!zones.isEmpty() && inZone(edge)) return false;
     return true;
   }
 
@@ -318,6 +339,9 @@ public final class OrsWeighting implements Weighting {
     if (truck && typeNo != null && edge.get(typeNo)) return "bus".equals(s.vehicleType) ? "divieto per gli autobus" : "divieto per i mezzi pesanti";
     if (s.hazmat && hazmatNo != null && edge.get(hazmatNo)) return "divieto per le merci pericolose";
     boolean motorway = roadClass != null && edge.get(roadClass) == RoadClass.MOTORWAY;
+    if (s.avoidMotorways && motorway) return "autostrada (esclusa dall'autista)";
+    if (s.avoidTolls && toll != null && (edge.get(toll) == 1 || (truck && edge.get(toll) == 2))) return "strada a pedaggio (esclusa dall'autista)";
+    if (s.avoidFerries && ferry != null && edge.get(ferry)) return "traghetto (escluso dall'autista)";
     boolean free = motorway && motorwayFree;
     java.util.Locale it = java.util.Locale.ITALIAN;
     if (!free && below(edge, maxHeight, s.heightM) && !(motorway && edge.get(maxHeight) < IMPLAUSIBLE_MOTORWAY_HEIGHT))

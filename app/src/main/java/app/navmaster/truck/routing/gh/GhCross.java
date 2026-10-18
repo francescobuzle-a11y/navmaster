@@ -248,9 +248,27 @@ public final class GhCross {
         for (Crossing c : graphs.crossings(x)) if (c.to.equals(y)) cands.add(c);
         final double[] from = cur;
         cands.sort((u, v) -> Double.compare(score(from, u, q), score(from, v, q)));
-        if (cands.size() > CANDIDATES) cands = new ArrayList<>(cands.subList(0, CANDIDATES));
+        boolean byWeight = spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest;
+        if (cands.size() > CANDIDATES) {
+          List<Crossing> kept = new ArrayList<>(cands.subList(0, CANDIDATES));
+          // "more motorway": the two nearest motorway crossings are always among the ones tried
+          if (byWeight) {
+            int added = 0;
+            for (Crossing c : cands.subList(CANDIDATES, cands.size())) {
+              if (added >= 2) break;
+              if (isMotorway(c)) { kept.add(c); added++; }
+            }
+          }
+          cands = kept;
+        }
         Crossing pick = null;
         double pickS = Double.MAX_VALUE, pickT = 0;
+        // "more motorway": the best crossing on a motorway (or a trunk road), kept apart: it is
+        // taken whenever it does not cost much more than the best of all (the driver asked to
+        // stay on the motorway: a border crossed on a side road, with the exit and the entrance
+        // it implies, is what this choice is meant to avoid)
+        Crossing pickM = null;
+        double pickMS = Double.MAX_VALUE, pickMT = 0;
         // the searches to the candidate crossings: limited in time, and after three crossings in
         // a row without a way the others are not tried (the vehicle cannot cross this border with
         // these choices: e.g. a lorry avoiding tolls into Austria)
@@ -276,7 +294,6 @@ public final class GhCross {
           // "more motorway": the crossings compared by the weight of the profile (the roads off
           // the motorway and the ramps cost more), so that the border is crossed on the motorway
           // whenever the driver asked for it; otherwise by time
-          boolean byWeight = spec.route == GhEngine.ROUTE_MOTORWAY && !spec.shortest;
           double s;
           if (last) {
             GhEngine.Result r2 = ey.routes(Arrays.asList(new double[] {c.lat, c.lon}, q), Arrays.asList(c.ab, Double.NaN), probe, 1).get(0);
@@ -306,6 +323,17 @@ public final class GhCross {
             pick = c;
             pickT = cost(r1, byWeight);
           }
+          if (byWeight && isMotorway(c) && s < pickMS) {
+            pickMS = s;
+            pickM = c;
+            pickMT = cost(r1, byWeight);
+          }
+        }
+        if (byWeight && pickM != null && pick != pickM && pickMS <= pickS * MOTORWAY_CROSSING_TOLERANCE) {
+          if (DEBUG) System.out.println("CROSS motorway crossing " + pickM + " kept over " + pick + " (" + Math.round(pickMS) + " vs " + Math.round(pickS) + ")");
+          pick = pickM;
+          pickS = pickMS;
+          pickT = pickMT;
         }
         if (pick == null) {
           ok = false;
@@ -322,6 +350,13 @@ public final class GhCross {
     }
     if (best == null) trip.error = "nessun valico percorribile tra " + a + " e " + b + " con queste misure";
     return best;
+  }
+
+  /** "More motorway": a motorway (or trunk road) crossing is taken unless another one costs less than this share of it. */
+  static final double MOTORWAY_CROSSING_TOLERANCE = 1.35;
+
+  static boolean isMotorway(Crossing c) {
+    return c.hw != null && (c.hw.startsWith("motorway") || c.hw.startsWith("trunk"));
   }
 
   /** The cost of a piece for the choice of the crossings: its weight (seconds, "more motorway") or its time. */

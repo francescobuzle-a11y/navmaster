@@ -236,12 +236,17 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   }
   Card("Strade a pagamento") {
     Pills { for (p in TollPolicy.entries) Pill(p.label, s.tollPolicy == p) { set { it.copy(tollPolicy = p) } } }
+    if (s.tollPolicy == TollPolicy.AVOID) Caption("Nessuna strada a pedaggio, mai: le autostrade e i tratti gratuiti restano ammessi.", Modifier.padding(top = 6.dp), size = 13)
     if (s.tollPolicy == TollPolicy.ASK) {
       Spacer(Modifier.height(6.dp))
       Stepper("Minuti in più che accetti per evitare il pedaggio", s.tollMaxExtraMin.toDouble(), "min", 1.0, 0.0, 30.0, 0) { v ->
         set { it.copy(tollMaxExtraMin = v.toInt()) }
       }
     }
+  }
+  Card("Autostrade") {
+    ToggleRow("Senza autostrade", "Mai in autostrada, nemmeno per un tratto: il percorso passa solo da statali e provinciali (con «Più autostrada» spento)",
+        s.avoidMotorways) { v -> set { it.copy(avoidMotorways = v) } }
   }
   Card("Strade strette e curve") {
     ToggleRow("Avvisi su strade strette e curve", "Spento: il percorso rispetta già le misure del mezzo, senza avvisi su corsie, " +

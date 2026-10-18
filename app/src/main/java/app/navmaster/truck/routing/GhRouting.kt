@@ -566,6 +566,7 @@ fun app.navmaster.truck.vehicle.VehicleProfile.ghSpec(loadT: Double, trip: app.n
     hazmatWater = v.hazmatWater
     topSpeedKmh = v.topSpeedKmh.toDouble()
     avoidTolls = trip.avoidTolls
+    avoidMotorways = trip.avoidMotorways
     avoidFerries = v.avoidFerries
     avoidUnpaved = v.avoidUnpaved
     preferTruckRoutes = v.preferTruckRoutes

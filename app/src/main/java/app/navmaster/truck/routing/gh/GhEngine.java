@@ -749,7 +749,11 @@ public final class GhEngine implements Closeable {
     req.getHints().putObject(NmWeightingFactory.SPEC, spec);
     // a piece of a trip between countries: its border point lies on the stub of a motorway that
     // GraphHopper marked as a subnetwork (one way, cut at the border): snapped onto it all the same
-    if (spec.borderPiece) req.getHints().putObject(NmRouter.SNAP_SUBNETWORKS, true);
+    // (and without the landmarks, which do not cover those roads: NmRouter.createLMSolver)
+    if (spec.borderPiece) {
+      req.getHints().putObject(NmRouter.SNAP_SUBNETWORKS, true);
+      req.getHints().putObject("lm.disable", true);
+    }
     // a search that finds nothing stops instead of going on for minutes on the tablet
     req.getHints().putObject("timeout_ms", spec.timeoutMs > 0 ? spec.timeoutMs : DEFAULT_TIMEOUT_MS);
     // tests on the computer: without the landmarks (plain A*, same routes, slower)
