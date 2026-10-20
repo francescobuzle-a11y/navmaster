@@ -159,6 +159,8 @@ data class TripOptions(
      * already computed, so that the route takes them on the right carriageway of a motorway.
      */
     val viaHeadings: Map<String, Double> = emptyMap(),
+    /** Roads (OpenStreetMap way ids) of the route the driver left: made three times as costly ("keep this road"). */
+    val avoidWays: Set<Long> = emptySet(),
     /**
      * A choice computed next to the main route (another kind, without tolls): searched with a
      * short time limit and without the "fewest limits" retry, so that it never keeps the tablet busy.

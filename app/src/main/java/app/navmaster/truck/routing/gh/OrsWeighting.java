@@ -119,6 +119,7 @@ public final class OrsWeighting implements Weighting {
   private final DecimalEncodedValue maxHeight, maxWidth, maxLength, maxWeight, maxAxleLoad;
   private final EnumEncodedValue<RoadClass> roadClass;
   private final BooleanEncodedValue roadClassLink;
+  private final IntEncodedValue wayId;
   private final EnumEncodedValue<HazmatTunnel> hazmatTunnel;
   private final EnumEncodedValue<HazmatWater> hazmatWater;
   private final double topSpeed, maxSpeed;
@@ -173,6 +174,7 @@ public final class OrsWeighting implements Weighting {
     maxAxleLoad = dec(ev, GhEngine.ORS_MAX_AXLE_LOAD, "max_axle_load");
     roadClass = ev.hasEncodedValue(RoadClass.KEY) ? ev.getEnumEncodedValue(RoadClass.KEY, RoadClass.class) : null;
     roadClassLink = bool(ev, "road_class_link");
+    wayId = ev.hasEncodedValue("osm_way_id") ? ev.getIntEncodedValue("osm_way_id") : null;
     hazmatTunnel = ev.hasEncodedValue(HazmatTunnel.KEY) ? ev.getEnumEncodedValue(HazmatTunnel.KEY, HazmatTunnel.class) : null;
     hazmatWater = ev.hasEncodedValue(HazmatWater.KEY) ? ev.getEnumEncodedValue(HazmatWater.KEY, HazmatWater.class) : null;
     maxSpeed = speed.getMaxOrMaxStorableDecimal();
@@ -257,6 +259,8 @@ public final class OrsWeighting implements Weighting {
     }
     w *= limitedAccess(edge);
     if (spec != null && spec.penalized != null && spec.penalized.contains(edge.getEdge())) w *= 2;
+    // the roads of the route the driver chose to leave ("keep this road")
+    if (spec != null && spec.penalizedWays != null && wayId != null && spec.penalizedWays.contains(edge.get(wayId))) w *= TruckSpec.WAY_PENALTY;
     // a road over the vehicle's limits, when nothing else is left: as a long detour, so the route
     // passes the fewest of them (and only where there is no other way)
     if (over) w = w * SOFT_FACTOR + (kind == Kind.SHORTEST ? SOFT_PENALTY_M : SOFT_PENALTY_S);

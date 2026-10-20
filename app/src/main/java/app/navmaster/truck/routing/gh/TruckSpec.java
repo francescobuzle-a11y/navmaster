@@ -60,6 +60,13 @@ public final class TruckSpec {
   /** Roads (edge ids) made twice as costly: those of the routes already found, to find another one. */
   public com.carrotsearch.hppc.IntHashSet penalized = null;
   /**
+   * Roads (OpenStreetMap way ids) the driver chose to leave: those of the planned route after the
+   * point where he left it ("keep this road"): their time counts WAY_PENALTY times, so that the
+   * new route goes on along his road and does not take the first turn back onto the old one.
+   */
+  public com.carrotsearch.hppc.LongHashSet penalizedWays = null;
+  public static final double WAY_PENALTY = 3.0;
+  /**
    * The vehicle's limits as a strong penalty instead of a barrier: used only when no road at all
    * respects them, so the driver always gets the route that passes the fewest limits.
    */
@@ -85,6 +92,7 @@ public final class TruckSpec {
     t.preferTruckRoutes = preferTruckRoutes; t.shortest = shortest; t.route = route;
     t.avoidZones.addAll(avoidZones);
     t.penalized = penalized;
+    t.penalizedWays = penalizedWays;
     t.soft = soft;
     t.timeoutMs = timeoutMs;
     t.motorwayLevel = motorwayLevel;

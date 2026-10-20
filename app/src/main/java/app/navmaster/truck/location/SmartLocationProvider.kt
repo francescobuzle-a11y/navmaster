@@ -46,6 +46,62 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
 
   @Volatile private var line: Line? = null
 
+  // ---- the speed of the fixes checked against the speed measured from the positions
+  private var spLat = 0.0
+  private var spLon = 0.0
+  private var spAt = 0L
+  private var measured = -1.0
+  private var implausible = 0
+  private var plausible = 0
+  @Volatile private var speedUnreliable = false
+  private var speedKmh = false
+
+  /**
+   * The speed to use for a fix: the receiver's own (Doppler: precise and current) as long as it
+   * agrees with the speed measured from the positions; when the receiver's is wrong for fixes in a
+   * row (some external GPS receivers and the apps that feed them to Android give km/h instead of
+   * m/s, or a stale value), the measured speed is used instead (divided by 3.6 if the receiver's is
+   * just km/h). A speed too high sent the arrow and the instructions ahead of the vehicle: the
+   * position was carried on at that speed between fixes and the manoeuvres were said and advanced
+   * as if it were already there.
+   */
+  private fun plausibleSpeed(l: Location, acc: Double, el: Long): Double {
+    val reported = if (l.hasSpeed()) l.speed.toDouble() else 0.0
+    val dt = (el - spAt) / 1000.0
+    if (spAt > 0L && dt in 0.3..5.0 && acc <= 25.0) {
+      val vm = dist(GeographicCoordinate(spLat, spLon), GeographicCoordinate(l.latitude, l.longitude)) / dt
+      measured = if (measured < 0) vm else measured * 0.5 + vm * 0.5
+    } else if (dt > 5.0) measured = -1.0
+    if (acc <= 25.0) {
+      spLat = l.latitude
+      spLon = l.longitude
+      spAt = el
+    }
+    if (measured < 0 || !l.hasSpeed()) return if (speedUnreliable && measured >= 0) measured else reported
+    // the receiver's speed is wrong when it is well above the measured one while moving (an
+    // acceleration explains +50% and 3 m/s, not more), or clearly moving while the receiver says
+    // nothing; fixes in a row decide, one odd fix does not
+    val wrong = (measured > 2.0 && reported > measured * 1.5 + 3.0) || (measured > 4.0 && reported < 0.5)
+    if (wrong) {
+      implausible++
+      plausible = 0
+    } else if (measured > 3.0) {
+      // only while moving: crawling in a queue tells nothing about the receiver
+      plausible++
+      implausible = 0
+    }
+    if (!speedUnreliable && implausible >= 3) {
+      speedUnreliable = true
+      speedKmh = measured > 2.0 && reported / measured in 3.2..4.0
+      Log.w(TAG, "speed of the receiver not plausible (says ${"%.1f".format(java.util.Locale.ROOT, reported)} m/s, " +
+          "measured ${"%.1f".format(java.util.Locale.ROOT, measured)} m/s): the measured one is used" + (if (speedKmh) " (km/h given as m/s)" else ""))
+    } else if (speedUnreliable && plausible >= 8) {
+      speedUnreliable = false
+      Log.i(TAG, "speed of the receiver plausible again")
+    }
+    return if (!speedUnreliable) reported else if (speedKmh) reported / 3.6 else measured
+  }
+
   // the last direction of travel measured while moving (for a route asked while standing still)
   @Volatile private var lastCourse = Double.NaN
   @Volatile private var lastCourseAt = 0L
@@ -210,8 +266,8 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           return
         }
         val s = alongOf(l)
-        val v = if (l.hasSpeed()) l.speed.toDouble() else 0.0
         val acc = if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0
+        val v = plausibleSpeed(l, acc, el)
         val driving = fixAlong >= 0 && fixSpeed >= 3.0 && el - fixAt < 30_000
         // a poor fix while driving on the route (tunnel mouths, under bridges, between buildings:
         // positions tens of metres off) is not handed on: it made the arrow jump sideways or
@@ -251,7 +307,8 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           })
           return
         }
-        send(l)
+        // a speed the receiver gets wrong is corrected for the guidance and the speedometer too
+        if (l.hasSpeed() && kotlin.math.abs(l.speed - v) > 0.3) send(Location(l).apply { speed = v.toFloat() }) else send(l)
       } else if (drAlong < 0 && now - lastGpsAt > 8000) {
         // the network position only when there is nothing better (never inside a tunnel being
         // driven through: there the position along the route is far more precise)
@@ -291,7 +348,9 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         val silent = now - fixAt
         // only when the satellites are silent (a tunnel): between two normal fixes the map itself
         // glides the arrow along the route; extra positions there made the map jump back and forth
-        if (silent < 1500 || now - maxOf(lastDr, fixAt) < 1000) continue
+        // (3 s: a receiver that skips a fix or two must not have the position carried on at full
+        // speed, which put the arrow ahead of the vehicle at every braking before a turn)
+        if (silent < 3000 || now - maxOf(lastDr, fixAt) < 1000) continue
         // at most 4 minutes or 8 km on the speed of the entry: a longer silence is not a tunnel
         if (silent > 240_000 || fixSpeed * silent / 1000.0 > 8000) {
           if (tunnel) Log.i(TAG, "dead reckoning stopped after ${silent / 1000} s")

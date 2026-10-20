@@ -489,7 +489,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val loc = navigationUiState.value.location ?: lastLocation.value ?: return
     val lat = loc.coordinates.lat
     val lon = loc.coordinates.lng
-    val heading = loc.courseOverGround?.degrees?.toDouble() ?: Double.NaN
+    val heading = loc.courseOverGround?.degrees?.toDouble()
+        ?: runCatching { AppGraph.smartLocation.courseNear(lat, lon) }.getOrNull() ?: Double.NaN
+    // the roads of the route being left, from where the vehicle left it for the next 8 km: made
+    // three times as costly, so that the new route really goes on along the road the driver chose
+    // and does not take the first roundabout, the next junction or a parallel road back onto the
+    // old one (before, "keep this road" only put a point 700 m ahead on it, and from there the
+    // best way to the destination was, more often than not, straight back onto the old route).
+    // A road that rejoins the old route by itself within 2 km (via = rejoin) is not the case.
+    val keepAway = if (via != null) emptySet() else oldRouteWays(_nav.value.analysis, lastOnRouteTraveled)
     _nav.update { it.copy(recalculating = true) }
     viewModelScope.launch(Dispatchers.IO) {
       try {
@@ -503,7 +511,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           headings[TripOptions.pointKey(ahead[0], ahead[1])] = ahead[2]
           Log.i(TAG, "go on along this road: pass-through ${"%.5f,%.5f".format(java.util.Locale.ROOT, ahead[0], ahead[1])} bearing ${ahead[2].toInt()}")
         } else Log.w(TAG, "go on along this road: no point ahead found, plain route from here")
-        val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
+        val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0, avoidWays = keepAway)
+        if (keepAway.isNotEmpty()) Log.i(TAG, "go on along this road: ${keepAway.size} roads of the old route made costly")
         val r = AppGraph.routes.routes(loc, vias + remainingStops(), options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
           if (_simulating.value) locationProvider.enableSimulationOn(r)
@@ -518,6 +527,21 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         _nav.update { it.copy(recalculating = false) }
       }
     }
+  }
+
+  /**
+   * The OpenStreetMap ways of the old route from 2 km before [leftAt] (no turning back onto it) to
+   * 8 km after it (the stretch the driver chose to leave). Not further: a lorry that took the
+   * wrong exit must still be free to enter the motorway again at the next junction.
+   */
+  private fun oldRouteWays(a: RouteAnalysis?, leftAt: Double): Set<Long> {
+    if (a == null) return emptySet()
+    val out = HashSet<Long>()
+    for (e in a.edges) {
+      if (e.endM < leftAt - 2_000 || e.startM > leftAt + 8_000) continue
+      if (e.wayId > 0) out += e.wayId
+    }
+    return out
   }
 
   /**
@@ -1475,7 +1499,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val dt = (now - speedTime) / 1000.0
     if (dt < 0.25) return
     val v = Geo.dist(last, c) / dt
-    if (v < 70) _speedMs.value = _speedMs.value?.let { it * 0.5 + v * 0.5 } ?: v
+    // a jump of the snapped position (the end of a step) is not a speed
+    val prev = _speedMs.value
+    if (v < 70 && (prev == null || v <= prev * 1.6 + 4.0)) _speedMs.value = prev?.let { it * 0.5 + v * 0.5 } ?: v
     speedAt = c
     speedTime = now
   }
@@ -2182,7 +2208,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val along = (curLen - remaining).coerceAtLeast(0.0)
     // the real speed: the GPS one, or the one measured from the positions when larger (a
     // simulation moves faster than the speed it reports)
-    val speed = maxOf(ui.location?.speed?.value ?: 0.0, _speedMs.value ?: 0.0)
+    // the real speed: the receiver's (checked by SmartLocationProvider); the one measured from
+    // the positions only when the receiver gives none, and in a simulation (which moves faster
+    // than the speed it reports). Not the larger of the two: the guidance's snapped position
+    // jumps at the end of a step, and that jump read as 40-60 m/s made the next manoeuvre be
+    // said long before the vehicle was there.
+    val gpsSpeed = ui.location?.speed?.value ?: 0.0
+    val speed = if (_simulating.value) maxOf(gpsSpeed, _speedMs.value ?: 0.0) else if (gpsSpeed > 0.0) gpsSpeed else (_speedMs.value ?: 0.0)
     val an = _nav.value.analysis
     val a = an?.takeIf { geometryKey(it.route.geometry) == key || (simBase != null && it === simBase) }
     val fast = speed > 19.0 || a?.edgeAt(if (a === simBase) traveledNow() else along)?.roadClass in setOf("motorway", "trunk")

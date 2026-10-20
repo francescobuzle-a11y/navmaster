@@ -1237,16 +1237,21 @@ private class SmoothTrack {
   fun step(t: Long, a: app.navmaster.truck.routing.RouteAnalysis): uniffi.ferrostar.UserLocation {
     val dt = if (lastFrame == 0L) 0.0 else ((t - lastFrame) / 1e9).coerceIn(0.0, 0.1)
     lastFrame = t
-    // where the vehicle should be now: the last position, carried on at its speed (at most 2.5 s:
-    // longer silences are the tunnels, where the provider itself moves the position along)
-    val ahead = ((t - targetAt) / 1e9).coerceIn(0.0, 2.5)
-    val predicted = target + speed * ahead
+    // where the vehicle should be now: the last position, carried on at its speed, at most 1.5 s
+    // (a receiver that skips a fix now and then must not send the arrow ahead of the vehicle: it
+    // waits instead; longer silences are the tunnels, where the provider itself moves the position
+    // along, and the speed is taken as falling a little, as it does before a turn)
+    val ahead = ((t - targetAt) / 1e9).coerceIn(0.0, 1.5)
+    val predicted = target + speed * ahead * (1.0 - 0.1 * ahead)
     val err = predicted - shown
     if (shown < 0 || kotlin.math.abs(err) > 80) {
       shown = predicted
+    } else if (err < -12) {
+      // clearly ahead of the vehicle (a fix that was too far on, a speed too high): back, slowly
+      shown += maxOf(err * 1.2, -2.0) * dt
     } else {
       // behind the target: a little faster (up to +60% of the speed, +3 m/s); ahead of it: slower,
-      // down to standing still, never back
+      // down to standing still
       val corr = if (err >= 0) minOf(err * 1.2, 0.6 * speed + 3.0) else maxOf(err * 1.2, -(speed + 0.5))
       shown += (speed + corr).coerceAtLeast(0.0) * dt
     }
