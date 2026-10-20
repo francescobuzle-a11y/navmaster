@@ -126,7 +126,7 @@ jobs:
           python3 -m pip install --quiet --break-system-packages duckdb || python3 -m pip install --quiet duckdb || true
           timeout 1500 python3 data/merge_overture.py out/poi.sqlite "${{ matrix.region }}" || true
           rm -f poi.osm.pbf poi.geojsonseq
-      - name: Luoghi (aziende, negozi, posti: la ricerca per nome sul tablet)
+      - name: Luoghi (aziende, negozi, posti) per la ricerca per nome sul tablet
         if: matrix.part == 'dati'
         run: |
           osmium tags-filter region.osm.pbf \
