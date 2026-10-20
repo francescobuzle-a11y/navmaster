@@ -80,7 +80,9 @@ class OfflineRouteProvider(
     val headings = ArrayList<Double>()
     val kinds = ArrayList<String>()
     points += doubleArrayOf(c.lat, c.lng)
-    headings += userLocation.courseOverGround?.degrees?.toDouble() ?: Double.NaN
+    // standing still the fix has no course: the direction the vehicle was last moving in (if here)
+    headings += userLocation.courseOverGround?.degrees?.toDouble()
+        ?: runCatching { app.navmaster.truck.AppGraph.smartLocation.courseNear(c.lat, c.lng) }.getOrNull() ?: Double.NaN
     kinds += "break"
     var n = 0
     for (w in waypoints) {

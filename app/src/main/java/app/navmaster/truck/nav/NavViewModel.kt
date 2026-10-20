@@ -309,6 +309,32 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     handleOffRoute(r.toUserLocation())
   }
 
+  /** Where the route is far wider than a carriageway: 600 m before and after every toll booth or gantry (the plaza). */
+  private fun wideSpans(a: RouteAnalysis?): List<DoubleArray> =
+      a?.tollBooths?.map { doubleArrayOf(it.alongM - 600, it.alongM + 600) } ?: emptyList()
+
+  /**
+   * The vehicle is still beside the planned route, going its way: within 90 m of it, between 150 m
+   * behind the last point on it and 2 km ahead, with its direction within 35 degrees of the
+   * route's there. A toll plaza, a wide motorway junction, a carriageway split for works: the fix
+   * is off the line but the vehicle has not left the route, and recalculating from the nearest
+   * road (at times a ramp) sent it off the motorway and back onto it a little further on.
+   */
+  private fun nearRouteAhead(a: RouteAnalysis, lat: Double, lon: Double, heading: Double): Boolean {
+    val g = a.route.geometry
+    if (g.size < 2) return false
+    val from = lastOnRouteTraveled - 150
+    val to = lastOnRouteTraveled + 2_000
+    val p = GeographicCoordinate(lat, lon)
+    for (k in 0 until g.size - 1) {
+      if (a.cum[k + 1] < from || a.cum[k] > to) continue
+      val (d, _) = Geo.pointToSegment(p, g[k], g[k + 1])
+      if (d > 90) continue
+      if (heading.isNaN() || kotlin.math.abs(Geo.angleDiff(heading, Geo.bearing(g[k], g[k + 1]))) < 35) return true
+    }
+    return false
+  }
+
   /**
    * The vehicle left the planned route: the route is recalculated AT ONCE from the road it is on
    * (through the point where that road rejoins the old route, if it does within 2 km: then nothing
@@ -329,6 +355,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val lon = loc.coordinates.lng
     val heading = loc.courseOverGround?.degrees?.toDouble() ?: Double.NaN
     val oldTraveled = lastOnRouteTraveled
+    if (nearRouteAhead(a, lat, lon, heading)) {
+      Log.i(TAG, "off the line but beside the route (${"%.5f,%.5f".format(java.util.Locale.ROOT, lat, lon)}): no recalculation")
+      noRoadCheckedAt = now - 2_000
+      return
+    }
     viewModelScope.launch(Dispatchers.IO) {
       // no road here: nothing to recalculate from (and no question)
       val road = runCatching { AppGraph.gh.roadWithin(lat, lon, 45.0) }.getOrNull()
@@ -1008,7 +1039,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     simTarget = null
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     // the route for the tunnels (the position goes on along it when the satellites are silent)
-    AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry)
+    AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry, wideSpans(v.analysis))
     laneTracker.reset()
     AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false, quick = false)
     asked.clear()
@@ -1491,7 +1522,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       providerOffSince = 0L
       lastOnRouteTraveled = 0.0
       // (the question "back onto the old route?" stays: it is asked right after the new route)
-      AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry)
+      AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry, wideSpans(_nav.value.analysis))
       laneTracker.reset()
       if (key == simPendingKey) {
         // a jump of the simulation: the same route from another point, already checked
@@ -2157,7 +2188,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val fast = speed > 19.0 || a?.edgeAt(if (a === simBase) traveledNow() else along)?.roadClass in setOf("motorway", "trunk")
     val base = if (a === simBase) traveledNow() - along else 0.0
     announcer.update(route, key, along, toManeuver, speed, fast, AppGraph.settings.settings.value.voiceLevel,
-        android.os.SystemClock.elapsedRealtime()) { i -> lanePhrase(route, i, base + along + toManeuver, a) }
+        android.os.SystemClock.elapsedRealtime(), { i -> lanePhrase(route, i, base + along + toManeuver, a) }, remaining)
   }
 
   private val saidAt = HashMap<String, Long>()

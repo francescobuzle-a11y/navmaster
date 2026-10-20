@@ -88,14 +88,25 @@ class Announcer(
    * [nowMs] a clock in milliseconds.
    */
   fun update(
-      route: Route, key: String, along: Double, toManeuver: Double, speed: Double, fast: Boolean, level: VoiceLevel,
-      nowMs: Long, lanes: (Int) -> String? = { null },
+      route: Route, key: String, along0: Double, toManeuver: Double, speed: Double, fast: Boolean, level: VoiceLevel,
+      nowMs: Long, lanes: (Int) -> String? = { null }, remaining: Double = -1.0,
   ) {
     if (key != routeKey) {
       routeKey = key
       done.clear()
       lastCallMs = 0L
     }
+    val steps = route.steps
+    if (steps.isEmpty()) return
+    // everything in ONE frame of reference, the steps' own distances (what the guidance counts
+    // its remaining distance in): [remaining] (the rest of this step and the steps after it) gives
+    // the metres driven and the current step exactly. Before, the step was the one whose end was
+    // nearest to along + toManeuver with along measured on the route's geometry: the two lengths
+    // drift apart by hundreds of metres on a long route, and where turns follow each other
+    // closely the voice took the step AFTER the one on the screen ("svolta a destra" said, the
+    // left turn shown).
+    val total = steps.sumOf { it.distance }
+    val along = if (remaining >= 0) (total - remaining).coerceAtLeast(0.0) else along0
     curKey = key
     curAlong = along
     toManeuverNow = toManeuver
@@ -107,23 +118,36 @@ class Announcer(
     }
     lastCallMs = nowMs
     dueAtMs = Long.MAX_VALUE
-    val steps = route.steps
-    if (steps.isEmpty()) return
     // the current step: the one whose end is where the next manoeuvre is
-    val maneuverAt = along + toManeuver
+    var maneuverAt = along + toManeuver
     var acc = 0.0
     var index = 0
-    var best = Double.MAX_VALUE
     var stepStart = 0.0
-    for ((i, st) in steps.withIndex()) {
-      val end = acc + st.distance
-      val d = kotlin.math.abs(end - maneuverAt)
-      if (d < best) {
-        best = d
-        index = i
-        stepStart = acc
+    if (remaining >= 0) {
+      // counted back from the end: the steps still whole, then the one being driven
+      var rest = 0.0
+      index = steps.size - 1
+      for (i in steps.indices.reversed()) {
+        rest += steps[i].distance
+        if (rest >= remaining - 0.5) {
+          index = i
+          break
+        }
       }
-      acc = end
+      stepStart = total - rest
+      maneuverAt = stepStart + steps[index].distance
+    } else {
+      var best = Double.MAX_VALUE
+      for ((i, st) in steps.withIndex()) {
+        val end = acc + st.distance
+        val d = kotlin.math.abs(end - maneuverAt)
+        if (d < best) {
+          best = d
+          index = i
+          stepStart = acc
+        }
+        acc = end
+      }
     }
     val step = steps[index]
     if (isRoundaboutExit(step)) return

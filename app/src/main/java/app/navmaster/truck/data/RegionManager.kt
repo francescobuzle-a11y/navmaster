@@ -55,6 +55,10 @@ data class InstalledRegion(val id: String, val manifest: Manifest, val dir: File
   val addresses: File
     get() = File(dir, "indirizzi.sqlite")
 
+  /** Every named place (companies, shops, workshops ...) for the search by name; absent in the packages made before 10/2026. */
+  val places: File
+    get() = File(dir, "luoghi.sqlite")
+
   val critical: File
     get() = File(dir, "criticita.sqlite")
 
@@ -201,7 +205,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
 
   /** The files of a light package: limits and crossings, and the places of interest when chosen. */
   fun liteFiles(): Set<String> =
-      if (app.navmaster.truck.AppGraph.settings.settings.value.onlineLitePoi) LITE_FILES + "poi.sqlite" else LITE_FILES
+      if (app.navmaster.truck.AppGraph.settings.settings.value.onlineLitePoi) LITE_FILES + "poi.sqlite" + "luoghi.sqlite" else LITE_FILES
 
   private fun scan(): List<InstalledRegion> =
       (root.listFiles() ?: emptyArray())

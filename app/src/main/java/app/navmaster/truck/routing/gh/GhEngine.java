@@ -196,18 +196,27 @@ public final class GhEngine implements Closeable {
   }
 
   public double[] ahead(double lat, double lon, double heading, double metres) {
+    double[] p = aheadRaw(lat, lon, heading, metres);
+    // a point behind the vehicle or sideways (the road found bends back: a loop ramp, a service
+    // road) would send the route the wrong way: better no point than that one
+    if (p != null && !Double.isNaN(heading) && Math.abs(angleDiff(heading, bearing(lat, lon, p[0], p[1]))) > 80
+        && metres(lat, lon, p[0], p[1]) > 40) return null;
+    return p;
+  }
+
+  private double[] aheadRaw(double lat, double lon, double heading, double metres) {
     com.graphhopper.routing.util.EncodingManager em = hopper.getEncodingManager();
     com.graphhopper.routing.ev.BooleanEncodedValue access = em.hasEncodedValue(ORS_CAR_ACCESS)
         ? em.getBooleanEncodedValue(ORS_CAR_ACCESS) : em.getBooleanEncodedValue("car_access");
-    com.graphhopper.routing.util.EdgeFilter f = e -> e.get(access) || e.getReverse(access);
-    com.graphhopper.storage.index.Snap snap = hopper.getLocationIndex().findClosest(lat, lon, f);
-    if (!snap.isValid() || snap.getQueryDistance() > 60) return null;
+    RoadSnap snap = snapRoad(lat, lon, heading, 60);
+    // no road that fits (the nearest ones run another way): no point ahead rather than a wrong one
+    if (snap == null || snap.score > 90) return null;
     boolean dbg = Boolean.getBoolean("nm.ahead.debug");
     com.graphhopper.storage.BaseGraph g = hopper.getBaseGraph();
-    com.graphhopper.util.EdgeIteratorState e = snap.getClosestEdge();
-    if (dbg) System.out.printf("ahead: snap %.1f m to '%s' edge %d wayIndex %d%n", snap.getQueryDistance(), e.getName(), e.getEdge(), snap.getWayIndex());
+    com.graphhopper.util.EdgeIteratorState e = snap.edge;
+    if (dbg) System.out.printf("ahead: snap %.1f m to '%s' edge %d wayIndex %d score %.0f%n", snap.distM, e.getName(), e.getEdge(), snap.wayIndex, snap.score);
     PointList pl = e.fetchWayGeometry(com.graphhopper.util.FetchMode.ALL);
-    int wi = Math.min(snap.getWayIndex(), pl.size() - 2);
+    int wi = Math.min(snap.wayIndex, pl.size() - 2);
     double segBearing = bearing(pl.getLat(wi), pl.getLon(wi), pl.getLat(wi + 1), pl.getLon(wi + 1));
     // the edge read the way the vehicle goes
     boolean forward = Double.isNaN(heading) || Math.abs(angleDiff(segBearing, heading)) <= 90;
@@ -222,7 +231,7 @@ public final class GhEngine implements Closeable {
       wi = pl.size() - 2 - wi;
     }
     // the rest of this edge from the snapped point
-    double pLat = snap.getSnappedPoint().getLat(), pLon = snap.getSnappedPoint().getLon();
+    double pLat = snap.lat, pLon = snap.lon;
     double left = metres;
     double lastBearing = bearing(pl.getLat(wi), pl.getLon(wi), pl.getLat(wi + 1), pl.getLon(wi + 1));
     for (int i = wi + 1; i < pl.size(); i++) {
@@ -291,6 +300,88 @@ public final class GhEngine implements Closeable {
       if (best.getName() != null && !best.getName().isEmpty()) name = best.getName();
     }
     return new double[] {pLat, pLon, lastBearing};
+  }
+
+  /** A road near a point, chosen for the vehicle's direction (see snapRoad). */
+  static final class RoadSnap {
+    com.graphhopper.util.EdgeIteratorState edge;
+    int wayIndex;
+    double lat, lon, distM, score;
+  }
+
+  /**
+   * The road a vehicle at ([lat], [lon]) heading [heading] is most likely driving, among the roads
+   * within [maxM]: not simply the nearest one. The nearest road is the wrong one exactly where it
+   * matters: at a toll plaza, in a motorway junction, beside a service road or a slip road running
+   * along the carriageway, the fix lands nearer the ramp than the road the vehicle is on, and a
+   * route "along this road" was then forced through the ramp (off the motorway and back onto it a
+   * little further on). Each road within reach is scored by its distance plus a penalty when it
+   * runs another way than the vehicle (over 40 degrees: 120 m, a road sideways is not the one
+   * being driven) and a smaller one for a ramp or a service road (20 m) and for a lesser road (a
+   * few metres by class): between a motorway at 35 m and a slip road at 20 m the motorway wins.
+   */
+  RoadSnap snapRoad(double lat, double lon, double heading, double maxM) {
+    com.graphhopper.routing.util.EncodingManager em = hopper.getEncodingManager();
+    com.graphhopper.routing.ev.BooleanEncodedValue access = em.hasEncodedValue(ORS_CAR_ACCESS)
+        ? em.getBooleanEncodedValue(ORS_CAR_ACCESS) : em.getBooleanEncodedValue("car_access");
+    com.graphhopper.routing.ev.EnumEncodedValue<com.graphhopper.routing.ev.RoadClass> rc = em.hasEncodedValue(com.graphhopper.routing.ev.RoadClass.KEY)
+        ? em.getEnumEncodedValue(com.graphhopper.routing.ev.RoadClass.KEY, com.graphhopper.routing.ev.RoadClass.class) : null;
+    com.graphhopper.routing.ev.BooleanEncodedValue link = em.hasEncodedValue("road_class_link") ? em.getBooleanEncodedValue("road_class_link") : null;
+    com.graphhopper.storage.BaseGraph g = hopper.getBaseGraph();
+    double dLat = maxM / 111_195.0, dLon = maxM / (111_195.0 * Math.cos(Math.toRadians(lat)));
+    com.graphhopper.util.shapes.BBox box = new com.graphhopper.util.shapes.BBox(lon - dLon, lon + dLon, lat - dLat, lat + dLat);
+    final RoadSnap[] best = {null};
+    final java.util.Set<Integer> seen = new java.util.HashSet<>();
+    hopper.getLocationIndex().query(box, edgeId -> {
+      if (!seen.add(edgeId)) return;
+      com.graphhopper.util.EdgeIteratorState e = g.getEdgeIteratorState(edgeId, Integer.MIN_VALUE);
+      boolean fwd = e.get(access), bwd = e.getReverse(access);
+      if (!fwd && !bwd) return;
+      PointList pl = e.fetchWayGeometry(com.graphhopper.util.FetchMode.ALL);
+      double k = Math.cos(Math.toRadians(lat));
+      for (int i = 0; i + 1 < pl.size(); i++) {
+        // the nearest point of this segment (planar, metres)
+        double ax = (pl.getLon(i) - lon) * k * 111_195, ay = (pl.getLat(i) - lat) * 111_195;
+        double bx = (pl.getLon(i + 1) - lon) * k * 111_195, by = (pl.getLat(i + 1) - lat) * 111_195;
+        double vx = bx - ax, vy = by - ay, len2 = vx * vx + vy * vy;
+        double t = len2 < 1e-6 ? 0 : Math.max(0, Math.min(1, -(ax * vx + ay * vy) / len2));
+        double px = ax + vx * t, py = ay + vy * t;
+        double d = Math.sqrt(px * px + py * py);
+        if (d > maxM) continue;
+        double score = d;
+        if (!Double.isNaN(heading) && len2 > 1e-6) {
+          double b = bearing(pl.getLat(i), pl.getLon(i), pl.getLat(i + 1), pl.getLon(i + 1));
+          double diff = Math.abs(angleDiff(b, heading));
+          // driven the other way on a two-way road: the road still fits
+          if (fwd && bwd) diff = Math.min(diff, 180 - diff);
+          else if (!fwd) diff = 180 - diff;
+          if (diff > 40) score += 120;
+          else score += diff * 0.25;
+        }
+        if (link != null && e.get(link)) score += 20;
+        if (rc != null) {
+          switch (e.get(rc)) {
+            case MOTORWAY: case TRUNK: break;
+            case PRIMARY: score += 3; break;
+            case SECONDARY: score += 5; break;
+            case TERTIARY: score += 8; break;
+            case SERVICE: case TRACK: case PATH: case LIVING_STREET: score += 25; break;
+            default: score += 12;
+          }
+        }
+        if (best[0] == null || score < best[0].score) {
+          RoadSnap r = new RoadSnap();
+          r.edge = e;
+          r.wayIndex = i;
+          r.lat = lat + py / 111_195;
+          r.lon = lon + px / (111_195 * k);
+          r.distM = d;
+          r.score = score;
+          best[0] = r;
+        }
+      }
+    });
+    return best[0];
   }
 
   static double angleDiff(double a, double b) {
@@ -733,9 +824,29 @@ public final class GhEngine implements Closeable {
     return Math.sqrt(dx * dx + dy * dy);
   }
 
+  /** Tests on the computer: the points as given, GraphHopper's own snapping (-Dnm.nopresnap=true). */
+  private static final boolean NO_PRESNAP = Boolean.getBoolean("nm.nopresnap");
+
   private GHRequest request(List<double[]> points, List<Double> headings, TruckSpec spec, int maxPaths) {
     List<GHPoint> pts = new ArrayList<>();
-    for (double[] p : points) pts.add(new GHPoint(p[0], p[1]));
+    for (int i = 0; i < points.size(); i++) {
+      double[] p = points.get(i);
+      // a point with a direction of travel (the vehicle's position, a pass-through point on its
+      // road) is put onto the road that goes that way BEFORE GraphHopper snaps it: GraphHopper
+      // snaps onto the nearest road whatever its direction (the heading only adds a penalty), and
+      // a fix a few metres off, on a motorway, landed on the opposite carriageway: the route then
+      // began the wrong way, with "exit at the next junction, turn round, enter again"
+      Double h = headings != null && headings.size() == points.size() ? headings.get(i) : null;
+      if (h != null && !h.isNaN() && !NO_PRESNAP) {
+        try {
+          RoadSnap rs = snapRoad(p[0], p[1], h, 60);
+          if (rs != null && rs.score <= 90 && rs.distM > 3) p = new double[] {rs.lat, rs.lon};
+        } catch (Exception ignored) {
+          // the point as given
+        }
+      }
+      pts.add(new GHPoint(p[0], p[1]));
+    }
     GHRequest req = new GHRequest(pts).setProfile(profileOf(spec)).setLocale(Locale.ITALIAN);
     if (headings != null && headings.size() == pts.size()) {
       boolean any = false;

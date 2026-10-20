@@ -39,15 +39,41 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   @Volatile private var lastGpsAt = 0L
 
   // ---- the route being driven, for the tunnels (set by the guidance, null when not guiding)
-  private class Line(val pts: List<GeographicCoordinate>, val cum: DoubleArray)
+  private class Line(val pts: List<GeographicCoordinate>, val cum: DoubleArray, val wide: List<DoubleArray>) {
+    /** The route is wide here (a toll plaza: twenty lanes, the fix 60 m from the line and still on the road). */
+    fun isWide(s: Double): Boolean = wide.any { s >= it[0] && s <= it[1] }
+  }
 
   @Volatile private var line: Line? = null
 
-  fun setRoute(geometry: List<GeographicCoordinate>?) {
+  // the last direction of travel measured while moving (for a route asked while standing still)
+  @Volatile private var lastCourse = Double.NaN
+  @Volatile private var lastCourseAt = 0L
+  @Volatile private var lastCourseLat = 0.0
+  @Volatile private var lastCourseLon = 0.0
+
+  /**
+   * The direction the vehicle was going the last time it moved, if that was near ([lat], [lon])
+   * (within 250 m) and recently (10 minutes): a vehicle standing still (a queue at the toll
+   * plaza, a light) has no course in its fix, but it is still facing the way it came, and a route
+   * asked then must start on its carriageway, not on the opposite one that happens to be nearer.
+   */
+  fun courseNear(lat: Double, lon: Double): Double? {
+    if (lastCourse.isNaN() || System.currentTimeMillis() - lastCourseAt > 600_000) return null
+    if (dist(GeographicCoordinate(lat, lon), GeographicCoordinate(lastCourseLat, lastCourseLon)) > 250) return null
+    return lastCourse
+  }
+
+  /**
+   * The route being driven. [wide]: stretches (metres from the start, [from, to]) where the road is
+   * far wider than one carriageway (toll plazas): there a fix up to 90 m from the line, going the
+   * route's way, still counts as on the route; elsewhere 30 m.
+   */
+  fun setRoute(geometry: List<GeographicCoordinate>?, wide: List<DoubleArray> = emptyList()) {
     line = if (geometry == null || geometry.size < 2) null else {
       val cum = DoubleArray(geometry.size)
       for (i in 1 until geometry.size) cum[i] = cum[i - 1] + dist(geometry[i - 1], geometry[i])
-      Line(geometry, cum)
+      Line(geometry, cum, wide)
     }
     drAlong = -1.0
     hintIndex = 0
@@ -124,15 +150,24 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       }
     }
     scan(hintIndex - 20, hintIndex + 400)
-    if (bestD > 60) scan(0, n - 1)
+    if (bestD > 90) scan(0, n - 1)
     // off the route from 30 m aside, and sooner when the vehicle clearly goes another way than the
     // route there (a slip road leaving the motorway, a turn not planned): the arrow must leave the
-    // route the moment the vehicle does
-    if (bestI < 0 || bestD > 30) return null
-    if (bestD > 6 && l.hasBearing() && l.hasSpeed() && l.speed >= 3f) {
+    // route the moment the vehicle does. At a toll plaza (Line.wide) the lanes spread over 100 m:
+    // up to 90 m aside, going the route's way, the vehicle is still on it (before, a lorry in a
+    // side lane of the plaza was "off the route" and the route was recalculated from the nearest
+    // road, at times a ramp: off the motorway and back onto it)
+    if (bestI < 0) return null
+    val wide = bestD > 30 && ln.isWide(bestS)
+    if (bestD > 30 && !(wide && bestD <= 90)) return null
+    val moving = l.hasBearing() && l.hasSpeed() && l.speed >= 3f
+    if (bestD > 6 && moving) {
       val rb = bearing(ln.pts[bestI], ln.pts[bestI + 1])
       val diff = ((l.bearing - rb + 540.0) % 360.0) - 180.0
-      if (Math.abs(diff) > 50) return null
+      if (Math.abs(diff) > (if (wide) 35 else 50)) return null
+    } else if (wide && !moving && bestD > 60) {
+      // far from the line and no direction to tell by: not on the route
+      return null
     }
     hintIndex = bestI
     // on which side of the line: the cross product of the segment and the point (right is negative)
@@ -160,6 +195,12 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     }
     fun accept(l: Location) {
       val now = System.currentTimeMillis()
+      if (l.hasBearing() && l.hasSpeed() && l.speed >= 3f && l.provider != LocationManager.NETWORK_PROVIDER) {
+        lastCourse = l.bearing.toDouble()
+        lastCourseAt = now
+        lastCourseLat = l.latitude
+        lastCourseLon = l.longitude
+      }
       if (l.provider == LocationManager.GPS_PROVIDER) {
         val el = SystemClock.elapsedRealtime()
         val ln = line

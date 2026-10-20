@@ -53,6 +53,7 @@ import app.navmaster.truck.AppGraph
 import app.navmaster.truck.data.InstalledRegion
 import app.navmaster.truck.search.Found
 import app.navmaster.truck.search.Geocoder
+import app.navmaster.truck.search.TextNorm
 import app.navmaster.truck.search.HouseHit
 import app.navmaster.truck.search.PlaceHit
 import app.navmaster.truck.search.StreetHit
@@ -148,12 +149,17 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
       if (coord != null) listOf(Found("Coordinate", "${coord.lat}, ${coord.lng}", coord, "📌"))
       else {
         val addr = runCatching { AppGraph.addresses.free(Geocoder.fixQuery(q), near) }.getOrDefault(emptyList())
+        // every named place of the country (companies, shops, workshops, hotels ... luoghi.sqlite)
+        val places = runCatching { AppGraph.places.search(q, near) }.getOrDefault(emptyList())
         val pois = runCatching { AppGraph.poi.search(q) }.getOrDefault(emptyList()).map { p ->
           Found(p.title, (app.navmaster.truck.settings.PoiCategories.byId(p.cat)?.label ?: p.cat), p.coordinate,
               app.navmaster.truck.settings.PoiCategories.byId(p.cat)?.icon ?: "📍",
               near?.let { app.navmaster.truck.core.Geo.dist(it.lat, it.lng, p.lat, p.lon) })
-        }
-        (addr + pois.sortedBy { it.distanceM ?: 0.0 }.take(8))
+        }.sortedBy { it.distanceM ?: 0.0 }.take(8).filter { x -> places.none { app.navmaster.truck.core.Geo.dist(it.coordinate, x.coordinate) < 60 } }
+        // a place whose name IS what was typed comes before the streets of the same name
+        val exact = TextNorm.norm(q)
+        val (first, rest) = places.partition { TextNorm.norm(it.title) == exact || TextNorm.norm(it.title).startsWith("$exact ") }
+        (first + addr + rest + pois)
       }
     }
     // online results complete what is not on the tablet (other countries, shops, companies ...)
