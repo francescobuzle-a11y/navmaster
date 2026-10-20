@@ -126,6 +126,23 @@ jobs:
           python3 -m pip install --quiet --break-system-packages duckdb || python3 -m pip install --quiet duckdb || true
           timeout 1500 python3 data/merge_overture.py out/poi.sqlite "${{ matrix.region }}" || true
           rm -f poi.osm.pbf poi.geojsonseq
+      - name: Luoghi (aziende, negozi, posti: la ricerca per nome sul tablet)
+        if: matrix.part == 'dati'
+        run: |
+          osmium tags-filter region.osm.pbf \
+            nwr/amenity nwr/shop nwr/office nwr/craft nwr/tourism nwr/leisure nwr/industrial nwr/man_made nwr/healthcare \
+            nwr/historic nwr/club nwr/emergency nwr/aeroway nwr/railway nwr/public_transport nwr/military nwr/power=plant \
+            nwr/sport nwr/attraction nwr/place=farm nwr/water=harbour \
+            nwr/landuse=industrial,commercial,retail,farmyard,quarry,port,military,landfill \
+            nwr/building=industrial,warehouse,commercial,office,retail,supermarket,hotel,factory,hangar,farm,church,school,hospital,train_station,transportation,public,civic,sports_hall,stadium,university,kindergarten,government \
+            nwr/natural=peak,spring,beach,cave_entrance,volcano,bay,waterfall \
+            -o places.osm.pbf --overwrite
+          osmium export places.osm.pbf -f geojsonseq --add-unique-id=type_id \
+            --format-option print_record_separator=false -o places.geojsonseq --overwrite
+          # OpenStreetMap, then the places of Overture Maps (DuckDB; without network only OpenStreetMap)
+          timeout 2700 python3 tools/places/build_places.py places.geojsonseq out/luoghi.sqlite "${{ matrix.region }}" --overture || \
+            python3 tools/places/build_places.py places.geojsonseq out/luoghi.sqlite "${{ matrix.region }}"
+          rm -f places.osm.pbf places.geojsonseq
       - name: Strade (per indirizzi e criticità)
         if: matrix.part == 'dati'
         run: |
