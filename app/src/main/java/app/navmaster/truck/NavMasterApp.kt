@@ -14,6 +14,7 @@ import app.navmaster.truck.routing.GhRouting
 import app.navmaster.truck.routing.OfflineRouteProvider
 import app.navmaster.truck.routing.OrsRouting
 import app.navmaster.truck.search.AddressIndex
+import app.navmaster.truck.search.PlaceIndex
 import app.navmaster.truck.search.RecentStore
 import app.navmaster.truck.settings.SettingsStore
 import app.navmaster.truck.vehicle.ProfileStore
@@ -69,7 +70,7 @@ object AppGraph {
   val limits by lazy { LimitsIndex(regions) }
   val poi by lazy { PoiIndex(regions) }
   val addresses by lazy { AddressIndex(regions) }
-  val places by lazy { app.navmaster.truck.search.PlaceIndex(regions) }
+  val places by lazy { PlaceIndex(regions) }
   val criticalities by lazy { CriticalityFinder(regions) }
 
   /** The roads of the light packages, for the guidance online without the graph (OrsGuide). */
