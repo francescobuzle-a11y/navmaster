@@ -1244,11 +1244,13 @@ private class SmoothTrack {
     val ahead = ((t - targetAt) / 1e9).coerceIn(0.0, 1.5)
     val predicted = target + speed * ahead * (1.0 - 0.1 * ahead)
     val err = predicted - shown
-    if (shown < 0 || kotlin.math.abs(err) > 80) {
+    if (shown < 0 || kotlin.math.abs(err) > 50) {
       shown = predicted
     } else if (err < -12) {
-      // clearly ahead of the vehicle (a fix that was too far on, a speed too high): back, slowly
-      shown += maxOf(err * 1.2, -2.0) * dt
+      // clearly ahead of the vehicle (a fix that was too far on, a speed too high, a silence of the
+      // receiver carried on too far): back, the faster the farther, up to 40% of the speed + 2 m/s
+      // (a few seconds, not a minute as before: a wrong arrow is worse than one sliding back)
+      shown += maxOf(err * 1.2, -(0.4 * speed + 2.0)) * dt
     } else {
       // behind the target: a little faster (up to +60% of the speed, +3 m/s); ahead of it: slower,
       // down to standing still

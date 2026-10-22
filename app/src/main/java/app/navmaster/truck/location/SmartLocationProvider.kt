@@ -39,12 +39,52 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   @Volatile private var lastGpsAt = 0L
 
   // ---- the route being driven, for the tunnels (set by the guidance, null when not guiding)
-  private class Line(val pts: List<GeographicCoordinate>, val cum: DoubleArray, val wide: List<DoubleArray>) {
+  private class Line(val pts: List<GeographicCoordinate>, val cum: DoubleArray, @Volatile var wide: List<DoubleArray>, @Volatile var tunnels: List<DoubleArray>) {
     /** The route is wide here (a toll plaza: twenty lanes, the fix 60 m from the line and still on the road). */
     fun isWide(s: Double): Boolean = wide.any { s >= it[0] && s <= it[1] }
+
+    /** The route is in a tunnel here (no satellites expected: the position goes on at the speed of the entry). */
+    fun isTunnel(s: Double): Boolean = tunnels.any { s >= it[0] && s <= it[1] }
   }
 
   @Volatile private var line: Line? = null
+
+  // ---- what the receiver gives, summed up in the log every 30 s (to read a tablet's trouble from its log)
+  private inner class Diag {
+    var since = 0L
+    val providers = HashMap<String, Int>()
+    val accs = ArrayList<Double>()
+    var dropped = 0
+    var onRoute = 0
+    var drSeconds = 0.0
+
+    fun seen(provider: String?, acc: Double) {
+      providers[provider ?: "?"] = (providers[provider ?: "?"] ?: 0) + 1
+      if (accs.size < 500) accs += acc
+    }
+
+    fun report() {
+      val now = SystemClock.elapsedRealtime()
+      if (since == 0L) since = now
+      if (now - since < 30_000) return
+      val n = providers.values.sum()
+      val sorted = accs.sorted()
+      val med = if (sorted.isEmpty()) 0.0 else sorted[sorted.size / 2]
+      val p90 = if (sorted.isEmpty()) 0.0 else sorted[(sorted.size * 9) / 10]
+      Log.i(TAG, "fixes in ${(now - since) / 1000} s: $n (${providers.entries.joinToString { "${it.key}=${it.value}" }}), " +
+          "accuracy median ${med.toInt()} m / 90% ${p90.toInt()} m, on route $onRoute, poor left out $dropped, " +
+          "dead reckoning ${drSeconds.toInt()} s, speed of the receiver ${if (speedUnreliable) "NOT plausible (measured one used)" else "ok"}" +
+          (if (measured >= 0) ", measured ${"%.1f".format(java.util.Locale.ROOT, measured)} m/s" else ""))
+      since = now
+      providers.clear()
+      accs.clear()
+      dropped = 0
+      onRoute = 0
+      drSeconds = 0.0
+    }
+  }
+
+  private val diag = Diag()
 
   // ---- the speed of the fixes checked against the speed measured from the positions
   private var spLat = 0.0
@@ -125,15 +165,22 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
    * far wider than one carriageway (toll plazas): there a fix up to 90 m from the line, going the
    * route's way, still counts as on the route; elsewhere 30 m.
    */
-  fun setRoute(geometry: List<GeographicCoordinate>?, wide: List<DoubleArray> = emptyList()) {
+  fun setRoute(geometry: List<GeographicCoordinate>?, wide: List<DoubleArray> = emptyList(), tunnels: List<DoubleArray> = emptyList()) {
     line = if (geometry == null || geometry.size < 2) null else {
       val cum = DoubleArray(geometry.size)
       for (i in 1 until geometry.size) cum[i] = cum[i - 1] + dist(geometry[i - 1], geometry[i])
-      Line(geometry, cum, wide)
+      Line(geometry, cum, wide, tunnels)
     }
     drAlong = -1.0
     hintIndex = 0
     _onRoute.value = null
+  }
+
+  /** The toll plazas and the tunnels of the route being driven, once its analysis is there (setRoute may come first). */
+  fun setSpans(wide: List<DoubleArray>, tunnels: List<DoubleArray>) {
+    val ln = line ?: return
+    ln.wide = wide
+    ln.tunnels = tunnels
   }
 
   /**
@@ -195,18 +242,43 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     var bestD = Double.MAX_VALUE
     var bestS = 0.0
     var bestI = -1
+    // where the vehicle should be by now (the last position on the route carried on at its
+    // speed): where the route passes near itself (a hairpin, a loop ramp, the way back along a
+    // parallel road) the nearest piece of line may be a LATER one, and the position jumped ahead
+    // by the whole loop; among the pieces about as near, the one nearest to the expected position wins
+    val el0 = SystemClock.elapsedRealtime()
+    val expected = if (fixAlong >= 0 && el0 - fixAt < 10_000) fixAlong + fixSpeed * (el0 - fixAt) / 1000.0 else -1.0
+    var nearD = Double.MAX_VALUE
+    var nearS = 0.0
+    var nearI = -1
+    var nearGap = Double.MAX_VALUE
     fun scan(from: Int, to: Int) {
       for (i in from.coerceAtLeast(0) until to.coerceAtMost(n - 1)) {
         val (d, t) = segDist(p, ln.pts[i], ln.pts[i + 1])
+        val s = ln.cum[i] + (ln.cum[i + 1] - ln.cum[i]) * t
         if (d < bestD) {
           bestD = d
-          bestS = ln.cum[i] + (ln.cum[i + 1] - ln.cum[i]) * t
+          bestS = s
           bestI = i
+        }
+        if (expected >= 0 && d <= 40) {
+          val gap = Math.abs(s - expected)
+          if (gap < nearGap) {
+            nearGap = gap
+            nearD = d
+            nearS = s
+            nearI = i
+          }
         }
       }
     }
     scan(hintIndex - 20, hintIndex + 400)
     if (bestD > 90) scan(0, n - 1)
+    if (nearI >= 0 && nearI != bestI && nearD <= bestD + 12 && Math.abs(bestS - expected) > nearGap + 30) {
+      bestD = nearD
+      bestS = nearS
+      bestI = nearI
+    }
     // off the route from 30 m aside, and sooner when the vehicle clearly goes another way than the
     // route there (a slip road leaving the motorway, a turn not planned): the arrow must leave the
     // route the moment the vehicle does. At a toll plaza (Line.wide) the lanes spread over 100 m:
@@ -257,7 +329,14 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         lastCourseLat = l.latitude
         lastCourseLon = l.longitude
       }
-      if (l.provider == LocationManager.GPS_PROVIDER) {
+      val acc0 = if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0
+      diag.seen(l.provider, acc0)
+      // a fix of the satellites: the "gps" provider, or any other that gives a precise position
+      // while "gps" is silent (an external receiver fed to Android by an app as a mock position
+      // may come under "fused"; before, such fixes were ignored for 8 s and the position was
+      // carried on blindly at the last speed, ahead of the vehicle at every braking)
+      val gpsLike = l.provider == LocationManager.GPS_PROVIDER || (l.provider != LocationManager.NETWORK_PROVIDER && acc0 <= 30.0 && now - lastGpsAt > 2_000)
+      if (gpsLike) {
         val el = SystemClock.elapsedRealtime()
         val ln = line
         if (ln == null) {
@@ -266,7 +345,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           return
         }
         val s = alongOf(l)
-        val acc = if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0
+        val acc = acc0
         val v = plausibleSpeed(l, acc, el)
         val driving = fixAlong >= 0 && fixSpeed >= 3.0 && el - fixAt < 30_000
         // a poor fix while driving on the route (tunnel mouths, under bridges, between buildings:
@@ -275,8 +354,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         // satellites were silent, so the position goes on along the route (below) until good fixes
         // come back. A GOOD fix off the route is handed on at once (the vehicle really left it: the
         // arrow and the recalculation must follow immediately); a doubtful one (over 20 m of
-        // accuracy) only after 4 s off.
-        if (driving && (acc > 35.0 || (s == null && acc > 20.0 && el - lastOnRouteAt < 4_000))) {
+        // accuracy) only after 4 s off. But not for long: after 2.5 s without a better fix a poor
+        // one (up to 80 m) is used all the same, projected on the route: a receiver under a roof or
+        // in a built-up area gives 40 m fixes for minutes, and leaving them all out meant driving
+        // the arrow on the last speed alone, ahead of the vehicle at every braking
+        val stale = el - fixAt > 2_500
+        if (driving && (acc > 80.0 || (acc > 35.0 && !stale) || (s == null && acc > 20.0 && el - lastOnRouteAt < 4_000))) {
+          diag.dropped++
           Log.d(TAG, "poor fix left out (accuracy ${acc.toInt()} m, on route ${s != null})")
           return
         }
@@ -290,6 +374,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           // the speed measured by the satellites (Doppler): precise, and current when braking
           fixSpeed = v
           fixAt = el
+          diag.onRoute++
           _onRoute.value = Fix(s, if (v < 0.8) 0.0 else v, System.nanoTime(), acc, false, fixLateral)
         } else {
           fixAlong = -1.0
@@ -314,6 +399,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         // driven through: there the position along the route is far more precise)
         send(l)
       }
+      diag.report()
     }
     lastLocation()?.let { trySend(it) }
     val list = providers()
@@ -351,8 +437,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         // (3 s: a receiver that skips a fix or two must not have the position carried on at full
         // speed, which put the arrow ahead of the vehicle at every braking before a turn)
         if (silent < 3000 || now - maxOf(lastDr, fixAt) < 1000) continue
+        // in a tunnel of the route the position goes on at the speed of the entry (the dedicated
+        // navigators do the same); elsewhere a silence is a receiver in trouble, and the vehicle
+        // may well be braking: the speed is taken as falling (8% a second, down to 30%) and after
+        // 25 s the position is no longer invented at all (the map shows the last real fix)
+        val inTunnel = ln.isTunnel(if (drAlong >= 0) drAlong else fixAlong)
         // at most 4 minutes or 8 km on the speed of the entry: a longer silence is not a tunnel
-        if (silent > 240_000 || fixSpeed * silent / 1000.0 > 8000) {
+        if (silent > 240_000 || fixSpeed * silent / 1000.0 > 8000 || (!inTunnel && silent > 25_000)) {
           if (tunnel) Log.i(TAG, "dead reckoning stopped after ${silent / 1000} s")
           tunnel = false
           drAlong = -1.0
@@ -360,15 +451,21 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           _onRoute.value = null
           continue
         }
-        if (silent >= 1500 && !tunnel) {
+        if (!tunnel) {
           tunnel = true
-          Log.i(TAG, "no satellites: dead reckoning along the route at ${"%.0f".format(fixSpeed * 3.6)} km/h")
+          Log.i(TAG, "no satellites: dead reckoning along the route at ${"%.0f".format(fixSpeed * 3.6)} km/h" + (if (inTunnel) " (tunnel)" else ""))
         }
-        val s = (fixAlong + fixSpeed * silent / 1000.0).coerceAtMost(ln.cum.last() - 1)
+        val secs = silent / 1000.0
+        val factor = if (inTunnel) 1.0 else maxOf(0.3, 1.0 - 0.08 * (secs - 3.0))
+        val stepS = (now - maxOf(lastDr, fixAt)) / 1000.0
+        // the first step covers the silence so far (the vehicle did move meanwhile), the next ones a second each
+        val base = if (drAlong < 0) fixAlong + fixSpeed * (if (inTunnel) secs else minOf(secs, 3.0) * 0.9) else drAlong + fixSpeed * factor * stepS
+        val s = base.coerceAtMost(ln.cum.last() - 1)
         drAlong = s
         lastDr = now
-        _onRoute.value = Fix(s, fixSpeed, System.nanoTime(), 8.0, true)
-        send(locationAt(ln, s, fixSpeed))
+        diag.drSeconds += stepS
+        _onRoute.value = Fix(s, fixSpeed * factor, System.nanoTime(), 8.0, true)
+        send(locationAt(ln, s, fixSpeed * factor))
       }
     }
     awaitClose {

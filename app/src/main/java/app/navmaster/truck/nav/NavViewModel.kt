@@ -309,6 +309,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     handleOffRoute(r.toUserLocation())
   }
 
+  /** The tunnels of the route (100 m before, 150 m after: the satellites are lost a little before and found a little after). */
+  private fun tunnelSpans(a: RouteAnalysis?): List<DoubleArray> =
+      a?.edges?.filter { it.tunnel }?.map { doubleArrayOf(it.startM - 100, it.endM + 150) } ?: emptyList()
+
   /** Where the route is far wider than a carriageway: 600 m before and after every toll booth or gantry (the plaza). */
   private fun wideSpans(a: RouteAnalysis?): List<DoubleArray> =
       a?.tollBooths?.map { doubleArrayOf(it.alongM - 600, it.alongM + 600) } ?: emptyList()
@@ -1063,7 +1067,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     simTarget = null
     if (simulate) locationProvider.enableSimulationOn(v.route) else locationProvider.disableSimulation()
     // the route for the tunnels (the position goes on along it when the satellites are silent)
-    AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry, wideSpans(v.analysis))
+    AppGraph.smartLocation.setRoute(if (simulate) null else v.route.geometry, wideSpans(v.analysis), tunnelSpans(v.analysis))
     laneTracker.reset()
     AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false, quick = false)
     asked.clear()
@@ -1548,7 +1552,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       providerOffSince = 0L
       lastOnRouteTraveled = 0.0
       // (the question "back onto the old route?" stays: it is asked right after the new route)
-      AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry, wideSpans(_nav.value.analysis))
+      AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry, wideSpans(_nav.value.analysis), tunnelSpans(_nav.value.analysis))
       laneTracker.reset()
       if (key == simPendingKey) {
         // a jump of the simulation: the same route from another point, already checked
@@ -2154,6 +2158,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val limits = AppGraph.limits.scan(m, v, v.tripWeightT(g.loadT), a = a)
         val crit = AppGraph.criticalities.find(a, m, limits, v, g.loadT, LocalDateTime.now())
         _nav.update { it.copy(analysis = a, limits = limits, criticalities = crit, pois = pois(r), routeLength = a.length) }
+        if (!_simulating.value) AppGraph.smartLocation.setSpans(wideSpans(a), tunnelSpans(a))
         Log.i(TAG, "new route checked: ${crit.size} criticalities")
       } catch (e: Exception) {
         Log.w(TAG, "reanalyse: $e")

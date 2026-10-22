@@ -164,7 +164,11 @@ class Announcer(
     // ---- the manoeuvre itself: short when it was already prepared
     val prepared = "$id:prep" in done || "$id:far" in done
     val next = steps.getOrNull(index + 1)
-    val soon = next != null && next.distance > 0 && next.distance < maxOf(120.0, v * 7) && index + 2 < steps.size && !isRoundaboutExit(next)
+    // the next manoeuvre is said together with this one ONLY when it follows at once (within 60 m
+    // or 4 s: two turns in a row, where the driver needs to know); otherwise each manoeuvre is
+    // said on its own, when its turn comes ("svolta a destra, poi tra 3 chilometri svolta a
+    // sinistra" was too much at once)
+    val soon = next != null && next.distance > 0 && next.distance < maxOf(60.0, v * 4) && index + 2 < steps.size && !isRoundaboutExit(next)
     val then = if (soon) next?.let { textOf(it) } else null
     val nowCore = if (prepared) SpeechIt.short(main, dropRoad = true) else main
     val nowText = nowCore + (then?.let { ", poi " + SpeechIt.short(it).replaceFirstChar { c -> c.lowercase() } } ?: "") + "."
@@ -180,8 +184,9 @@ class Announcer(
     fun prepText(dist: Double): String =
         "Tra ${SpeechIt.distance(dist)}, ${main.replaceFirstChar { it.lowercase() }}" + (laneWords?.let { ", $it" } ?: "") + "."
     val sinceManeuver = along - stepStart
-    // just out of a manoeuvre: nothing yet, unless the next one is already here
-    val settled = sinceManeuver > maxOf(120.0, v * 5) || index == 0
+    // just out of a manoeuvre: nothing yet for 250 m / 10 s (the driver is still turning; a notice
+    // for the next one right away sounded like a chain), unless the next one is already here
+    val settled = sinceManeuver > maxOf(250.0, v * 10) || index == 0
     val far = 2000.0
 
     when {
@@ -213,7 +218,9 @@ class Announcer(
           done += "$id:far"
         }
       }
-      level != VoiceLevel.ESSENTIAL && fast && settled && toManeuver <= far + v * tickS * 0.5 && toManeuver > dPrep + v * 12 &&
+      // the far notice (2 km) only for an exit or a fork on a fast road, where the lane must be
+      // chosen early; a plain turn is prepared once, at its preparation distance
+      level != VoiceLevel.ESSENTIAL && fast && exitLike && settled && toManeuver <= far + v * tickS * 0.5 && toManeuver > dPrep + v * 12 &&
           "$id:far" !in done -> {
         done += "$id:far"
         val dSaid = toManeuver - v * (latency + 1.5)
