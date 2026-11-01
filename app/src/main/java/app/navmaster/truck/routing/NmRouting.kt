@@ -24,7 +24,13 @@ class RouteResult(val lat: DoubleArray, val lon: DoubleArray, val waypointIndex:
  * for lorries and buses, driving-car for campers and cars), the answer its GeoJSON with the
  * Italian instructions and, next to it, the facts about the roads of the route (`navmaster.roads`).
  */
-class NmRouting(private val engine: NmEngine) {
+class NmRouting(
+    private val engine: NmEngine,
+    /** The NavMaster server, for the trips the tablet's graphs cannot cover (null in tests). */
+    private val server: NmServer? = null,
+    /** The country (catalog id) at a point, null when unknown. */
+    private val countryOf: (Double, Double) -> String? = { _, _ -> null },
+) {
   /** Why the last trip got no route (for the driver and the log). */
   @Volatile var note: String? = null
     private set
@@ -44,9 +50,28 @@ class NmRouting(private val engine: NmEngine) {
     if (points.size < 2) return null
     val started = SystemClock.elapsedRealtime()
     val body = request(points, spec, passThrough, alternates).toString()
-    val text = engine.directions(points[0][0], points[0][1], spec.profile, body)
+    // a trip across a border (or through a country not on the tablet) goes to the server when there is one
+    val countries = points.map { countryOf(it[0], it[1]) }
+    val across = countries.any { it != null && it != countries[0] }
+    var text: String? = null
+    var from = "engine"
+    if (across && server != null && server.unavailable() == null) {
+      text = server.directions(spec.profile, body)
+      from = "server"
+      if (text == null) Log.w(TAG, "server: ${server.note}")
+    }
     if (text == null) {
-      note = engine.problem ?: "motore non disponibile"
+      text = engine.directions(points[0][0], points[0][1], spec.profile, body)
+      from = "engine"
+    }
+    if (text == null && server != null && !across) {
+      // no graph here: the server, when it is reachable
+      val why = engine.problem
+      if (server.unavailable() == null) { text = server.directions(spec.profile, body); from = "server" }
+      if (text == null) { note = why ?: server.note ?: "motore non disponibile"; Log.w(TAG, "engine: $note"); return null }
+    }
+    if (text == null) {
+      note = engine.problem ?: server?.note ?: "motore non disponibile"
       Log.w(TAG, "engine: ${note}")
       return null
     }
@@ -63,7 +88,7 @@ class NmRouting(private val engine: NmEngine) {
         note = null
         lastText = text
         lastPoints = points.size
-        Log.i(TAG, "engine ${spec.profile}: ${it?.size ?: 0} routes in ${SystemClock.elapsedRealtime() - started} ms " +
+        Log.i(TAG, "$from ${spec.profile}: ${it?.size ?: 0} routes in ${SystemClock.elapsedRealtime() - started} ms " +
             it?.joinToString { r -> String.format(java.util.Locale.US, "%.1f km/%d min", r.distanceM / 1000, r.timeMs / 60000) })
       }
     } catch (e: Exception) {

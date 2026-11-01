@@ -247,6 +247,8 @@ data class Settings(
     val hereKey: String = "",
     /** Free openrouteservice key (online routing), typed on the tablet; else the one built into the app. */
     val orsKey: String = "",
+    /** The NavMaster server (engine-server on a graph of Europe), for the trips the tablet's graphs cannot cover; empty = none. */
+    val engineServer: String = "",
     /** Official traffic information of the European countries (national access points, open data). */
     val nationalTraffic: Boolean = true,
     /** Free key of Trafikverket (Sweden), asked by the driver. */

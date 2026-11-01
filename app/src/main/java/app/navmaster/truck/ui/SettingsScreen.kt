@@ -211,6 +211,12 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     Caption("Il percorso lo calcola il motore NavMaster sul tablet, con la logica di openrouteservice e le misure del mezzo: " +
         "servono le mappe dei Paesi del viaggio («Mappe d'Europa»).", color = Nm.Text, lines = 4)
     Spacer(Modifier.height(6.dp))
+    OutlinedTextField(s.engineServer, { v -> set { it.copy(engineServer = v.trim()) } }, label = { Text("Server NavMaster (es. https://nav.esempio.it)") },
+        singleLine = true, modifier = Modifier.fillMaxWidth(),
+        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent))
+    Caption("Con internet, i viaggi che attraversano un confine o passano per un Paese non scaricato vengono calcolati dal server " +
+        "(lo stesso motore, sul grafo di tutta l'Europa). La chiave, se il server la chiede, è quella di openrouteservice in «Chiavi dei servizi».", size = 13, lines = 4)
+    Spacer(Modifier.height(6.dp))
     ToggleRow("Mappa online dove non è scaricata", "OpenFreeMap, gratuita: si vede la mappa anche nei Paesi non scaricati (usa dati)", s.onlineMap) { v ->
       set { it.copy(onlineMap = v) }
     }

@@ -12,6 +12,7 @@ import app.navmaster.truck.data.RoadsIndex
 import app.navmaster.truck.routing.CriticalityFinder
 import app.navmaster.truck.routing.NmEngine
 import app.navmaster.truck.routing.NmRouting
+import app.navmaster.truck.routing.NmServer
 import app.navmaster.truck.routing.OfflineRouteProvider
 import app.navmaster.truck.search.AddressIndex
 import app.navmaster.truck.search.PlaceIndex
@@ -67,8 +68,10 @@ object AppGraph {
   val regions by lazy { RegionManager(app, catalog) }
   /** navmaster-engine on the tablet: the graphs of the downloaded countries (see OfflineRouteProvider). */
   val engine by lazy { NmEngine(app, regions) }
-  /** The routes computed by the engine with openrouteservice's logic. */
-  val nm by lazy { NmRouting(engine) }
+  /** The NavMaster server (engine-server on a graph of Europe), when one is set in the settings. */
+  val server by lazy { NmServer(app, { settings.settings.value.engineServer }, { app.navmaster.truck.live.ApiKeys.ors(settings.settings.value) }) }
+  /** The routes computed by the engine with openrouteservice's logic (on the tablet, or by the server across borders). */
+  val nm by lazy { NmRouting(engine, server) { lat, lon -> catalog.countryAt(lat, lon)?.id } }
   val limits by lazy { LimitsIndex(regions) }
   val poi by lazy { PoiIndex(regions) }
   val addresses by lazy { AddressIndex(regions) }
