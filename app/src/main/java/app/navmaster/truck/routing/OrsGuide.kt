@@ -49,6 +49,7 @@ object OrsGuide {
     // the roads of the route, from the graph (one per edge)
     val roads = RouteRoad.parse(props)
     val on = RouteRoad.perSegment(roads, n)
+    val points = RouteRoad.parsePoints(props)
 
     val b = StringBuilder(64 * 1024)
     b.append("{\"code\":\"Ok\",\"routes\":[{\"distance\":").append(num(totalD)).append(",\"duration\":").append(num(totalT))
@@ -100,7 +101,7 @@ object OrsGuide {
       b.append("{\"name\":\"\",\"distance\":0,\"location\":[").append(num6(pts[i].lng)).append(',').append(num6(pts[i].lat)).append("]}")
     }
     b.append("]}")
-    val attributes = if (roads.isEmpty()) null else attributes(pts, cum, roads, countryOf)
+    val attributes = if (roads.isEmpty()) null else attributes(pts, cum, roads, points, countryOf)
     return Output(b.toString(), attributes, roads.size)
   }
 
@@ -176,7 +177,7 @@ object OrsGuide {
    * at toll booths, gantries and border controls (the node then ends the edge), with the signed
    * limits, the direction signs (destination tags, motorway junctions) and the lanes.
    */
-  private fun attributes(pts: List<GeographicCoordinate>, cum: DoubleArray, roads: List<RouteRoad>, countryOf: ((Double, Double) -> String?)?): String {
+  private fun attributes(pts: List<GeographicCoordinate>, cum: DoubleArray, roads: List<RouteRoad>, points: List<RoutePoint>, countryOf: ((Double, Double) -> String?)?): String {
     val n = pts.size
     val b = StringBuilder(32 * 1024)
     b.append("{\"units\":\"kilometers\",\"shape\":")
@@ -220,13 +221,23 @@ object OrsGuide {
           edges.append(",\"limits\":{").append(r.limits.entries.joinToString(",") { (k, v) -> JsonPrimitive(k).toString() + ":" + String.format(Locale.ROOT, "%.2f", v) }).append('}')
         }
         if (r.hazmat) edges.append(",\"hazmat\":true")
-        // the direction sign at the start of a ramp (exit number and name of the motorway junction, destinations)
-        if (a == from && (r.exit != null || (r.link && !prevLink && (r.destination != null || r.destinationRef != null)))) {
+        r.adrTunnel?.let { edges.append(",\"adr_tunnel\":").append(JsonPrimitive(it)) }
+        if (r.conditional.isNotEmpty()) edges.append(",\"conditional\":").append(r.conditional.joinToString(",", "[", "]") { JsonPrimitive(it).toString() })
+        r.laneSigns?.let { ls ->
+          edges.append(",\"lane_signs\":{\"destination\":").append(JsonPrimitive(ls.destination)).append(",\"ref\":").append(JsonPrimitive(ls.ref))
+              .append(",\"colour\":").append(JsonPrimitive(ls.colour)).append('}')
+        }
+        // the direction sign at the start of a ramp (exit number and name of the motorway junction,
+        // destinations of the way or of a destination_sign relation)
+        if (a == from && (r.exit != null || r.sign != null || (r.link && !prevLink && (r.destination != null || r.destinationRef != null)))) {
           val exitRef = r.exit?.substringBefore('|')?.takeIf { it.isNotBlank() }
           val exitName = r.exit?.substringAfter('|', "")?.takeIf { it.isNotBlank() }
-          fun texts(v: String?): String = (v?.split(";")?.map(String::trim)?.filter { it.isNotEmpty() } ?: emptyList()).joinToString(",", "[", "]") { "{\"text\":${JsonPrimitive(it)}}" }
-          edges.append(",\"sign\":{\"exit_number\":").append(texts(exitRef)).append(",\"exit_branch\":").append(texts(r.destinationRef))
-              .append(",\"exit_toward\":").append(texts(r.destination)).append(",\"exit_name\":").append(texts(exitName)).append('}')
+          val toward = r.sign?.destination?.takeIf { it.isNotBlank() } ?: r.destination
+          val branch = r.sign?.ref?.takeIf { it.isNotBlank() } ?: r.destinationRef
+          edges.append(",\"sign\":{\"exit_number\":").append(texts(exitRef)).append(",\"exit_branch\":").append(texts(branch))
+              .append(",\"exit_toward\":").append(texts(toward)).append(",\"exit_name\":").append(texts(exitName))
+          r.sign?.colour?.takeIf { it.isNotBlank() }?.let { edges.append(",\"colour\":").append(JsonPrimitive(it)) }
+          edges.append('}')
         }
         edges.append(",\"begin_heading\":").append(heading(pts, a, 1)).append(",\"end_heading\":").append(heading(pts, c, -1))
         val cc = countryOf?.invoke(pts[c].lat, pts[c].lng)
@@ -239,6 +250,30 @@ object OrsGuide {
         if (ai >= 0) edges.append("\"admin_index\":").append(ai).append(',')
         edges.append("\"type\":")
         q(edges, nodeType ?: "street_intersection")
+        // the other roads leaving the end of this road (only at the real end of the edge)
+        if (c == to && r.branches.isNotEmpty()) {
+          edges.append(",\"intersecting_edges\":[")
+          for ((k, br) in r.branches.withIndex()) {
+            if (k > 0) edges.append(',')
+            val drive = when { br.access && br.accessBack -> "both"; br.access -> "forward"; br.accessBack -> "backward"; else -> "none" }
+            val rc = when (br.cls) { "living_street" -> "residential"; "service", "road", "other", "track" -> "service_other"; else -> br.cls }
+            edges.append("{\"driveability\":").append(JsonPrimitive(drive)).append(",\"use\":").append(JsonPrimitive(if (br.link) "ramp" else "road"))
+                .append(",\"begin_heading\":").append(Math.round(br.heading)).append(",\"road_class\":").append(JsonPrimitive(rc))
+                .append(",\"lane_count\":").append(br.lanes ?: 1).append(",\"way_id\":").append(br.way)
+            val bExitRef = br.exit?.substringBefore('|')?.takeIf { it.isNotBlank() }
+            val bExitName = br.exit?.substringAfter('|', "")?.takeIf { it.isNotBlank() }
+            val bToward = br.sign?.destination?.takeIf { it.isNotBlank() } ?: br.destination
+            val bBranch = br.sign?.ref?.takeIf { it.isNotBlank() } ?: br.destinationRef
+            if (bExitRef != null || bToward != null || bBranch != null) {
+              edges.append(",\"sign\":{\"exit_number\":").append(texts(bExitRef)).append(",\"exit_branch\":").append(texts(bBranch))
+                  .append(",\"exit_toward\":").append(texts(bToward)).append(",\"exit_name\":").append(texts(bExitName))
+              br.sign?.colour?.takeIf { it.isNotBlank() }?.let { edges.append(",\"colour\":").append(JsonPrimitive(it)) }
+              edges.append('}')
+            }
+            edges.append('}')
+          }
+          edges.append(']')
+        }
         edges.append("}}")
         a = c
       }
@@ -246,9 +281,19 @@ object OrsGuide {
     }
     b.append(",\"admins\":[")
     b.append(admins.joinToString(",") { "{\"country_code\":${JsonPrimitive(it)}}" })
-    b.append("],\"edges\":[").append(edges).append("]}")
+    b.append("],\"edges\":[").append(edges).append("],\"points\":[")
+    for ((k, p) in points.withIndex()) {
+      if (k > 0) b.append(',')
+      b.append("{\"type\":").append(JsonPrimitive(p.type)).append(",\"lat\":").append(num6(p.lat)).append(",\"lon\":").append(num6(p.lon))
+          .append(",\"value\":").append(p.valueKmh).append(",\"bearing\":").append(p.bearing).append(",\"offset\":").append(num(p.offsetM))
+          .append(",\"distance\":").append(num(p.distanceM)).append('}')
+    }
+    b.append("]}")
     return b.toString()
   }
+
+  /** Texts of a sign ("A; B" → two entries) in the form RouteAnalysis reads. */
+  private fun texts(v: String?): String = (v?.split(";")?.map(String::trim)?.filter { it.isNotEmpty() } ?: emptyList()).joinToString(",", "[", "]") { "{\"text\":${JsonPrimitive(it)}}" }
 
   /** The direction of the line at point [i] (degrees), looking [dir] = 1 forward, -1 backward. */
   private fun heading(pts: List<GeographicCoordinate>, i: Int, dir: Int): Int {

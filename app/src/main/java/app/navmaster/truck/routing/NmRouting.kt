@@ -40,10 +40,10 @@ class NmRouting(private val engine: NmEngine) {
    * [note] says why). [passThrough]: the vehicle goes on through the intermediate points in its
    * direction of travel (openrouteservice's `continue_straight`).
    */
-  fun routes(points: List<DoubleArray>, spec: RouteSpec, passThrough: Boolean = false): List<RouteResult>? {
+  fun routes(points: List<DoubleArray>, spec: RouteSpec, passThrough: Boolean = false, alternates: Int = 0): List<RouteResult>? {
     if (points.size < 2) return null
     val started = SystemClock.elapsedRealtime()
-    val body = request(points, spec, passThrough).toString()
+    val body = request(points, spec, passThrough, alternates).toString()
     val text = engine.directions(points[0][0], points[0][1], spec.profile, body)
     if (text == null) {
       note = engine.problem ?: "motore non disponibile"
@@ -87,7 +87,7 @@ class NmRouting(private val engine: NmEngine) {
     else -> "errore del motore ($code): ${message.take(120)}"
   }
 
-  private fun request(points: List<DoubleArray>, s: RouteSpec, passThrough: Boolean): JsonObject {
+  private fun request(points: List<DoubleArray>, s: RouteSpec, passThrough: Boolean, alternates: Int): JsonObject {
     val options = mutableMapOf<String, JsonElement>()
     val avoid = mutableListOf<JsonElement>()
     if (s.avoidTolls) avoid += JsonPrimitive("tollways")
@@ -131,7 +131,20 @@ class NmRouting(private val engine: NmEngine) {
     if (passThrough && points.size > 2) o["continue_straight"] = JsonPrimitive(true)
     // the vehicle's top speed (openrouteservice accepts 80 km/h and more)
     if (s.topSpeedKmh > 0) o["maximum_speed"] = JsonPrimitive(s.topSpeedKmh.coerceAtLeast(80.0))
+    // alternatives (openrouteservice's alternative_routes): only between two points not too far apart
+    if (alternates > 0 && points.size == 2 && crow(points[0], points[1]) < 150_000) {
+      o["alternative_routes"] = JsonObject(mapOf(
+          "target_count" to JsonPrimitive((1 + alternates).coerceIn(2, 3)), "weight_factor" to JsonPrimitive(1.4), "share_factor" to JsonPrimitive(0.6),
+      ))
+    }
     return JsonObject(o)
+  }
+
+  private fun crow(a: DoubleArray, b: DoubleArray): Double {
+    val k = Math.cos(Math.toRadians((a[0] + b[0]) / 2))
+    val dy = (b[0] - a[0]) * 111_195
+    val dx = (b[1] - a[1]) * 111_195 * k
+    return Math.sqrt(dx * dx + dy * dy)
   }
 
   private fun parse(root: JsonObject, nPoints: Int): List<RouteResult>? {

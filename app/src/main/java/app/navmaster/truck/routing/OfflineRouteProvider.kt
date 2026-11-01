@@ -96,7 +96,8 @@ class OfflineRouteProvider(
         Log.i(TAG, "route ${vehicle.name} tolls=${!options.avoidTolls} avoid=${options.excludePolygons.size} points=${stops.points.size} for $spec")
         note = null
         val started = System.currentTimeMillis()
-        val found = nm.routes(stops.points, spec, stops.kinds.any { it == "via" })
+        val alternates = if (options.moreRoutes) options.alternates.coerceIn(1, 2) else options.alternates.coerceIn(0, 2)
+        val found = nm.routes(stops.points, spec, stops.kinds.any { it == "via" }, alternates)
         if (found == null) {
           val why = nm.note ?: "il motore non ha trovato un percorso"
           Log.w(TAG, "no route: $why")

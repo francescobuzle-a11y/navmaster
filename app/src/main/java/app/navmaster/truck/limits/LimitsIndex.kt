@@ -5,6 +5,7 @@ import app.navmaster.truck.data.RegionDbs
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.data.RouteMatcher
 import app.navmaster.truck.routing.RouteAnalysis
+import app.navmaster.truck.routing.RoutePointAt
 import app.navmaster.truck.vehicle.AdrTunnel
 import app.navmaster.truck.vehicle.VehicleProfile
 import app.navmaster.truck.vehicle.VehicleType
@@ -120,12 +121,54 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
         out += RouteLimit(kind, value, null, null, null, lo, p.lat, p.lng, blocks(kind, value, vehicle, weightT) && !sizeOnMotorway,
             if (e.wayId > 0) "w${e.wayId}" else null, "osm")
       }
+      // ADR tunnel category
+      if (e.adrTunnel in 2..5 && seen.add("${e.wayId}:adr:${e.adrTunnel}")) {
+        val p = a.pointAt(e.startM)
+        out += RouteLimit("adr_tunnel", e.adrTunnel.toDouble(), "BCDE"[e.adrTunnel - 2].toString(), null, null, e.startM, p.lat, p.lng,
+            blocks("adr_tunnel", e.adrTunnel.toDouble(), vehicle, weightT), if (e.wayId > 0) "w${e.wayId}" else null, "osm")
+      }
+      // restrictions valid only at some hours: "key:conditional=value @ (hours)"
+      for (c in e.conditional) {
+        val key = c.substringBefore('=').removeSuffix(":conditional").removeSuffix(":hgv")
+        val raw = c.substringAfter('=', "")
+        val valueText = raw.substringBefore('@').trim()
+        val cond = raw.substringAfter('@', "").trim().removePrefix("(").removeSuffix(")").trim()
+        val kind = when (key) {
+          "maxweight", "maxheight", "maxwidth", "maxlength", "maxaxleload" -> key
+          "access", "vehicle", "motor_vehicle", "hgv", "goods" -> if (valueText.startsWith("no") || valueText.startsWith("private") || valueText.startsWith("destination")) "hgv" else continue
+          "bus" -> if (valueText.startsWith("no")) "bus" else continue
+          "hazmat" -> if (valueText.startsWith("no")) "hazmat" else continue
+          else -> continue
+        }
+        val value = valueText.replace(',', '.').filter { it.isDigit() || it == '.' }.toDoubleOrNull() ?: 0.0
+        if (!seen.add("${e.wayId}:$kind:$value:$cond")) continue
+        val p = a.pointAt(e.startM)
+        val at = departure.plusSeconds((e.startM / avgSpeedMs).toLong())
+        out += RouteLimit(kind, value, valueText, null, cond, e.startM, p.lat, p.lng,
+            blocks(kind, value, vehicle, weightT) && conditionalActive(cond, at), if (e.wayId > 0) "w${e.wayId}" else null, "osm")
+      }
     }
-    Log.i("NavMasterLimits", "limits on the route: ${out.size} (${out.count { it.blocking }} blocking)")
+    // speed cameras, red-light cameras and average-speed sections (Tutor), from the graph
+    var sectionStart: RoutePointAt? = null
+    for (p in a.points) {
+      when (p.type) {
+        "speed_camera" -> out += RouteLimit("speed_camera", p.valueKmh.toDouble(), null, null, null, p.alongM, p.lat, p.lon, false, null, "osm")
+        "traffic_signals_camera" -> out += RouteLimit("speed_camera", 0.0, null, "semaforo rosso", null, p.alongM, p.lat, p.lon, false, null, "osm")
+        "average_speed_start" -> sectionStart = p
+        "average_speed_end" -> sectionStart?.let { s ->
+          if (p.alongM > s.alongM) out += RouteLimit("average_speed", (if (s.valueKmh > 0) s.valueKmh else p.valueKmh).toDouble(), null, null, null, s.alongM, s.lat, s.lon, false, null, "osm", p.alongM)
+          sectionStart = null
+        }
+      }
+    }
+    Log.i("NavMasterLimits", "limits on the route: ${out.size} (${out.count { it.blocking }} blocking, ${out.count { it.kind == "speed_camera" || it.kind == "average_speed" }} cameras)")
     return out.sortedBy { it.alongM }
   }
 
-  /** The direction signs of the route (destination tags and motorway junctions of its roads, from the graph). */
+  /**
+   * The direction signs of the route: the one of the road taken (destination tags, motorway
+   * junctions, destination_sign relations) and those of the other roads leaving the junction.
+   */
   fun signs(m: RouteMatcher, a: RouteAnalysis): List<app.navmaster.truck.routing.RouteSign> {
     val out = mutableListOf<app.navmaster.truck.routing.RouteSign>()
     for (e in a.edges) {
@@ -135,11 +178,38 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
       if (last != null && e.startM - last.atM < 40) continue
       out += app.navmaster.truck.routing.RouteSign(e.startM, sign, emptyList())
     }
-    return out
+    // the signs of the roads not taken, at the junctions where the route goes on
+    for (js in a.junctionShapes) {
+      val others = js.branches.mapNotNull { br ->
+        val s = br.sign ?: return@mapNotNull null
+        val outH = js.outHeading ?: return@mapNotNull null
+        val diff = ((br.heading - outH + 540.0) % 360.0) - 180.0
+        app.navmaster.truck.routing.SideSign(s, if (diff < -8) -1 else if (diff > 8) 1 else 0, br.wayId)
+      }
+      if (others.isEmpty()) continue
+      val near = out.indexOfFirst { abs(it.atM - js.atM) < 40 }
+      if (near >= 0) out[near] = out[near].copy(others = out[near].others + others)
+      else out += app.navmaster.truck.routing.RouteSign(js.atM, null, others)
+    }
+    return out.sortedBy { it.atM }
   }
 
-  /** The signs over the lanes: not in the graph yet. */
-  fun laneSigns(m: RouteMatcher, a: RouteAnalysis): List<app.navmaster.truck.routing.LaneSigns> = emptyList()
+  /** The signs over the lanes before a junction (destination:lanes and the like of the roads of the route). */
+  fun laneSigns(m: RouteMatcher, a: RouteAnalysis): List<app.navmaster.truck.routing.LaneSigns> {
+    val out = mutableListOf<app.navmaster.truck.routing.LaneSigns>()
+    for (e in a.edges) {
+      val ls = e.laneSigns ?: continue
+      val dest = ls.destination.split('|'); val dref = ls.ref.split('|'); val col = ls.colour.split('|')
+      val n = maxOf(dest.size, dref.size)
+      if (n < 2) continue
+      fun vals(l: List<String>, k: Int) = l.getOrNull(k)?.split(';')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+      val list = (0 until n).map { k -> app.navmaster.truck.routing.LaneDest(vals(dest, k), vals(dref, k), col.getOrNull(k)?.takeIf { it.isNotBlank() }) }
+      if (list.all { it.isEmpty }) continue
+      if (out.any { abs(it.atM - e.endM) < 20 }) continue
+      out += app.navmaster.truck.routing.LaneSigns(e.endM, list)
+    }
+    return out
+  }
 
   fun cameras(all: List<RouteLimit>): List<RouteLimit> = all.filter { it.kind == "speed_camera" }
 
