@@ -154,8 +154,10 @@ class NmRouting(
     if (options.isNotEmpty()) o["options"] = JsonObject(options)
     // pass-through points (the driver going on along his road, or back onto the planned route): no u-turn at them
     if (passThrough && points.size > 2) o["continue_straight"] = JsonPrimitive(true)
-    // the vehicle's top speed (openrouteservice accepts 80 km/h and more)
-    if (s.topSpeedKmh > 0) o["maximum_speed"] = JsonPrimitive(s.topSpeedKmh.coerceAtLeast(80.0))
+    // the vehicle's top speed (openrouteservice accepts 80 km/h and more): only when it is below the
+    // profile's own top speeds (lorries 85 km/h on motorways, cars 130), else it changes nothing and
+    // would only make the search slower
+    if (s.topSpeedKmh > 0 && s.topSpeedKmh < (if (s.hgv) 85.0 else 130.0)) o["maximum_speed"] = JsonPrimitive(s.topSpeedKmh.coerceAtLeast(80.0))
     // alternatives (openrouteservice's alternative_routes): only between two points not too far apart
     if (alternates > 0 && points.size == 2 && crow(points[0], points[1]) < 100_000) {
       o["alternative_routes"] = JsonObject(mapOf(
