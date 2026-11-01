@@ -54,7 +54,7 @@ jobs:
   graph:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -101,11 +101,11 @@ jobs:
       - name: Grafo del motore (import, CH, core, landmark, dati di guida)
         working-directory: /mnt/w
         run: |
-          MEM=$(( $(free -g | awk '/Mem:/{print $2}') - 2 ))
+          MEM=$(( $(free -g | awk '/Mem:/{print $2}') - 3 ))
           # the big countries: the graph files on disk (memory-mapped) instead of in RAM
           MMAP=""
           case "${{ matrix.region }}" in germany|france|great-britain|poland|spain|turkey|ukraine|italy|sweden|norway|finland) MMAP="--mmap" ;; esac
-          date; JAVA_OPTS="-Xmx${MEM}g" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP 2>&1 | tail -40; date
+          date; JAVA_OPTS="-Xmx${MEM}g -XX:+UseParallelGC" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP 2>&1 | awk '{ print strftime("%H:%M:%S"), $0; fflush() }'; date
           test -f nm/profiles && test -f nm/edges && test -f nm/guidance
           rm -f roads.osm.pbf
           du -sh nm; ls -la nm
