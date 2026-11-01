@@ -47,19 +47,16 @@ internal fun realJunctionOf(scene: JunctionScene, md: JvModel): RealJv? {
   val o = a.pointAt(m)
   val routeLL = (0..((end - start) / 3.0).toInt()).map { i -> a.pointAt(start + i * 3.0).let { doubleArrayOf(it.lat, it.lng) } }
   val edges = a.edges.map { e -> JvEdge(e.startM, e.endM, e.lanes, e.turnLanes ?: "", e.isRamp, e.roadClass, e.wayId) }
-  // the roads around: the graph first (real lanes), then the light package, then the map tiles
-  var roads: List<JvRoad> = AppGraph.gh.roadsAround(o.lat, o.lng, 900.0).map { r ->
-    JvRoad(r.lat, r.lon, r.cls, r.link, r.oneway, r.lanesFwd, r.lanesBack, r.turnLanes, r.roundabout, r.bridge, r.tunnel, r.way)
-  }
+  // the roads around: the engine's graph (real lanes), then the map tiles
   var source = "graph"
-  if (roads.isEmpty()) {
+  var roads: List<JvRoad> = emptyList()
+  run {
     roads = runCatching { AppGraph.roads.near(o.lat, o.lng, 900.0) }.getOrDefault(emptyList()).map { r ->
       val lf = r.laneCount(true)
       val lb = if (r.oneway != 0) 0 else r.laneCount(false)
       JvRoad(DoubleArray(r.pts.size) { r.pts[it].lat }, DoubleArray(r.pts.size) { r.pts[it].lng }, r.hw.removeSuffix("_link"), r.isLink,
-          r.oneway != 0, if (r.oneway < 0) 0 else lf, if (r.oneway < 0) lf else lb, r.turnLanes ?: "", r.roundabout, r.bridge, r.tunnel, r.osm)
+          r.oneway != 0, if (r.oneway < 0) 0 else lf, if (r.oneway < 0) lf else lb, r.turns(true) ?: "", r.roundabout, r.bridge, r.tunnel, r.osm)
     }
-    source = "light package"
   }
   if (roads.isEmpty()) {
     val file = AppGraph.regions.regionAt(o.lat, o.lng)?.map

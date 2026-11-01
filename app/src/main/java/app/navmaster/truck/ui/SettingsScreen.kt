@@ -188,8 +188,7 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     Spacer(Modifier.height(6.dp))
     Caption(when (s.routeKind) {
       app.navmaster.truck.vehicle.RouteKind.FASTEST -> "Il più rapido, con le regole e le velocità di openrouteservice per camion o auto."
-      app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> "Resta in autostrada il più possibile e ne esce il meno possibile: il tempo fuori " +
-          "autostrada conta più del doppio e ogni uscita pesa come minuti in più (calcolo sul tablet, grafi dal 10/2026; online è il «consigliato» di openrouteservice)."
+      app.navmaster.truck.vehicle.RouteKind.RECOMMENDED -> "Il «consigliato» di openrouteservice: per i camion preferisce autostrade e strade principali ed evita le strade piccole; per camper e auto è il più rapido."
       app.navmaster.truck.vehicle.RouteKind.SHORTEST -> "Meno chilometri, sempre su strade adatte al mezzo (il «più corto» di openrouteservice)."
     } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 5)
   }
@@ -208,30 +207,12 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       }
     }
   }
-  Card(if (AppGraph.ONLINE_ROUTING) "Calcolo online" else "Calcolo del percorso") {
-    if (!AppGraph.ONLINE_ROUTING) {
-      Caption("Il percorso lo calcola sempre GraphHopper sul tablet, con le regole di openrouteservice e le misure del mezzo: " +
-          "servono le mappe dei Paesi del viaggio («Mappe d'Europa»). Il calcolo online è spento; in futuro arriverà dal server NavMaster.",
-          color = Nm.Text, lines = 5)
-      Spacer(Modifier.height(6.dp))
-    } else ToggleRow("Con internet usa openrouteservice",
-        if (AppGraph.ors.key.isBlank()) "Non attivo: manca la chiave del servizio nell'app"
-        else "Percorso calcolato online con le misure del mezzo (scheda ORS); senza rete GraphHopper sul tablet. " +
-            "Dove la mappa non è scaricata guida online", s.onlineRouting) { v ->
-      set { it.copy(onlineRouting = v) }
-    }
+  Card("Calcolo del percorso") {
+    Caption("Il percorso lo calcola il motore NavMaster sul tablet, con la logica di openrouteservice e le misure del mezzo: " +
+        "servono le mappe dei Paesi del viaggio («Mappe d'Europa»).", color = Nm.Text, lines = 4)
+    Spacer(Modifier.height(6.dp))
     ToggleRow("Mappa online dove non è scaricata", "OpenFreeMap, gratuita: si vede la mappa anche nei Paesi non scaricati (usa dati)", s.onlineMap) { v ->
       set { it.copy(onlineMap = v) }
-    }
-    if (AppGraph.ONLINE_ROUTING) ToggleRow("Dati leggeri per la guida online", "Limiti del mezzo, autovelox, Tutor, velocità e corsie dei Paesi non scaricati " +
-        "(poche decine di MB per Paese, anche con i dati mobili): la guida online è come quella offline", s.onlineLite) { v ->
-      set { it.copy(onlineLite = v) }
-    }
-    if (s.onlineLite && AppGraph.ONLINE_ROUTING) {
-      ToggleRow("Anche i punti di interesse", "Aree camper, campeggi, distributori, parcheggi per camion nei Paesi non scaricati " +
-          "(circa 100 MB per Paese in più)", s.onlineLitePoi) { v ->
-        set { it.copy(onlineLitePoi = v) }
-      }
     }
   }
   Card("Strade a pagamento") {
@@ -585,8 +566,8 @@ private fun OfflinePage(s: Settings, set: ((Settings) -> Settings) -> Unit, onRe
     BigButton("Gestisci i Paesi scaricati", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), style = BtnStyle.SECONDARY, onClick = onRegions)
   }
   Card("Percorsi") {
-    Text("I percorsi tra Paesi uniscono i grafi GraphHopper dei Paesi scaricati ai valichi di confine: " +
-        "scarica i Paesi che attraversi.", color = Nm.Muted, fontSize = 13.sp)
+    Text("Il percorso si calcola sul grafo del Paese di partenza: per ora un viaggio che attraversa un confine va calcolato " +
+        "a tappe nei singoli Paesi scaricati.", color = Nm.Muted, fontSize = 13.sp)
   }
 }
 

@@ -14,35 +14,24 @@ import kotlinx.serialization.json.jsonPrimitive
 import uniffi.ferrostar.GeographicCoordinate
 
 /**
- * The guidance of a route of openrouteservice from its own instructions (Italian, with the
- * bearings of each manoeuvre), written as the OSRM answer Ferrostar reads: for the places where the
- * tablet has no map nor graph (a country not downloaded), so the driver is guided online anyway.
- * With the light package of the country (limiti.sqlite with its table «roads», RoadsIndex) the
- * route is matched on the roads, and the guidance gets what the graph gives offline: speed limits,
- * lanes and arrows at the manoeuvres, and the roads of the route for RouteAnalysis (road class,
- * lanes, way ids for the limits, tolls, tunnels, countries).
+ * The guidance of a route from the engine's answer (openrouteservice's GeoJSON with its Italian
+ * instructions, plus the facts about its roads): the OSRM answer Ferrostar reads (manoeuvres,
+ * voice, banners, lanes, speed limits) and the roads of the route for RouteAnalysis.
  */
 object OrsGuide {
   private val json = Json { ignoreUnknownKeys = true }
 
   /** The OSRM answer for Ferrostar, and the roads of the route for RouteAnalysis (null without roads). */
-  class Output(val osrm: String, val attributes: String?, val matched: Int)
+  class Output(val osrm: String, val attributes: String?, val roads: Int)
 
-  /** The OSRM answer of route [index] of openrouteservice's GeoJSON [text]; null when it has no instructions. */
+  /** The OSRM answer of route [index] of the engine's GeoJSON [text]; null when it has no instructions. */
   fun osrm(text: String, index: Int = 0): String? = build(text, index)?.osrm
 
   /**
-   * Route [index] of openrouteservice's GeoJSON [text] guided by its instructions. [roads]: the
-   * road of every piece of the line (RoadsIndex.along), [heavy]: a lorry or a bus (its own speed
-   * limits), [countryOf]: the ISO code of the country at a point.
+   * Route [index] of the engine's GeoJSON [text] guided by its instructions. [heavy]: a lorry or a
+   * bus (its own speed limits), [countryOf]: the ISO code of the country at a point.
    */
-  fun build(
-      text: String,
-      index: Int = 0,
-      roads: ((List<GeographicCoordinate>) -> Array<app.navmaster.truck.data.RoadsIndex.On?>)? = null,
-      heavy: Boolean = false,
-      countryOf: ((Double, Double) -> String?)? = null,
-  ): Output? {
+  fun build(text: String, index: Int = 0, heavy: Boolean = false, countryOf: ((Double, Double) -> String?)? = null): Output? {
     val root = json.parseToJsonElement(text).jsonObject
     val f = root["features"]?.jsonArray?.getOrNull(index)?.jsonObject ?: return null
     val coords = f["geometry"]?.jsonObject?.get("coordinates")?.jsonArray ?: return null
@@ -57,24 +46,10 @@ object OrsGuide {
     val wayPoints = props["way_points"]?.jsonArray?.mapNotNull { it.jsonPrimitive.intOrNull } ?: listOf(0, n - 1)
     val totalD = props["summary"]?.jsonObject?.get("distance")?.jsonPrimitive?.doubleOrNull ?: cum[n - 1]
     val totalT = props["summary"]?.jsonObject?.get("duration")?.jsonPrimitive?.doubleOrNull ?: 0.0
-    // what openrouteservice says of each piece (tolls, motorway / tunnel / ferry, kind of road)
-    val extras = props["extras"]?.jsonObject
-    fun extra(key: String): IntArray {
-      val a = IntArray(maxOf(0, n - 1)) { -1 }
-      extras?.get(key)?.jsonObject?.get("values")?.jsonArray?.forEach { v ->
-        val t = v.jsonArray
-        val from = t.getOrNull(0)?.jsonPrimitive?.intOrNull ?: return@forEach
-        val to = t.getOrNull(1)?.jsonPrimitive?.intOrNull ?: return@forEach
-        val value = t.getOrNull(2)?.jsonPrimitive?.intOrNull ?: return@forEach
-        for (i in from.coerceAtLeast(0) until to.coerceAtMost(a.size)) a[i] = value
-      }
-      return a
-    }
-    val tollX = extra("tollways")
-    val catX = extra("waycategory")
-    val typeX = extra("waytype")
-    val on = runCatching { roads?.invoke(pts) }.getOrNull() ?: arrayOfNulls(maxOf(0, n - 1))
-    val matched = on.count { it != null }
+    // the roads of the route, from the graph (one per edge)
+    val roads = RouteRoad.parse(props)
+    val on = RouteRoad.perSegment(roads, n)
+    val points = RouteRoad.parsePoints(props)
 
     val b = StringBuilder(64 * 1024)
     b.append("{\"code\":\"Ok\",\"routes\":[{\"distance\":").append(num(totalD)).append(",\"duration\":").append(num(totalT))
@@ -94,7 +69,7 @@ object OrsGuide {
       val lt = seg.jsonObject["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0
       b.append("{\"distance\":").append(num(ld)).append(",\"duration\":").append(num(lt)).append(",\"weight\":").append(num(lt))
           .append(",\"summary\":\"\",\"via_waypoints\":[],\"annotation\":{")
-      // per point segment: the time of the leg spread by distance (no speed limits without the graph)
+      // per point segment: the time of the leg spread by distance; the speed limit of the road
       val legLen = (cum[lp1] - cum[lp0]).coerceAtLeast(1.0)
       val dd = StringBuilder(); val du = StringBuilder(); val sp = StringBuilder(); val mx = StringBuilder()
       for (i in lp0 until lp1) {
@@ -104,7 +79,7 @@ object OrsGuide {
         dd.append(String.format(Locale.ROOT, "%.1f", d))
         du.append(String.format(Locale.ROOT, "%.3f", t))
         sp.append(String.format(Locale.ROOT, "%.1f", if (t > 0) d / t else 0.0))
-        val lim = on.getOrNull(i)?.let { it.road.limit(it.forward, heavy) }
+        val lim = on.getOrNull(i)?.limit(heavy)
         if (lim != null && lim > 0) mx.append("{\"speed\":").append(Math.round(lim)).append(",\"unit\":\"km/h\"}")
         else mx.append("{\"unknown\":true}")
       }
@@ -126,22 +101,22 @@ object OrsGuide {
       b.append("{\"name\":\"\",\"distance\":0,\"location\":[").append(num6(pts[i].lng)).append(',').append(num6(pts[i].lat)).append("]}")
     }
     b.append("]}")
-    val attributes = if (matched == 0 && countryOf == null) null else attributes(pts, cum, on, tollX, catX, typeX, countryOf)
-    return Output(b.toString(), attributes, matched)
+    val attributes = if (roads.isEmpty()) null else attributes(pts, cum, roads, points, countryOf)
+    return Output(b.toString(), attributes, roads.size)
   }
 
   /**
    * The lanes before manoeuvre [s]: the turn lanes of the road arriving at it (or of the road before
-   * it when close), each lane's arrows and whether it goes the route's way (as GhGuide).
+   * it when close), each lane's arrows and whether it goes the route's way.
    */
-  private fun lanesAt(s: Step, on: Array<app.navmaster.truck.data.RoadsIndex.On?>, cum: DoubleArray): List<Array<String>>? {
+  private fun lanesAt(s: Step, on: Array<RouteRoad?>, cum: DoubleArray): List<Array<String>>? {
     if (s.type == "depart" || s.type == "arrive" || s.p0 <= 0) return null
     var tl: String? = null
     var k = s.p0 - 1
     while (k >= 0) {
       val o = on.getOrNull(k)
       if (o != null) {
-        tl = o.road.turns(o.forward)
+        tl = o.turnLanes
         if (tl != null) break
       }
       if (cum[s.p0] - cum[k] > 150) break
@@ -198,79 +173,134 @@ object OrsGuide {
   }
 
   /**
-   * The roads of the route in the form RouteAnalysis reads (as GhGuide writes them): one edge per
-   * stretch on the same road; where no road is known, the kind of road openrouteservice says.
+   * The roads of the route in the form RouteAnalysis reads: one edge per road of the graph, cut
+   * at toll booths, gantries and border controls (the node then ends the edge), with the signed
+   * limits, the direction signs (destination tags, motorway junctions) and the lanes.
    */
-  private fun attributes(
-      pts: List<GeographicCoordinate>, cum: DoubleArray, on: Array<app.navmaster.truck.data.RoadsIndex.On?>,
-      toll: IntArray, cat: IntArray, type: IntArray, countryOf: ((Double, Double) -> String?)?,
-  ): String {
+  private fun attributes(pts: List<GeographicCoordinate>, cum: DoubleArray, roads: List<RouteRoad>, points: List<RoutePoint>, countryOf: ((Double, Double) -> String?)?): String {
     val n = pts.size
     val b = StringBuilder(32 * 1024)
-    // only the roads of the light packages have their way: the others are matched by distance
-    b.append("{\"units\":\"kilometers\",\"partial_ways\":true,\"shape\":")
+    b.append("{\"units\":\"kilometers\",\"shape\":")
     q(b, Geo.encodePolyline6(pts))
     val admins = mutableListOf<String>()
     val edges = StringBuilder()
-    fun key(i: Int): String {
-      val o = on.getOrNull(i)
-      return if (o != null) "r${o.road.osm}:${o.forward}" else "x${cat.getOrElse(i) { -1 }}:${type.getOrElse(i) { -1 }}:${toll.getOrElse(i) { -1 }}"
-    }
-    var from = 0
-    var i = 0
-    while (from < n - 1) {
-      val k = key(from)
-      i = from + 1
-      while (i < n - 1 && key(i) == k) i++
-      val o = on.getOrNull(from)
-      val c = cat.getOrElse(from) { -1 }.coerceAtLeast(0)
-      val t = type.getOrElse(from) { -1 }
-      val ferry = c and 4 != 0 || t == 9
-      val rc = o?.road?.roadClass ?: when {
-        c and 1 != 0 -> "motorway"
-        t == 1 -> "primary"
-        t == 2 -> "secondary"
-        t == 3 -> "residential"
-        else -> "service_other"
+    var prevLink = false
+    for (r in roads) {
+      val from = r.from.coerceIn(0, n - 1)
+      val to = r.to.coerceIn(from, n - 1)
+      if (to <= from && !(from == 0 && to == 0)) continue
+      // the pieces of this road: cut where a toll booth / gantry / border control stands
+      val cuts = (r.nodes.map { it.second }.filter { it > from && it < to }.sorted() + to).distinct()
+      var a = from
+      for (c in cuts) {
+        val nodeType = r.nodes.firstOrNull { it.second == c }?.first
+        if (edges.isNotEmpty()) edges.append(',')
+        edges.append("{\"way_id\":").append(r.way).append(",\"road_class\":")
+        q(edges, r.roadClass)
+        edges.append(",\"use\":")
+        q(edges, if (r.ferry) "ferry" else if (r.link) "ramp" else "road")
+        edges.append(",\"toll\":").append(r.toll).append(",\"surface\":")
+        q(edges, when (r.surface) {
+          "asphalt", "concrete", "paved", "metal", "wood" -> "paved_smooth"
+          "paving_stones" -> "paved_rough"
+          "compacted_gravel" -> "compacted"
+          "gravel" -> "gravel"
+          "dirt", "ground", "grass", "grass_paver", "sand", "unpaved", "ice" -> "dirt"
+          else -> "paved"
+        })
+        edges.append(",\"lane_count\":").append(r.lanes ?: 1)
+            .append(",\"length\":").append(String.format(Locale.ROOT, "%.4f", (cum[c] - cum[a]) / 1000))
+            .append(",\"begin_shape_index\":").append(a).append(",\"end_shape_index\":").append(c)
+            .append(",\"tunnel\":").append(r.tunnel).append(",\"bridge\":").append(r.bridge)
+            .append(",\"roundabout\":").append(r.roundabout)
+        r.maxspeed?.takeIf { it > 0 }?.let { edges.append(",\"speed_limit\":").append(it) }
+        r.turnLanes?.let { edges.append(",\"turn_lanes\":").append(JsonPrimitive(it)) }
+        val names = r.names
+        if (names.isNotEmpty()) edges.append(",\"names\":").append(names.joinToString(",", "[", "]") { JsonPrimitive(it).toString() })
+        if (r.limits.isNotEmpty()) {
+          edges.append(",\"limits\":{").append(r.limits.entries.joinToString(",") { (k, v) -> JsonPrimitive(k).toString() + ":" + String.format(Locale.ROOT, "%.2f", v) }).append('}')
+        }
+        if (r.hazmat) edges.append(",\"hazmat\":true")
+        r.adrTunnel?.let { edges.append(",\"adr_tunnel\":").append(JsonPrimitive(it)) }
+        if (r.conditional.isNotEmpty()) edges.append(",\"conditional\":").append(r.conditional.joinToString(",", "[", "]") { JsonPrimitive(it).toString() })
+        r.laneSigns?.let { ls ->
+          edges.append(",\"lane_signs\":{\"destination\":").append(JsonPrimitive(ls.destination)).append(",\"ref\":").append(JsonPrimitive(ls.ref))
+              .append(",\"colour\":").append(JsonPrimitive(ls.colour)).append('}')
+        }
+        // the direction sign at the start of a ramp (exit number and name of the motorway junction,
+        // destinations of the way or of a destination_sign relation)
+        if (a == from && (r.exit != null || r.sign != null || (r.link && !prevLink && (r.destination != null || r.destinationRef != null)))) {
+          val exitRef = r.exit?.substringBefore('|')?.takeIf { it.isNotBlank() }
+          val exitName = r.exit?.substringAfter('|', "")?.takeIf { it.isNotBlank() }
+          val toward = r.sign?.destination?.takeIf { it.isNotBlank() } ?: r.destination
+          val branch = r.sign?.ref?.takeIf { it.isNotBlank() } ?: r.destinationRef
+          edges.append(",\"sign\":{\"exit_number\":").append(texts(exitRef)).append(",\"exit_branch\":").append(texts(branch))
+              .append(",\"exit_toward\":").append(texts(toward)).append(",\"exit_name\":").append(texts(exitName))
+          r.sign?.colour?.takeIf { it.isNotBlank() }?.let { edges.append(",\"colour\":").append(JsonPrimitive(it)) }
+          edges.append('}')
+        }
+        edges.append(",\"begin_heading\":").append(heading(pts, a, 1)).append(",\"end_heading\":").append(heading(pts, c, -1))
+        val cc = countryOf?.invoke(pts[c].lat, pts[c].lng)
+        var ai = -1
+        if (cc != null) {
+          ai = admins.indexOf(cc)
+          if (ai < 0) { admins += cc; ai = admins.size - 1 }
+        }
+        edges.append(",\"end_node\":{")
+        if (ai >= 0) edges.append("\"admin_index\":").append(ai).append(',')
+        edges.append("\"type\":")
+        q(edges, nodeType ?: "street_intersection")
+        // the other roads leaving the end of this road (only at the real end of the edge)
+        if (c == to && r.branches.isNotEmpty()) {
+          edges.append(",\"intersecting_edges\":[")
+          for ((k, br) in r.branches.withIndex()) {
+            if (k > 0) edges.append(',')
+            val drive = when { br.access && br.accessBack -> "both"; br.access -> "forward"; br.accessBack -> "backward"; else -> "none" }
+            val rc = when (br.cls) { "living_street" -> "residential"; "service", "road", "other", "track" -> "service_other"; else -> br.cls }
+            edges.append("{\"driveability\":").append(JsonPrimitive(drive)).append(",\"use\":").append(JsonPrimitive(if (br.link) "ramp" else "road"))
+                .append(",\"begin_heading\":").append(Math.round(br.heading)).append(",\"road_class\":").append(JsonPrimitive(rc))
+                .append(",\"lane_count\":").append(br.lanes ?: 1).append(",\"way_id\":").append(br.way)
+            val bExitRef = br.exit?.substringBefore('|')?.takeIf { it.isNotBlank() }
+            val bExitName = br.exit?.substringAfter('|', "")?.takeIf { it.isNotBlank() }
+            val bToward = br.sign?.destination?.takeIf { it.isNotBlank() } ?: br.destination
+            val bBranch = br.sign?.ref?.takeIf { it.isNotBlank() } ?: br.destinationRef
+            if (bExitRef != null || bToward != null || bBranch != null) {
+              edges.append(",\"sign\":{\"exit_number\":").append(texts(bExitRef)).append(",\"exit_branch\":").append(texts(bBranch))
+                  .append(",\"exit_toward\":").append(texts(bToward)).append(",\"exit_name\":").append(texts(bExitName))
+              br.sign?.colour?.takeIf { it.isNotBlank() }?.let { edges.append(",\"colour\":").append(JsonPrimitive(it)) }
+              edges.append('}')
+            }
+            edges.append('}')
+          }
+          edges.append(']')
+        }
+        edges.append("}}")
+        a = c
       }
-      val use = when {
-        ferry -> "ferry"
-        o?.road?.isLink == true -> "ramp"
-        else -> "road"
-      }
-      val isToll = o?.road?.toll == true || toll.getOrElse(from) { 0 } == 1
-      val tunnel = o?.road?.tunnel == true || c and 32 != 0
-      if (edges.isNotEmpty()) edges.append(',')
-      edges.append("{\"way_id\":").append(o?.road?.osm ?: 0).append(",\"road_class\":")
-      q(edges, rc)
-      edges.append(",\"use\":")
-      q(edges, use)
-      edges.append(",\"toll\":").append(isToll).append(",\"surface\":")
-      q(edges, if (c and 8 != 0) "dirt" else "paved")
-      edges.append(",\"lane_count\":").append(o?.let { it.road.laneCount(it.forward) } ?: 1)
-          .append(",\"length\":").append(String.format(Locale.ROOT, "%.4f", (cum[i] - cum[from]) / 1000))
-          .append(",\"begin_shape_index\":").append(from).append(",\"end_shape_index\":").append(i)
-          .append(",\"tunnel\":").append(tunnel).append(",\"bridge\":").append(o?.road?.bridge == true)
-          .append(",\"roundabout\":").append(o?.road?.roundabout == true)
-      o?.road?.limit(o.forward, false)?.takeIf { it > 0 }?.let { edges.append(",\"speed_limit\":").append(Math.round(it)) }
-      o?.let { it.road.turns(it.forward) }?.takeIf { it.isNotBlank() }?.let { edges.append(",\"turn_lanes\":").append(JsonPrimitive(it)) }
-      val names = listOfNotNull(o?.road?.ref, o?.road?.name).flatMap { it.split(";").map(String::trim) }.filter { it.isNotEmpty() }
-      if (names.isNotEmpty()) edges.append(",\"names\":").append(names.joinToString(",", "[", "]") { JsonPrimitive(it).toString() })
-      val cc = countryOf?.invoke(pts[i].lat, pts[i].lng)
-      var ai = -1
-      if (cc != null) {
-        ai = admins.indexOf(cc)
-        if (ai < 0) { admins += cc; ai = admins.size - 1 }
-      }
-      edges.append(",\"end_node\":{")
-      if (ai >= 0) edges.append("\"admin_index\":").append(ai).append(',')
-      edges.append("\"type\":\"street_intersection\"}}")
-      from = i
+      prevLink = r.link
     }
     b.append(",\"admins\":[")
     b.append(admins.joinToString(",") { "{\"country_code\":${JsonPrimitive(it)}}" })
-    b.append("],\"edges\":[").append(edges).append("]}")
+    b.append("],\"edges\":[").append(edges).append("],\"points\":[")
+    for ((k, p) in points.withIndex()) {
+      if (k > 0) b.append(',')
+      b.append("{\"type\":").append(JsonPrimitive(p.type)).append(",\"lat\":").append(num6(p.lat)).append(",\"lon\":").append(num6(p.lon))
+          .append(",\"value\":").append(p.valueKmh).append(",\"bearing\":").append(p.bearing).append(",\"offset\":").append(num(p.offsetM))
+          .append(",\"distance\":").append(num(p.distanceM)).append('}')
+    }
+    b.append("]}")
     return b.toString()
+  }
+
+  /** Texts of a sign ("A; B" → two entries) in the form RouteAnalysis reads. */
+  private fun texts(v: String?): String = (v?.split(";")?.map(String::trim)?.filter { it.isNotEmpty() } ?: emptyList()).joinToString(",", "[", "]") { "{\"text\":${JsonPrimitive(it)}}" }
+
+  /** The direction of the line at point [i] (degrees), looking [dir] = 1 forward, -1 backward. */
+  private fun heading(pts: List<GeographicCoordinate>, i: Int, dir: Int): Int {
+    val j = (i + dir).coerceIn(0, pts.size - 1)
+    if (j == i) return 0
+    val h = if (dir > 0) Geo.bearing(pts[i], pts[j]) else Geo.bearing(pts[j], pts[i])
+    return ((h.toInt() % 360) + 360) % 360
   }
 
   private data class Step(

@@ -41,6 +41,16 @@ data class EdgeInfo(
     val sign: EdgeSign? = null,
     /** The arrows painted on the lanes (OSM turn:lanes, "through|through|slight_right"), null when not mapped. */
     val turnLanes: String? = null,
+    /** The limits signed on this road: maxheight, maxwidth, maxlength (m), maxweight, maxaxleload (t). */
+    val limits: Map<String, Double> = emptyMap(),
+    /** Closed to dangerous goods (hazmat=no). */
+    val hazmat: Boolean = false,
+    /** ADR tunnel category as a rank (2 = B … 5 = E), 0 when none. */
+    val adrTunnel: Int = 0,
+    /** Restrictions valid only at some hours, as OSM writes them ("maxweight:conditional=3.5 @ (Mo-Fr 07:00-19:00)"). */
+    val conditional: List<String> = emptyList(),
+    /** The signs over the lanes at the end of this road (destination:lanes and the like, lanes separated by |). */
+    val laneSigns: EdgeLaneSigns? = null,
 ) {
   /** Road numbers only: "A14", "SS16", "E45", "DN1". */
   val refs: List<String>
@@ -83,8 +93,14 @@ data class LaneDest(val towns: List<String>, val refs: List<String>, val colour:
 /** The signs over the lanes before a junction of the route (left to right), where the lanes split. */
 data class LaneSigns(val atM: Double, val lanes: List<LaneDest>)
 
+/** The raw lane signs of a road: the lanes separated by "|", the texts of one lane by ";". */
+data class EdgeLaneSigns(val destination: String, val ref: String, val colour: String)
+
+/** A camera or an average-speed section point on the route, with where it is along the route. */
+data class RoutePointAt(val type: String, val alongM: Double, val lat: Double, val lon: Double, val valueKmh: Int, val bearing: Int)
+
 /** A road leaving a junction of the route that the route does not take (from the graph). */
-data class Branch(val heading: Double, val roadClass: String, val lanes: Int, val use: String)
+data class Branch(val heading: Double, val roadClass: String, val lanes: Int, val use: String, val wayId: Long = 0, val sign: EdgeSign? = null)
 
 /**
  * The shape of a junction of the route: the direction the route arrives with and leaves with,
@@ -219,6 +235,9 @@ class RouteAnalysis(
   /** The junctions of the route with the directions of their roads (from the graph). */
   @Volatile var junctionShapes: List<JunctionShape> = emptyList()
 
+  /** Speed cameras, average-speed sections and red-light cameras on the route, from the graph. */
+  @Volatile var points: List<RoutePointAt> = emptyList()
+
   /** The junction closest to this point of the route (within [tolM]). */
   fun junctionShapeNear(alongM: Double, tolM: Double = 45.0): JunctionShape? =
       junctionShapes.filter { kotlin.math.abs(it.atM - alongM) <= tolM }.minByOrNull { kotlin.math.abs(it.atM - alongM) }
@@ -296,30 +315,34 @@ class RouteAnalysis(
     }
 
     /**
-     * The roads of the route from GraphHopper's graph (GhGuide: shape, admins, edges): kept when GraphHopper guided the route, else read by following its line on the
-     * graph; an analysis without edges when there is no graph.
+     * The roads of the route from the engine's graph (OrsGuide's attributes: shape, admins, edges),
+     * kept when the route was computed; an analysis without edges for a route that was not.
      */
     fun analyse(route: Route, vehicle: VehicleProfile, loadT: Double): RouteAnalysis {
       if (route.geometry.size < 2) return RouteAnalysis(route, emptyList())
       val started = System.currentTimeMillis()
-      val gh = app.navmaster.truck.AppGraph.gh
-      val raw = gh.attributesFor(route)
-          ?: runCatching { gh.attributesAlong(route, vehicle.ghSpec(loadT, app.navmaster.truck.vehicle.TripOptions())) }
-              .onFailure { Log.w(TAG, "GraphHopper roads along the route: $it") }.getOrNull()
-          ?: return RouteAnalysis(route, emptyList())
-      val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "GraphHopper roads: $it") }.getOrNull()
+      val raw = app.navmaster.truck.AppGraph.routes.attributesFor(route) ?: return RouteAnalysis(route, emptyList())
+      val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "engine roads: $it") }.getOrNull()
           ?: return RouteAnalysis(route, emptyList())
       val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
       a.junctionShapes = p.shapes
       a.partialWays = p.partial
-      Log.i(TAG, "GraphHopper roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
+      a.points = p.points
+      Log.i(TAG, "engine roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
           "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
           "junctions ${p.junctions.size}, shapes ${p.shapes.size}")
       return a
     }
 
     private class Parsed(val edges: List<EdgeInfo>, val nodes: List<RouteNode>, val junctions: DoubleArray,
-                         val shapes: List<JunctionShape> = emptyList(), val partial: Boolean = false)
+                         val shapes: List<JunctionShape> = emptyList(), val partial: Boolean = false, val points: List<RoutePointAt> = emptyList())
+
+    private fun signOf(o: JsonObject?): EdgeSign? {
+      val signObj = o ?: return null
+      fun texts(k: String): List<String> =
+          (signObj[k] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.str("text")?.takeIf { t -> t.isNotBlank() } } ?: emptyList()
+      return EdgeSign(texts("exit_number"), texts("exit_branch"), texts("exit_toward"), texts("exit_name"), signObj.str("colour")).takeIf { !it.isEmpty }
+    }
 
     private fun parse(raw: String): Parsed {
       val none = Parsed(emptyList(), emptyList(), DoubleArray(0))
@@ -340,11 +363,7 @@ class RouteAnalysis(
         val adminIdx = endNode?.int("admin_index")
         endNode?.str("type")?.takeIf { it in NODE_TYPES }?.let { nodes += RouteNode(cum[en], it) }
         // a crossing: another road a vehicle can drive leaves this node (footways and the like do not count)
-        val signObj = e["sign"] as? JsonObject
-        fun texts(k: String): List<String> =
-            (signObj?.get(k) as? JsonArray)?.mapNotNull { (it as? JsonObject)?.str("text")?.takeIf { t -> t.isNotBlank() } } ?: emptyList()
-        val sign = signObj?.let { EdgeSign(texts("exit_number"), texts("exit_branch"), texts("exit_toward"), texts("exit_name")) }
-            ?.takeIf { !it.isEmpty }
+        val sign = signOf(e["sign"] as? JsonObject)
         val crossing = (endNode?.get("intersecting_edges") as? JsonArray)?.any { x ->
           val o = x as? JsonObject ?: return@any false
           o.str("driveability") in DRIVABLE && o.str("use") !in NOT_ROADS
@@ -355,7 +374,7 @@ class RouteAnalysis(
           val o = x as? JsonObject ?: return@mapNotNull null
           if (o.str("driveability") !in setOf("forward", "both") || o.str("use") in NOT_ROADS) return@mapNotNull null
           val h = o["begin_heading"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
-          Branch(h, o.str("road_class") ?: "", o.int("lane_count") ?: 1, o.str("use") ?: "road")
+          Branch(h, o.str("road_class") ?: "", o.int("lane_count") ?: 1, o.str("use") ?: "road", o["way_id"]?.jsonPrimitive?.longOrNull ?: 0L, signOf(o["sign"] as? JsonObject))
         } ?: emptyList()
         if (branches.isNotEmpty()) {
           val next = edges.getOrNull(idx + 1) as? JsonObject
@@ -381,9 +400,19 @@ class RouteAnalysis(
             names = e["names"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
             sign = sign,
             turnLanes = e.str("turn_lanes")?.takeIf { it.isNotBlank() },
+            limits = (e["limits"] as? JsonObject)?.mapNotNull { (k, v) -> v.jsonPrimitive.doubleOrNull?.let { k to it } }?.toMap() ?: emptyMap(),
+            hazmat = e.bool("hazmat") ?: false,
+            adrTunnel = e.str("adr_tunnel")?.let { "BCDE".indexOf(it.trim().uppercase()) }?.takeIf { it >= 0 }?.let { it + 2 } ?: 0,
+            conditional = (e["conditional"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
+            laneSigns = (e["lane_signs"] as? JsonObject)?.let { ls -> EdgeLaneSigns(ls.str("destination") ?: "", ls.str("ref") ?: "", ls.str("colour") ?: "") },
         )
       }
-      return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes, root["partial_ways"]?.jsonPrimitive?.booleanOrNull == true)
+      val points = (root["points"] as? JsonArray)?.mapNotNull { x ->
+        val o = x as? JsonObject ?: return@mapNotNull null
+        RoutePointAt(o.str("type") ?: return@mapNotNull null, o["offset"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null,
+            o["lat"]?.jsonPrimitive?.doubleOrNull ?: 0.0, o["lon"]?.jsonPrimitive?.doubleOrNull ?: 0.0, o.int("value") ?: 0, o.int("bearing") ?: -1)
+      } ?: emptyList()
+      return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes, root["partial_ways"]?.jsonPrimitive?.booleanOrNull == true, points)
     }
 
     private val NODE_TYPES = setOf("toll_booth", "toll_gantry", "border_control")

@@ -133,10 +133,10 @@ data class VehicleProfile(
  * streets; for campers and cars it is the fastest), the shortest.
  */
 @Serializable
-enum class RouteKind(val label: String, val gh: Int) {
-  FASTEST("Più veloce", 0),
-  MOTORWAY("Più autostrada", 1),
-  SHORTEST("Più corto", 2),
+enum class RouteKind(val label: String) {
+  FASTEST("Più veloce"),
+  RECOMMENDED("Consigliato"),
+  SHORTEST("Più corto"),
 }
 
 /** Choices that change from trip to trip (and during a trip). */
@@ -147,10 +147,7 @@ data class TripOptions(
     val shortest: Boolean = false,
     val route: RouteKind = RouteKind.FASTEST,
     val alternates: Int = 0,
-    /**
-     * The "more routes" the driver asks for: GraphHopper's alternatives on the tablet (also when
-     * openrouteservice gave the first ones).
-     */
+    /** The "more routes" the driver asks for (the engine's alternatives, when it has them). */
     val moreRoutes: Boolean = false,
     /** Rings of [lon, lat] the route must not touch (points the driver chose to avoid). */
     val excludePolygons: List<List<List<Double>>> = emptyList(),
@@ -159,15 +156,11 @@ data class TripOptions(
      * already computed, so that the route takes them on the right carriageway of a motorway.
      */
     val viaHeadings: Map<String, Double> = emptyMap(),
-    /** Roads (OpenStreetMap way ids) of the route the driver left: made three times as costly ("keep this road"). */
-    val avoidWays: Set<Long> = emptySet(),
     /**
      * A choice computed next to the main route (another kind, without tolls): searched with a
      * short time limit and without the "fewest limits" retry, so that it never keeps the tablet busy.
      */
     val quick: Boolean = false,
-    /** "Più autostrada": how strongly it keeps to the motorway, 1 (mild) to 5 (almost never off it). */
-    val motorwayLevel: Int = 3,
 ) {
   companion object {
     fun pointKey(lat: Double, lon: Double): String = String.format(java.util.Locale.ROOT, "%.5f,%.5f", lat, lon)

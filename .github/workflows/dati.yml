@@ -226,9 +226,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # the GraphHopper data of the country (made by grafo-gh.yml) stay in the package
+          # the engine graph of the country (made by grafo-nm.yml) stays in the package
           gh release download "dati-${{ matrix.region }}" -R "${{ github.repository }}" -p manifest.json -D old 2>/dev/null || true
-          # a package is published only when map and limits are there (the routing graph is GraphHopper)
+          # a package is published only when map and limits are there (the routing graph comes from grafo-nm.yml)
           have() { ls pkg/$1* >/dev/null 2>&1; }
           if ! have mappa.pmtiles || ! have limiti.sqlite; then echo "none=1" >> $GITHUB_OUTPUT; ls -la pkg || true; exit 0; fi
           python3 - <<'PY'
@@ -251,16 +251,16 @@ jobs:
                   total += size
                   plist.append({"name": p, "size": size, "sha256": h.hexdigest()})
               items.append({"file": base, "size": total, "parts": plist})
-          gh_keep, gh_version = [], ""
+          nm_keep, nm_version = [], ""
           if os.path.exists("old/manifest.json"):
               old = json.load(open("old/manifest.json"))
-              gh_keep = [f for f in old.get("files", []) if f["file"] in ("gh.tar.gz", "gh-camion.tar.gz", "gh-auto.tar.gz")]
-              gh_version = old.get("graphhopper", "")
-          items += gh_keep
+              nm_keep = [f for f in old.get("files", []) if f["file"] == "nm.tar.gz"]
+              nm_version = old.get("engine", "")
+          items += nm_keep
           manifest = {"region": region, "label": names.get(region, "Prova Rimini / San Marino"),
-                      "built": time.strftime("%Y-%m-%d"), "routing": "graphhopper", "format": 2, "files": items}
-          if gh_keep:
-              manifest["graphhopper"] = gh_version
+                      "built": time.strftime("%Y-%m-%d"), "routing": "navmaster", "format": 3, "files": items}
+          if nm_keep:
+              manifest["engine"] = nm_version
           json.dump(manifest, open("pkg/manifest.json", "w"), indent=1)
           print(json.dumps(manifest, indent=1))
           PY
@@ -272,9 +272,9 @@ jobs:
           TAG="dati-${{ matrix.region }}"
           R="${{ github.repository }}"
           if gh release view "$TAG" -R "$R" >/dev/null 2>&1; then
-            # the release stays: the GraphHopper files (grafo-gh.yml) are kept, the other old files go
+            # the release stays: the engine graph (grafo-nm.yml) is kept, the other old files go
             for a in $(gh release view "$TAG" -R "$R" --json assets -q '.assets[].name'); do
-              case "$a" in gh.tar.gz*|gh-camion.tar.gz*|gh-auto.tar.gz*) continue ;; esac
+              case "$a" in nm.tar.gz*) continue ;; esac
               [ -f "pkg/$a" ] || gh release delete-asset "$TAG" "$a" -R "$R" --yes
             done
             gh release upload "$TAG" pkg/* -R "$R" --clobber

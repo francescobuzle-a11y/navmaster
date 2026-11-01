@@ -61,10 +61,10 @@ start --es nm_sheet search_guided; sleep 9; shot 04b_ricerca_guidata
 # route choice: variants, tolls advice, difficulties
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true
 sleep 30; shot 05_scelta_percorso
-# "Altri percorsi": GraphHopper's alternatives added on request
+# "Altri percorsi": the engine's alternatives added on request
 start --es nm_dest "43.9360,12.4460" --es nm_label "'San Marino'" --es nm_profile camion --es nm_load 12 --ez nm_plan true --ez nm_more true
 sleep 40; shot 05s_altri_percorsi
-adb logcat -d -s NavMasterRoute:* NavMasterVM:* | grep -E "GraphHopper route [0-9]|more routes|variant " | tail -16 >> "$INFO" || true
+adb logcat -d -s NavMasterRoute:* NavMasterVM:* | grep -E "route [0-9]+/[0-9]+ guided|more routes|variant " | tail -16 >> "$INFO" || true
 # long press on the map with a route on screen: go / pass here / avoid this zone
 adb shell input swipe 1900 700 1900 700 1600; sleep 3; shot 05i_punto_sulla_mappa
 # moving the map with a finger: the routes go down to a small bar, the map stays free
@@ -222,6 +222,6 @@ adb shell wm size reset; adb shell wm density reset; sleep 3
 log
 grep -E "live|detour|direction of travel|report|personal feed|waze direct|lane signs|national|simtest|simulation: jump|say:|say \(|queued|real junction|shared" "$OUT/logcat.txt" | head -120 >> "$INFO"
 grep -E "probe |route computed|scan:|criticalities|edges in|variant |advice|toll check|booth|FATAL|Exception" "$OUT/logcat.txt" | head -80 >> "$INFO"
-echo "== GraphHopper" >> "$INFO"
-grep -E "GraphHopper|openrouteservice" "$OUT/logcat.txt" | head -60 >> "$INFO"
+echo "== Motore" >> "$INFO"
+grep -E "engine|openrouteservice|NavMasterRoute" "$OUT/logcat.txt" | head -60 >> "$INFO"
 echo done >> "$INFO"

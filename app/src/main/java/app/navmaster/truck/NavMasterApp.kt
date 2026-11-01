@@ -10,9 +10,9 @@ import app.navmaster.truck.location.SmartLocationProvider
 import app.navmaster.truck.poi.PoiIndex
 import app.navmaster.truck.data.RoadsIndex
 import app.navmaster.truck.routing.CriticalityFinder
-import app.navmaster.truck.routing.GhRouting
+import app.navmaster.truck.routing.NmEngine
+import app.navmaster.truck.routing.NmRouting
 import app.navmaster.truck.routing.OfflineRouteProvider
-import app.navmaster.truck.routing.OrsRouting
 import app.navmaster.truck.search.AddressIndex
 import app.navmaster.truck.search.PlaceIndex
 import app.navmaster.truck.search.RecentStore
@@ -65,16 +65,18 @@ object AppGraph {
   val profiles by lazy { ProfileStore(app) }
   val catalog by lazy { CatalogStore(app) }
   val regions by lazy { RegionManager(app, catalog) }
-  /** GraphHopper: the route itself, with the vehicle's measures (see OfflineRouteProvider). */
-  val gh by lazy { GhRouting(app, regions) }
+  /** navmaster-engine on the tablet: the graphs of the downloaded countries (see OfflineRouteProvider). */
+  val engine by lazy { NmEngine(app, regions) }
+  /** The routes computed by the engine with openrouteservice's logic. */
+  val nm by lazy { NmRouting(engine) }
   val limits by lazy { LimitsIndex(regions) }
   val poi by lazy { PoiIndex(regions) }
   val addresses by lazy { AddressIndex(regions) }
   val places by lazy { PlaceIndex(regions) }
   val criticalities by lazy { CriticalityFinder(regions) }
 
-  /** The roads of the light packages, for the guidance online without the graph (OrsGuide). */
-  val roads by lazy { RoadsIndex(regions) }
+  /** The roads around a point, from the engine's graph. */
+  val roads by lazy { RoadsIndex { engine } }
   val recents by lazy { RecentStore(app) }
 
   /** Choices of the trip being driven (tolls, points to avoid): recalculations keep them. */
@@ -98,17 +100,7 @@ object AppGraph {
   fun findRoute(geometry: List<GeographicCoordinate>): Route? =
       recent.firstOrNull { it.geometry.size == geometry.size && it.geometry.firstOrNull() == geometry.firstOrNull() && it.geometry.lastOrNull() == geometry.lastOrNull() }
 
-  /**
-   * The route computed online. Off (12/10/2026, owner's choice): every route is computed by
-   * GraphHopper on the tablet with openrouteservice's rules; openrouteservice itself is not used.
-   * One day: NavMaster's own server with the same GraphHopper and rules.
-   */
-  const val ONLINE_ROUTING = false
-
-  /** openrouteservice online (with a key built into the app), see OrsRouting; not used while ONLINE_ROUTING is off. */
-  val ors: OrsRouting by lazy { OrsRouting(app) { ONLINE_ROUTING && settings.settings.value.onlineRouting } }
-
-  val routes by lazy { OfflineRouteProvider(gh, { profiles.garage.value }, { trip.value }, ors.takeIf { ONLINE_ROUTING }) { remember(it) } }
+  val routes by lazy { OfflineRouteProvider(nm, { profiles.garage.value }, { trip.value }) { remember(it) } }
 
   /** The simulated drive (its speed can be changed while it runs). */
   val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }

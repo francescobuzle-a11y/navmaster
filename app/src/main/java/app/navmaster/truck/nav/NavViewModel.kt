@@ -61,7 +61,7 @@ data class Stop(val coordinate: GeographicCoordinate, val label: String, val via
 
 enum class VariantKind(val label: String) {
   FASTEST("Più veloce"),
-  MOTORWAY("Più autostrada"),
+  RECOMMENDED("Consigliato"),
   SHORTEST("Più corto"),
   NO_TOLL("Senza pedaggi"),
   ALTERNATIVE("Alternativa"),
@@ -69,7 +69,7 @@ enum class VariantKind(val label: String) {
 
 private fun kindOf(k: app.navmaster.truck.vehicle.RouteKind): VariantKind = when (k) {
   app.navmaster.truck.vehicle.RouteKind.FASTEST -> VariantKind.FASTEST
-  app.navmaster.truck.vehicle.RouteKind.MOTORWAY -> VariantKind.MOTORWAY
+  app.navmaster.truck.vehicle.RouteKind.RECOMMENDED -> VariantKind.RECOMMENDED
   app.navmaster.truck.vehicle.RouteKind.SHORTEST -> VariantKind.SHORTEST
 }
 
@@ -221,16 +221,6 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     // everything that has to follow the vehicle while driving
     viewModelScope.launch { super.navigationUiState.collect { onNavUpdate(it) } }
-    // a light package arrived for a trip guided online without it: the route again, with the
-    // limits, speed limits and lanes of the country
-    viewModelScope.launch {
-      AppGraph.regions.lite.drop(1).collect {
-        if (!AppGraph.routes.directWithoutRoads) return@collect
-        Log.i(TAG, "light package arrived: route again")
-        if (navigationUiState.value.isNavigating()) recalcFromHere("Dati del Paese scaricati: aggiorno limiti e corsie.")
-        else if (_plan.value.variants.isNotEmpty() && !_plan.value.computing) planRoutes()
-      }
-    }
     // the lane the vehicle is in, from where the satellite fixes fall across the route
     viewModelScope.launch {
       AppGraph.smartLocation.onRoute.collect { f ->
@@ -366,8 +356,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     viewModelScope.launch(Dispatchers.IO) {
       // no road here: nothing to recalculate from (and no question)
-      val road = runCatching { AppGraph.gh.roadWithin(lat, lon, 45.0) }.getOrNull()
-          ?: runCatching { AppGraph.roads.near(lat, lon, 120.0).any { rd -> roadDistance(rd.pts, lat, lon) <= 45.0 } }.getOrNull()
+      val road = runCatching { AppGraph.roads.near(lat, lon, 120.0).any { rd -> roadDistance(rd.pts, lat, lon) <= 45.0 } }.getOrNull()
       if (road == false) {
         Log.i(TAG, "off the route and off every road (${"%.5f,%.5f".format(java.util.Locale.ROOT, lat, lon)}): waiting for a road")
         return@launch
@@ -431,7 +420,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     var last: DoubleArray? = null
     var m = 100.0
     while (m <= 2_000.0) {
-      val p = AppGraph.gh.ahead(lat, lon, heading, m) ?: runCatching { RoadAhead.along(roads, lat, lon, heading, m) }.getOrNull() ?: return null
+      val p = runCatching { RoadAhead.along(roads, lat, lon, heading, m) }.getOrNull() ?: return null
       // the road ends (no point further on): no rejoin found on it
       val prev = last
       if (prev != null && Geo.dist(prev[0], prev[1], p[0], p[1]) < 20) return null
@@ -501,12 +490,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // old one (before, "keep this road" only put a point 700 m ahead on it, and from there the
     // best way to the destination was, more often than not, straight back onto the old route).
     // A road that rejoins the old route by itself within 2 km (via = rejoin) is not the case.
-    val keepAway = if (via != null) emptySet() else oldRouteWays(_nav.value.analysis, lastOnRouteTraveled)
     _nav.update { it.copy(recalculating = true) }
     viewModelScope.launch(Dispatchers.IO) {
       try {
-        val ahead = via ?: AppGraph.gh.ahead(lat, lon, heading, 700.0)
-            ?: runCatching { RoadAhead.along(AppGraph.roads.near(lat, lon, 1500.0), lat, lon, heading, 700.0) }.getOrNull()
+        val ahead = via ?: runCatching { RoadAhead.along(AppGraph.roads.near(lat, lon, 1500.0), lat, lon, heading, 700.0) }.getOrNull()
             ?: if (!heading.isNaN()) RoadAhead.straight(lat, lon, heading, 400.0) else null
         val vias = mutableListOf<Waypoint>()
         val headings = HashMap<String, Double>()
@@ -515,8 +502,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           headings[TripOptions.pointKey(ahead[0], ahead[1])] = ahead[2]
           Log.i(TAG, "go on along this road: pass-through ${"%.5f,%.5f".format(java.util.Locale.ROOT, ahead[0], ahead[1])} bearing ${ahead[2].toInt()}")
         } else Log.w(TAG, "go on along this road: no point ahead found, plain route from here")
-        val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0, avoidWays = keepAway)
-        if (keepAway.isNotEmpty()) Log.i(TAG, "go on along this road: ${keepAway.size} roads of the old route made costly")
+        val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val r = AppGraph.routes.routes(loc, vias + remainingStops(), options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
           if (_simulating.value) locationProvider.enableSimulationOn(r)
@@ -531,21 +517,6 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         _nav.update { it.copy(recalculating = false) }
       }
     }
-  }
-
-  /**
-   * The OpenStreetMap ways of the old route from 2 km before [leftAt] (no turning back onto it) to
-   * 8 km after it (the stretch the driver chose to leave). Not further: a lorry that took the
-   * wrong exit must still be free to enter the motorway again at the next junction.
-   */
-  private fun oldRouteWays(a: RouteAnalysis?, leftAt: Double): Set<Long> {
-    if (a == null) return emptySet()
-    val out = HashSet<Long>()
-    for (e in a.edges) {
-      if (e.endM < leftAt - 2_000 || e.startM > leftAt + 8_000) continue
-      if (e.wayId > 0) out += e.wayId
-    }
-    return out
   }
 
   /**
@@ -733,52 +704,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   fun selectVariant(i: Int) = _plan.update { it.copy(selected = i.coerceIn(0, (it.variants.size - 1).coerceAtLeast(0))) }
 
-  private var motorwayJob: Job? = null
 
-  /**
-   * The slider on the "more motorway" card: the level is kept (Settings.motorwayLevel) and that
-   * route is computed again with it, in place of the one on the screen (the other routes stay).
-   */
-  fun setMotorwayLevel(level: Int) {
-    val lvl = level.coerceIn(1, 5)
-    AppGraph.settings.update { it.copy(motorwayLevel = lvl) }
-    val req = planRequest ?: return
-    motorwayJob?.cancel()
-    motorwayJob = viewModelScope.launch(Dispatchers.IO) {
-      delay(400)
-      _plan.update { it.copy(motorwayBusy = true) }
-      try {
-        val (from, waypoints, base) = req
-        val kind = app.navmaster.truck.vehicle.RouteKind.MOTORWAY
-        val opts = base.copy(route = kind, quick = true, motorwayLevel = lvl)
-        val r = runCatching { AppGraph.routes.routes(from, waypoints, opts).firstOrNull() }
-            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }.getOrNull()
-        if (planRequest !== req) return@launch
-        if (r == null) {
-          Log.w(TAG, "more motorway level $lvl: no route")
-          return@launch
-        }
-        val built = buildVariant(VariantKind.MOTORWAY, kind.label, r, opts, LocalDateTime.now())
-        if (planRequest !== req) return@launch
-        _plan.update { st ->
-          val at = st.variants.indexOfFirst { it.kind == VariantKind.MOTORWAY }
-          val list = st.variants.toMutableList()
-          if (at >= 0) {
-            list[at] = built.copy(recommended = list[at].recommended)
-            st.copy(variants = list, selected = at)
-          } else {
-            // offered next to the first route (its "= più autostrada" note no longer holds)
-            val cleaned = list.map { v -> v.copy(title = v.title.replace(" = più autostrada", "")) }.toMutableList()
-            cleaned.add(1.coerceAtMost(cleaned.size), built)
-            st.copy(variants = cleaned, selected = 1.coerceAtMost(cleaned.size - 1))
-          }
-        }
-        Log.i(TAG, "more motorway level $lvl: ${(built.distanceM / 1000).roundToInt()} km, ${(built.durationS / 60).roundToInt()} min")
-      } finally {
-        _plan.update { it.copy(motorwayBusy = false) }
-      }
-    }
-  }
 
   /** The driver does not want to go through this point: recompute avoiding it. */
   fun avoid(c: Criticality) {
@@ -832,8 +758,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         // "no motorways": the "more motorway" kind makes no sense, the fastest takes its place
         val avoidMotorways = settings.avoidMotorways
-        val pref = if (avoidMotorways && settings.routeKind == app.navmaster.truck.vehicle.RouteKind.MOTORWAY) app.navmaster.truck.vehicle.RouteKind.FASTEST else settings.routeKind
-        val base = TripOptions(avoidTolls = avoidTolls, avoidMotorways = avoidMotorways, excludePolygons = exclusions, route = pref, motorwayLevel = settings.motorwayLevel)
+        val pref = settings.routeKind
+        val base = TripOptions(avoidTolls = avoidTolls, avoidMotorways = avoidMotorways, excludePolygons = exclusions, route = pref)
         // 1. the routes of the kind the driver prefers (the best one and an alternative) with the
         //    vehicle's measures: shown as soon as they are there, the driver can start at once
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))
@@ -863,7 +789,6 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val crowKm = (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0
         val kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
             .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
-            .filter { it != app.navmaster.truck.vehicle.RouteKind.MOTORWAY || !avoidMotorways }
         val tryNoToll = !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
         val extras = kinds.isNotEmpty() || tryNoToll
         Log.i(TAG, "plan: ${first.size} route(s) shown, then ${kinds.joinToString { it.name }}${if (tryNoToll) " + no toll" else ""} (crow ${crowKm.roundToInt()} km)")

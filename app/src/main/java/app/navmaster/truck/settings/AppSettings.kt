@@ -149,7 +149,7 @@ data class Settings(
     /** Online, the route computed by openrouteservice (offline always GraphHopper). */
     val onlineRouting: Boolean = true,
     /** The kind of route computed first (the others are offered next to it). */
-    val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.MOTORWAY,
+    val routeKind: app.navmaster.truck.vehicle.RouteKind = app.navmaster.truck.vehicle.RouteKind.RECOMMENDED,
     /** When the driver leaves the route: ask (buttons on the screen), or decide by itself. */
     val deviation: DeviationChoice = DeviationChoice.ASK,
     /** Without an answer to the question, after 30 s: go on along the road being driven (else back). */
@@ -276,6 +276,7 @@ class SettingsStore(context: Context) {
   private val file = File(context.filesDir, "settings.json")
   private val json = Json {
     ignoreUnknownKeys = true
+    coerceInputValues = true
     encodeDefaults = true
   }
   private val _settings = MutableStateFlow(load())

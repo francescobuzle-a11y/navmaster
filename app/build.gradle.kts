@@ -1,13 +1,3 @@
-import com.android.build.api.instrumentation.AsmClassVisitorFactory
-import com.android.build.api.instrumentation.ClassContext
-import com.android.build.api.instrumentation.ClassData
-import com.android.build.api.instrumentation.FramesComputationMode
-import com.android.build.api.instrumentation.InstrumentationParameters
-import com.android.build.api.instrumentation.InstrumentationScope
-import org.objectweb.asm.ClassVisitor
-import org.objectweb.asm.MethodVisitor
-import org.objectweb.asm.Opcodes
-
 plugins {
   alias(libs.plugins.androidApplication)
   alias(libs.plugins.composeCompiler)
@@ -77,7 +67,7 @@ android {
   packaging {
     resources {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"
-      // the same licence / module files in several of GraphHopper's libraries
+      // the same licence / module files in several libraries
       excludes += listOf("/META-INF/DEPENDENCIES", "/META-INF/LICENSE*", "/META-INF/NOTICE*", "/META-INF/INDEX.LIST",
           "/META-INF/versions/*/module-info.class", "/module-info.class", "/META-INF/versions/*/OSGI-INF/MANIFEST.MF")
     }
@@ -110,13 +100,9 @@ dependencies {
   implementation(libs.maplibre.compose)
   implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
 
-  // offline routing on the tablet
-  // GraphHopper (Apache 2.0) computes the route with the vehicle's measures, offline. Janino (its
-  // run-time compiler of custom models) is left out: Android cannot run what it compiles, the
-  // rules are written in code instead (routing/gh/NmWeightingFactory)
-  implementation("com.graphhopper:graphhopper-core:11.0") {
-    exclude(group = "org.codehaus.janino")
-  }
+  // offline routing on the tablet: navmaster-engine (openrouteservice's logic, from scratch), one
+  // jar with its own libraries (JTS, hppc; protobuf relocated), built by `./gradlew :engine-core:androidJar`
+  implementation(files("libs/navmaster-engine-core.jar"))
 
   implementation(platform(libs.okhttp.bom))
   implementation(libs.okhttp)
@@ -140,40 +126,3 @@ tasks.withType<Test>().configureEach {
   systemProperty("robolectric.pixelCopyRenderMode", "hardware")
 }
 
-/**
- * GraphHopper's memory-mapped storage calls ByteBuffer.get/put(index, array, offset, length), which
- * Android has only from version 15: those calls are redirected, in GraphHopper's own class, to
- * routing/gh/NioCompat (same result on every Android version).
- */
-abstract class NioCompatFactory : AsmClassVisitorFactory<InstrumentationParameters.None> {
-  override fun createClassVisitor(classContext: ClassContext, nextClassVisitor: ClassVisitor): ClassVisitor =
-      object : ClassVisitor(Opcodes.ASM9, nextClassVisitor) {
-        override fun visitMethod(access: Int, name: String?, descriptor: String?, signature: String?, exceptions: Array<out String>?): MethodVisitor? {
-          val mv = super.visitMethod(access, name, descriptor, signature, exceptions) ?: return null
-          return object : MethodVisitor(Opcodes.ASM9, mv) {
-            override fun visitMethodInsn(opcode: Int, owner: String?, name: String?, descriptor: String?, isInterface: Boolean) {
-              if (opcode == Opcodes.INVOKEVIRTUAL && (owner == "java/nio/ByteBuffer" || owner == "java/nio/MappedByteBuffer") &&
-                  (name == "get" || name == "put") && descriptor == "(I[BII)Ljava/nio/ByteBuffer;") {
-                super.visitMethodInsn(Opcodes.INVOKESTATIC, "app/navmaster/truck/routing/gh/NioCompat", name,
-                    "(Ljava/nio/ByteBuffer;I[BII)Ljava/nio/ByteBuffer;", false)
-              } else if (opcode == Opcodes.INVOKESTATIC && owner == "com/graphhopper/storage/MMapDataAccess" && name == "cleanMappedByteBuffer") {
-                // closing a graph: Android has no Unsafe.invokeCleaner (see NioCompat)
-                super.visitMethodInsn(Opcodes.INVOKESTATIC, "app/navmaster/truck/routing/gh/NioCompat", "cleanMappedByteBuffer",
-                    "(Ljava/nio/ByteBuffer;)V", false)
-              } else {
-                super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
-              }
-            }
-          }
-        }
-      }
-
-  override fun isInstrumentable(classData: ClassData): Boolean = classData.className == "com.graphhopper.storage.MMapDataAccess"
-}
-
-androidComponents {
-  onVariants { variant ->
-    variant.instrumentation.transformClassesWith(NioCompatFactory::class.java, InstrumentationScope.ALL) {}
-    variant.instrumentation.setAsmFramesComputationMode(FramesComputationMode.COPY_FRAMES)
-  }
-}

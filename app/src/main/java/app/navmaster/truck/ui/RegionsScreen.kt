@@ -49,7 +49,7 @@ import androidx.compose.ui.unit.sp
 import app.navmaster.truck.AppGraph
 import app.navmaster.truck.data.CountryInfo
 import app.navmaster.truck.data.DownloadState
-import app.navmaster.truck.routing.GhRouting
+import app.navmaster.truck.routing.NmEngine
 import app.navmaster.truck.search.TextNorm
 
 private fun gb(bytes: Long): String =
@@ -91,16 +91,6 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
     ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v ->
       AppGraph.settings.update { it.copy(downloadWifiOnly = v) }
     }
-    // the offline route calculation of each kind of vehicle has its own data: only what is driven
-    Text("Calcolo percorsi offline per", color = Nm.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
-    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      for (k in app.navmaster.truck.settings.OfflineVehicles.entries) {
-        Pill(k.label, settings.offlineVehicles == k) { AppGraph.settings.update { it.copy(offlineVehicles = k) } }
-      }
-    }
-    Caption("Ogni tipo di mezzo ha i suoi dati (circa 0,3 GB per l'Italia): scarica solo quelli dei mezzi che guidi. " +
-        "Se cambi scelta, tocca «Aggiorna» sul Paese.")
     if (here != null) {
       SectionHeader("Ti trovi qui")
       CountryRow(here, installed.any { it.id == here.id }, states[here.id], settings.downloadWifiOnly, highlight = true)
@@ -111,7 +101,7 @@ fun RegionsScreen(here: CountryInfo?, onClose: () -> Unit) {
       for (r in inst) {
         val c = catalog?.countries?.firstOrNull { it.id == r.id }
         if (c != null) CountryRow(c, true, states[c.id], settings.downloadWifiOnly)
-        else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.gh.reset() }
+        else InstalledRow(r.label, r.sizeBytes, r.manifest.built) { AppGraph.regions.delete(r.id); AppGraph.engine.reset() }
       }
     }
     SectionHeader("Tutti i Paesi")
@@ -172,20 +162,13 @@ private fun InstalledRow(label: String, size: Long, built: String, onDelete: () 
 
 @Composable
 fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOnly: Boolean, highlight: Boolean = false) {
-  // without the landmarks of the vehicles not chosen
-  val ghWanted = GhRouting.wantedNow()
-  val ghSkipped = listOf(GhRouting.PACKAGE_TRUCK, GhRouting.PACKAGE_CAR).filter { it !in ghWanted }.sumOf { c.files[it] ?: 0L }
-  val size = c.downloadSize() - ghSkipped
-  // an update for a country already on the tablet: its GraphHopper graph (missing or made for an
+  val size = c.downloadSize()
+  // an update for a country already on the tablet: its engine graph (missing, or made for an
   // older version), or newer data; only what changed is downloaded
   val inst = if (installed) AppGraph.regions.get(c.id) else null
-  val ghSize = c.files[GhRouting.PACKAGE]?.let { base ->
-    // what an update brings down: the graph if it changed, the landmarks missing
-    val graph = if (inst != null && GhRouting.state(inst.dir, emptyList()) == GhRouting.GhState.READY) 0L else base
-    graph + ghWanted.filter { inst == null || graph > 0 || !GhRouting.hasPackage(inst.dir, it) }.sumOf { c.files[it] ?: 0L }
-  }
-  val ghState = inst?.let { GhRouting.state(it.dir, ghWanted) }
-  val ghUpdate = inst != null && ghSize != null && ghState != GhRouting.GhState.READY
+  val ghSize = c.files[NmEngine.PACKAGE]
+  val ghState = inst?.let { if (NmEngine.installed(it.dir)) "ready" else "missing" }
+  val ghUpdate = inst != null && ghSize != null && ghState != "ready"
   val newer = inst != null && c.built != null && c.built > inst.manifest.built
   val busy = state is DownloadState.Running || state is DownloadState.Queued
   Column(
@@ -201,10 +184,8 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
         Caption(
             when {
               installed -> "Scaricato · dati del ${inst?.manifest?.built ?: c.built ?: "?"}" + when {
-                ghState == GhRouting.GhState.READY -> " · calcolo GraphHopper ✓"
-                ghUpdate && ghState == GhRouting.GhState.OLD -> " · grafo GraphHopper vecchio"
-                ghUpdate && ghState == GhRouting.GhState.PARTIAL -> " · manca il calcolo per i mezzi scelti"
-                ghUpdate -> " · manca il grafo GraphHopper"
+                ghState == "ready" -> " · calcolo percorsi ✓"
+                ghUpdate -> " · manca il grafo del motore"
                 else -> ""
               }
               c.available && AppGraph.regions.lite.value.any { it.id == c.id } ->
@@ -219,7 +200,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
         busy -> {}
         installed -> RoundAction(Icons.Rounded.DeleteOutline, "Elimina", size = 52.dp, container = Nm.Raised) {
           AppGraph.regions.delete(c.id)
-          AppGraph.gh.reset()
+          AppGraph.engine.reset()
         }
         c.available -> RoundAction(Icons.Rounded.CloudDownload, "Scarica", size = 52.dp, container = Nm.Accent) {
           AppGraph.regions.download(c.id, c.name)
@@ -230,7 +211,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
     if (!busy && (ghUpdate || newer)) {
       val what = when {
         newer -> "Aggiorna: dati del ${c.built} (scarica solo i file cambiati)"
-        else -> "Aggiorna: calcolo percorsi GraphHopper · ${gb(ghSize ?: 0L)}"
+        else -> "Aggiorna: grafo del motore NavMaster · ${gb(ghSize ?: 0L)}"
       }
       BigButton(what, Modifier.fillMaxWidth().padding(top = 8.dp), Icons.Rounded.CloudDownload) {
         AppGraph.regions.download(c.id, c.name)
@@ -290,12 +271,6 @@ fun WelcomeScreen(here: CountryInfo?, onOnline: () -> Unit = {}, onChooseOther: 
       Spacer(Modifier.height(10.dp))
       ToggleRow("Solo con Wi-Fi", "Spento: si scarica anche con i dati mobili", settings.downloadWifiOnly) { v -> AppGraph.settings.update { it.copy(downloadWifiOnly = v) } }
       BigButton("Tutti i Paesi d'Europa", Modifier.fillMaxWidth().padding(top = 6.dp), Icons.Rounded.Public, BtnStyle.SECONDARY, onClick = onChooseOther)
-      if (app.navmaster.truck.AppGraph.ONLINE_ROUTING) {
-        BigButton("Usa subito online, senza scaricare", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.GHOST, onClick = onOnline)
-        Caption("Con internet: mappa e percorso online, e l'app scarica da sola i dati leggeri del Paese (limiti del mezzo, autovelox, " +
-            "Tutor, velocità e corsie" + (here?.let { h -> ", circa ${gb(AppGraph.regions.liteSize(h))}" } ?: "") +
-            "). Le mappe complete per guidare senza rete si scaricano dopo, da «Mappe d'Europa».", size = 13, lines = 5)
-      }
      }
     }
   }
