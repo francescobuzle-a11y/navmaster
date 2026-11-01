@@ -102,7 +102,10 @@ jobs:
         working-directory: /mnt/w
         run: |
           MEM=$(( $(free -g | awk '/Mem:/{print $2}') - 2 ))
-          date; JAVA_OPTS="-Xmx${MEM}g" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm 2>&1 | tail -40; date
+          # the big countries: the graph files on disk (memory-mapped) instead of in RAM
+          MMAP=""
+          case "${{ matrix.region }}" in germany|france|great-britain|poland|spain|turkey|ukraine|italy|sweden|norway|finland) MMAP="--mmap" ;; esac
+          date; JAVA_OPTS="-Xmx${MEM}g" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP 2>&1 | tail -40; date
           test -f nm/profiles && test -f nm/edges && test -f nm/guidance
           rm -f roads.osm.pbf
           du -sh nm; ls -la nm
