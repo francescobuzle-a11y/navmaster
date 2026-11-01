@@ -41,6 +41,10 @@ data class EdgeInfo(
     val sign: EdgeSign? = null,
     /** The arrows painted on the lanes (OSM turn:lanes, "through|through|slight_right"), null when not mapped. */
     val turnLanes: String? = null,
+    /** The limits signed on this road: maxheight, maxwidth, maxlength (m), maxweight, maxaxleload (t). */
+    val limits: Map<String, Double> = emptyMap(),
+    /** Closed to dangerous goods (hazmat=no). */
+    val hazmat: Boolean = false,
 ) {
   /** Road numbers only: "A14", "SS16", "E45", "DN1". */
   val refs: List<String>
@@ -296,23 +300,19 @@ class RouteAnalysis(
     }
 
     /**
-     * The roads of the route from GraphHopper's graph (GhGuide: shape, admins, edges): kept when GraphHopper guided the route, else read by following its line on the
-     * graph; an analysis without edges when there is no graph.
+     * The roads of the route from the engine's graph (OrsGuide's attributes: shape, admins, edges),
+     * kept when the route was computed; an analysis without edges for a route that was not.
      */
     fun analyse(route: Route, vehicle: VehicleProfile, loadT: Double): RouteAnalysis {
       if (route.geometry.size < 2) return RouteAnalysis(route, emptyList())
       val started = System.currentTimeMillis()
-      val gh = app.navmaster.truck.AppGraph.gh
-      val raw = gh.attributesFor(route)
-          ?: runCatching { gh.attributesAlong(route, vehicle.ghSpec(loadT, app.navmaster.truck.vehicle.TripOptions())) }
-              .onFailure { Log.w(TAG, "GraphHopper roads along the route: $it") }.getOrNull()
-          ?: return RouteAnalysis(route, emptyList())
-      val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "GraphHopper roads: $it") }.getOrNull()
+      val raw = app.navmaster.truck.AppGraph.routes.attributesFor(route) ?: return RouteAnalysis(route, emptyList())
+      val p = runCatching { parse(raw) }.onFailure { Log.w(TAG, "engine roads: $it") }.getOrNull()
           ?: return RouteAnalysis(route, emptyList())
       val a = RouteAnalysis(route, p.edges, p.nodes, p.junctions)
       a.junctionShapes = p.shapes
       a.partialWays = p.partial
-      Log.i(TAG, "GraphHopper roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
+      Log.i(TAG, "engine roads: ${p.edges.size} edges in ${System.currentTimeMillis() - started} ms, toll ${"%.1f".format(a.tollKm)} km, " +
           "booths ${a.tollBooths.joinToString { "${it.type}@${it.alongM.toInt()}:${a.boothRole(it)}" }}, borders ${a.borders.size}, " +
           "junctions ${p.junctions.size}, shapes ${p.shapes.size}")
       return a
@@ -381,6 +381,8 @@ class RouteAnalysis(
             names = e["names"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
             sign = sign,
             turnLanes = e.str("turn_lanes")?.takeIf { it.isNotBlank() },
+            limits = (e["limits"] as? JsonObject)?.mapNotNull { (k, v) -> v.jsonPrimitive.doubleOrNull?.let { k to it } }?.toMap() ?: emptyMap(),
+            hazmat = e.bool("hazmat") ?: false,
         )
       }
       return Parsed(list, nodes, junctions.sorted().toDoubleArray(), shapes, root["partial_ways"]?.jsonPrimitive?.booleanOrNull == true)

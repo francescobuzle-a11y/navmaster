@@ -1,6 +1,6 @@
 package app.navmaster.truck.data
 
-import app.navmaster.truck.routing.GhRouting
+import app.navmaster.truck.routing.NmEngine
 import android.app.DownloadManager
 import android.content.Context
 import android.net.ConnectivityManager
@@ -216,9 +216,8 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
             try {
               val m = json.decodeFromString(Manifest.serializer(), mf.readText())
               val region = InstalledRegion(dir.name, m, dir)
-              // a country is ready with its map and its GraphHopper graph
-              val gh = File(dir, "gh/properties").exists() || File(dir, GhRouting.PACKAGE).exists()
-              if (region.map.exists() && gh) region else null
+              // a country is ready with its map and its engine graph
+              if (region.map.exists() && NmEngine.present(dir)) region else null
             } catch (e: Exception) {
               Log.w(TAG, "bad manifest in $dir: $e")
               null
@@ -330,23 +329,16 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     val prev = File(dir, "manifest.json").takeIf { it.exists() }
         ?.let { runCatching { json.decodeFromString(Manifest.serializer(), it.readText()) }.getOrNull() }
     fun sums(f: PackageFile) = f.parts.joinToString(",") { it.sha256 }
-    // the GraphHopper data: the graph and the landmarks of the vehicles chosen in the settings
-    val ghWanted = GhRouting.wantedNow()
     fun unchanged(f: PackageFile): Boolean {
-      if (f.file in GhRouting.PACKAGES) {
-        // installed from this same package (the graph unpacked, the landmarks in it)
-        if (GhRouting.source(dir, f.file) != sums(f) || !GhRouting.hasPackage(dir, f.file)) return false
-        return f.file != GhRouting.PACKAGE || GhRouting.state(dir, emptyList()) == GhRouting.GhState.READY
-      }
+      // the engine graph: installed from this same package (unpacked)
+      if (f.file == NmEngine.PACKAGE) return NmEngine.source(dir) == sums(f) && NmEngine.installed(dir)
       val old = prev?.files?.firstOrNull { it.file == f.file } ?: return false
       if (sums(old) != sums(f)) return false
       return File(dir, f.file).length() == f.size
     }
-    // the landmarks of the vehicles not chosen are not downloaded
-    fun skipped(f: PackageFile) = (f.file == GhRouting.PACKAGE_TRUCK || f.file == GhRouting.PACKAGE_CAR) && f.file !in ghWanted
-    // the packages made before GraphHopper alone (until they are rebuilt) still list the old
-    // routing graph (percorsi.tar): never downloaded
-    val files = manifest.files.filter { it.file != OLD_ROUTING_FILE && !skipped(it) && !unchanged(it) && (!job.lite || it.file in liteFiles()) }
+    // the routing data of the older versions (percorsi.tar, GraphHopper's gh*.tar.gz) are never downloaded
+    fun skipped(f: PackageFile) = f.file == OLD_ROUTING_FILE || f.file.startsWith("gh") && f.file.endsWith(".tar.gz") || f.file == "valichi.json"
+    val files = manifest.files.filter { !skipped(it) && !unchanged(it) && (!job.lite || it.file in liteFiles()) }
     if (prev != null) Log.i(TAG, "update $id: ${files.joinToString { it.file }.ifEmpty { "nothing changed" }}")
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } }
     val total = parts.sumOf { it.second.size }
@@ -383,9 +375,9 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       }
     }
     // the files are written in place; only the files in several parts need room twice
-    // (the GraphHopper data are unpacked on the tablet: about 2.5 times their packages)
+    // (the engine graph is unpacked on the tablet: about twice its package)
     val need = total - have + files.filter { it.parts.size > 1 }.sumOf { it.size } + 200_000_000 +
-        files.filter { it.file in GhRouting.PACKAGES }.sumOf { it.size } * 7 / 2
+        files.filter { it.file == NmEngine.PACKAGE }.sumOf { it.size } * 2
     if (freeBytes() < need) {
       throw IllegalStateException(String.format(Locale.ITALIAN, "Spazio insufficiente: servono %.1f GB liberi", need / 1e9))
     }
@@ -411,15 +403,15 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       put(DownloadState.Running(total, total, "Preparazione ${f.file}"))
       join(f.parts.map { File(tmp, it.name) }, File(dir, f.file))
     }
-    // the GraphHopper data come packed: unpacked now, once, not at the first route
-    val ghFiles = files.filter { it.file in GhRouting.PACKAGES }
-    if (ghFiles.isNotEmpty()) {
-      put(DownloadState.Running(total, total, "Installazione calcolo percorsi GraphHopper"))
+    // the engine graph comes packed: unpacked now, once, not at the first route
+    val nmFile = files.firstOrNull { it.file == NmEngine.PACKAGE }
+    if (nmFile != null) {
+      put(DownloadState.Running(total, total, "Installazione del grafo del motore"))
       // the graph in use is closed before it is replaced
-      runCatching { app.navmaster.truck.AppGraph.gh.reset() }
-      val gh = GhRouting.ready(dir)
-      // a package unpacked is removed: its source is noted, to know when it changes
-      if (gh != null) for (f in ghFiles) if (!File(dir, f.file).exists()) File(gh, GhRouting.sourceFile(f.file)).writeText(sums(f))
+      runCatching { app.navmaster.truck.AppGraph.engine.reset() }
+      val nm = NmEngine.ready(dir)
+      // the package unpacked is removed: its source is noted, to know when it changes
+      if (nm != null && !File(dir, nmFile.file).exists()) File(nm, NmEngine.SOURCE_FILE).writeText(sums(nmFile))
     }
     removeOldRoutingData(dir)
     File(dir, "manifest.json").writeText(manifestText)
@@ -449,11 +441,11 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   fun removeOldRoutingData(dir: File? = null) {
     val dirs = if (dir != null) listOf(dir) else (root.listFiles() ?: emptyArray()).filter { it.isDirectory }
     for (d in dirs) {
-      for (name in listOf(OLD_ROUTING_FILE, "europa-tiles.txt")) {
+      for (name in listOf(OLD_ROUTING_FILE, "europa-tiles.txt", "gh", "gh.new", "gh.tar.gz", "gh-camion.tar.gz", "gh-auto.tar.gz", "valichi.json")) {
         val f = File(d, name)
         if (f.exists()) {
-          Log.i(TAG, "${d.name}: old routing data $name removed (${f.length() / 1_000_000} MB)")
-          f.delete()
+          Log.i(TAG, "${d.name}: old routing data $name removed")
+          if (f.isDirectory) f.deleteRecursively() else f.delete()
         }
       }
     }

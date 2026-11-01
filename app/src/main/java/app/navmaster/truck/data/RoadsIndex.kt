@@ -1,21 +1,18 @@
 package app.navmaster.truck.data
 
-import android.util.Log
-import app.navmaster.truck.core.Geo
-import kotlin.math.abs
+import app.navmaster.truck.routing.NmEngine
 import uniffi.ferrostar.GeographicCoordinate
 
 /**
- * The roads of limiti.sqlite (table «roads», data/build_roads.py) along a route computed online:
- * for a route of openrouteservice guided without the country's graph on the tablet (OrsGuide),
- * which road each piece of the route runs on and in which direction, so the guidance has the speed
- * limits, the lanes and their arrows, the road class and the way ids as offline.
+ * The roads around a point, from the engine's graph (navmaster-engine): for the junction view,
+ * the road the vehicle is driving (RoadAhead) and the "is there a road here" checks. One road
+ * per edge of the graph (a way is cut at every junction), with its lanes, arrows, speed limits
+ * and the direction it can be driven.
  */
-class RoadsIndex(regions: RegionManager) {
-  private val dbs = RegionDbs(regions) { it.limits }
-
+class RoadsIndex(private val engine: () -> NmEngine) {
   data class Road(
       val osm: Long, val hw: String, val ms: Double?, val msf: Double?, val msb: Double?, val msHgv: Double?,
+      /** 1 one way along the line, -1 the other way, 0 both ways. */
       val oneway: Int, val lanes: Int?, val lanesF: Int?, val lanesB: Int?,
       val turnLanes: String?, val turnLanesF: String?, val turnLanesB: String?,
       val roundabout: Boolean, val toll: Boolean, val tunnel: Boolean, val bridge: Boolean,
@@ -43,122 +40,45 @@ class RoadsIndex(regions: RegionManager) {
     }
 
     val isLink: Boolean get() = hw.endsWith("_link")
-    val roadClass: String get() = hw.removeSuffix("_link").let { if (it == "living_street") "residential" else if (it == "service" || it == "road") "service_other" else it }
+    val roadClass: String get() = hw.removeSuffix("_link").let { if (it == "living_street") "residential" else if (it == "service" || it == "road" || it == "other") "service_other" else it }
   }
 
   /** The road of one piece of the route and the direction it is driven. */
   data class On(val road: Road, val forward: Boolean)
 
-  /** The table is there in some downloaded package (light or full). */
-  fun available(): Boolean = dbs.all().any { (_, db) ->
-    runCatching { db.rawQuery("SELECT 1 FROM sqlite_master WHERE name='roads'", null).use { it.moveToFirst() } }.getOrDefault(false)
-  }
+  /** There is a graph for some downloaded country. */
+  fun available(): Boolean = true
 
-  /** The roads within [radiusM] of a point (the junction view of a route guided online). */
-  fun near(lat: Double, lon: Double, radiusM: Double): List<Road> {
-    val dLat = radiusM / 110_540.0
-    val dLon = radiusM / (111_320.0 * kotlin.math.cos(Math.toRadians(lat)))
-    val cells = HashSet<Long>()
-    var la = lat - dLat
-    while (la <= lat + dLat + Geo.CELL) {
-      var lo = lon - dLon
-      while (lo <= lon + dLon + Geo.CELL) { cells += Geo.cell(la, lo); lo += Geo.CELL }
-      la += Geo.CELL
-    }
-    return dbs.perCells(cells) { db, inList -> readRoads(db, inList) }.distinctBy { it.osm to it.pts.size }
-  }
+  /** The roads within [radiusM] of a point. */
+  fun near(lat: Double, lon: Double, radiusM: Double): List<Road> =
+      engine().roadsAround(lat, lon, radiusM).mapNotNull { m -> toRoad(m) }
 
-  private fun readRoads(db: android.database.sqlite.SQLiteDatabase, inList: String): List<Road> {
-    val list = mutableListOf<Road>()
-    runCatching {
-      db.rawQuery(
-          "SELECT DISTINCT r.osm, r.hw, r.ms, r.msf, r.msb, r.mshgv, r.ow, r.ln, r.lnf, r.lnb, r.tl, r.tlf, r.tlb, r.rb, r.toll, r.tun, r.br, " +
-              "r.ref, r.name, r.pts FROM road_cells c JOIN roads r ON r.id = c.rid WHERE c.cell IN ($inList)", null).use { c ->
-        fun d(i: Int) = if (c.isNull(i)) null else c.getDouble(i)
-        fun n(i: Int) = if (c.isNull(i)) null else c.getInt(i)
-        fun s(i: Int) = if (c.isNull(i)) null else c.getString(i)
-        while (c.moveToNext()) {
-          list += Road(c.getLong(0), c.getString(1) ?: "", d(2), d(3), d(4), d(5), c.getInt(6), n(7), n(8), n(9), s(10), s(11), s(12),
-              c.getInt(13) == 1, c.getInt(14) == 1, c.getInt(15) == 1, c.getInt(16) == 1, s(17), s(18),
-              RouteMatcher.decodePolyline(c.getString(19) ?: ""))
-        }
-      }
-    }
-    return list
-  }
-
-  /**
-   * For every piece i → i+1 of [line], the road it runs on (null where none is known): the road
-   * whose line is within 12 m of most of the piece's points, going the same way (a oneway road the
-   * other way and the other carriageway are not taken).
-   */
-  fun along(line: List<GeographicCoordinate>): Array<On?> {
-    val out = arrayOfNulls<On>(maxOf(0, line.size - 1))
-    if (line.size < 2) return out
-    val started = System.currentTimeMillis()
-    val m = RouteMatcher(line)
-    val roads = dbs.perCells(m.cells) { db, inList -> readRoads(db, inList) }.distinctBy { it.osm to it.pts.size }
-    if (roads.isEmpty()) return out
-    // the road segments by cell
-    val byCell = HashMap<Long, MutableList<Pair<Int, Int>>>()
-    for ((ri, r) in roads.withIndex()) {
-      for (k in 0 until r.pts.size - 1) {
-        val a = r.pts[k]
-        val b = r.pts[k + 1]
-        val steps = (Geo.dist(a, b) / 200.0).toInt() + 1
-        var last = Long.MIN_VALUE
-        for (s in 0..steps) {
-          val t = s.toDouble() / steps
-          val cell = Geo.cell(a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t)
-          if (cell == last) continue
-          last = cell
-          val list = byCell.getOrPut(cell) { mutableListOf() }
-          if (list.isEmpty() || list.last() != ri to k) list += ri to k
-        }
-      }
-    }
-    for (i in 0 until line.size - 1) {
-      val a = line[i]
-      val b = line[i + 1]
-      val len = Geo.dist(a, b)
-      if (len < 0.5) continue
-      val h = Geo.bearing(a, b)
-      val n = (len / 40.0).toInt().coerceIn(1, 60)
-      val votes = HashMap<Int, Pair<Int, Boolean>>()
-      for (s in 0 until n) {
-        val t = (s + 0.5) / n
-        val p = GeographicCoordinate(a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t)
-        var best = 12.0
-        var pick = -1
-        var fwd = true
-        for (dy in -1..1) for (dx in -1..1) {
-          val cands = byCell[Geo.cell(p.lat + dy * Geo.CELL, p.lng + dx * Geo.CELL)] ?: continue
-          for ((ri, k) in cands) {
-            val r = roads[ri]
-            val (d, _) = Geo.pointToSegment(p, r.pts[k], r.pts[k + 1])
-            if (d >= best) continue
-            val rh = Geo.bearing(r.pts[k], r.pts[k + 1])
-            val diff = abs(Geo.angleDiff(h, rh))
-            val forward = diff < 50
-            val backward = diff > 130
-            if (!forward && !backward) continue
-            if (r.oneway > 0 && !forward || r.oneway < 0 && !backward) continue
-            best = d
-            pick = ri
-            fwd = forward
-          }
-        }
-        if (pick >= 0) votes[pick] = ((votes[pick]?.first ?: 0) + 1) to fwd
-      }
-      val win = votes.maxByOrNull { it.value.first } ?: continue
-      if (win.value.first * 2 < n) continue
-      out[i] = On(roads[win.key], win.value.second)
-    }
-    Log.i(TAG, "roads along the route: ${roads.size} near, ${out.count { it != null }}/${out.size} pieces matched in ${System.currentTimeMillis() - started} ms")
-    return out
-  }
-
-  companion object {
-    private const val TAG = "NavMasterRoads"
+  private fun toRoad(m: Map<String, Any?>): Road? {
+    fun num(k: String): Double? = (m[k] as? Number)?.toDouble()
+    fun int(k: String): Int? = (m[k] as? Number)?.toInt()
+    fun str(k: String): String? = (m[k] as? String)?.takeIf { it.isNotBlank() }
+    fun bool(k: String): Boolean = m[k] == true
+    @Suppress("UNCHECKED_CAST")
+    val coords = m["coordinates"] as? List<DoubleArray> ?: return null
+    if (coords.size < 2) return null
+    val pts = coords.map { GeographicCoordinate(it[1], it[0]) }
+    val accessAb = m["access_ab"] != false
+    val accessBa = m["access_ba"] != false
+    // one way as signed, else as the cars may drive it (a dual carriageway without an oneway tag)
+    val ow = int("oneway") ?: 0
+    val oneway = if (ow != 0) ow else if (accessAb && !accessBa) 1 else if (!accessAb && accessBa) -1 else 0
+    val cls = str("class") ?: "other"
+    val lf = int("lanes_ab"); val lb = int("lanes_ba")
+    return Road(
+        osm = (m["way"] as? Number)?.toLong() ?: 0L,
+        hw = if (bool("link")) "${cls}_link" else cls,
+        ms = null, msf = num("maxspeed_ab"), msb = num("maxspeed_ba"), msHgv = num("maxspeed_hgv"),
+        oneway = oneway,
+        lanes = if (oneway != 0) (if (oneway > 0) lf else lb) ?: lf ?: lb else if (lf != null && lb != null) lf + lb else null,
+        lanesF = lf, lanesB = lb,
+        turnLanes = null, turnLanesF = str("turn_lanes_ab"), turnLanesB = str("turn_lanes_ba"),
+        roundabout = bool("roundabout"), toll = bool("toll"), tunnel = bool("tunnel"), bridge = bool("bridge"),
+        ref = str("ref"), name = str("name"), pts = pts,
+    )
   }
 }

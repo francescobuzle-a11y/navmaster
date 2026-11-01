@@ -80,8 +80,6 @@ fun PlanPanel(
     onClearStart: () -> Unit = {},
     /** "Altri percorsi": GraphHopper's alternatives added to the routes on screen. */
     onMore: () -> Unit = {},
-    onMotorwayLevel: (Int) -> Unit = {},
-    motorwayLevel: Int = 3,
 ) {
   // a departure chosen by the driver: the trip can only be simulated
   val startLabel = if (plan.start != null) "Simula" else "Avvia"
@@ -170,12 +168,6 @@ fun PlanPanel(
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
           plan.variants.forEachIndexed { i, v -> VariantCard(v, i == plan.selected) { onSelect(i) } }
           if (!plan.computing) MoreRoutesCard(plan.more, compact = false, onClick = onMore)
-        }
-        // "more motorway": five levels, from mild to almost never off the motorway; a touch
-        // computes that route again with the level chosen (and adds it when it was not there)
-        if (!plan.computing) {
-          val level = plan.variants.firstOrNull { it.kind == VariantKind.MOTORWAY }?.options?.motorwayLevel ?: motorwayLevel
-          MotorwayLevelRow(level, plan.motorwayBusy, onMotorwayLevel, Modifier.padding(top = 8.dp))
         }
         plan.routeNote?.let {
           Caption(it, color = Nm.Amber, size = 13, lines = 4,
@@ -292,28 +284,6 @@ private fun MoreRoutesCard(state: MoreRoutes, compact: Boolean, onClick: () -> U
 }
 
 @Composable
-private fun MotorwayLevelRow(level: Int, busy: Boolean, onLevel: (Int) -> Unit, modifier: Modifier = Modifier) {
-  Column(modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0x14FFFFFF)).padding(horizontal = 12.dp, vertical = 8.dp)) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      Caption("Quanta autostrada nel percorso «Più autostrada»", size = 13, color = Nm.Text, modifier = Modifier.weight(1f))
-      if (busy) CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-      else Caption(when (level) { 1 -> "poca"; 2 -> "normale"; 3 -> "tanta"; 4 -> "quasi sempre"; else -> "sempre" }, size = 13, color = Nm.Accent)
-    }
-    Spacer(Modifier.height(6.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-      for (k in 1..5) {
-        Box(
-            Modifier.weight(1f).height(34.dp).clip(RoundedCornerShape(10.dp))
-                .background(if (k <= level) Nm.Accent else Color(0x22FFFFFF))
-                .clickable(enabled = !busy) { onLevel(k) },
-            contentAlignment = Alignment.Center,
-        ) { Text("$k", color = if (k <= level) Color.Black else Nm.Muted, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
-      }
-    }
-  }
-}
-
-@Composable
 private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit) {
   Column(
       Modifier.widthIn(min = 170.dp).clip(RoundedCornerShape(18.dp)).background(if (selected) Nm.Raised else Color(0x14FFFFFF))
@@ -370,12 +340,12 @@ fun CritRow(c: Criticality, onClick: () -> Unit) {
   }
 }
 
-/** Who computed the route: ORS (openrouteservice, online) or GH (GraphHopper on the tablet), both with the vehicle's measures. */
+/** Who computed the route: NM (navmaster-engine on the tablet, with openrouteservice's logic and the vehicle's measures). */
 @Composable
 private fun SourceTag(source: String) {
   Spacer(Modifier.width(6.dp))
   Text(source, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-      modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(when (source) { "GH" -> Nm.Blue; "ORS" -> Color(0xFFB0283C); else -> Color(0xFF6B7682) })
+      modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(when (source) { "NM" -> Nm.Blue; else -> Color(0xFF6B7682) })
           .padding(horizontal = 5.dp, vertical = 1.dp))
 }
 

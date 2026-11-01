@@ -8,13 +8,13 @@ App Android per tablet dedicata a **camion, autobus e camper**: calcola percorsi
 |---|---|---|
 | Mappa | MapLibre Native (Compose) | mappa vettoriale, stile NavMaster giorno/notte (`data/style/make_style.py`) |
 | Dati mappa | PMTiles generate con Planetiler | mappa offline per regione |
-| Calcolo percorso | openrouteservice online (`driving-hgv` / `driving-car`) e GraphHopper 11 sul tablet con le stesse regole di openrouteservice (`tools/gh/OrsRules.java`, `routing/gh/OrsWeighting.java`) | percorsi per camion, autobus e camper con misure e peso del viaggio, anche offline |
+| Calcolo percorso | **navmaster-engine** sul tablet (`app/libs/navmaster-engine-core.jar`, repository `navmaster-engine`): la logica di calcolo di openrouteservice riscritta da zero (profili `driving-hgv` / `driving-car`, misure e peso del mezzo, CH, core, landmark) | percorsi per camion, autobus e camper con misure e peso del viaggio, sempre offline |
 | Navigazione | Ferrostar | guida, istruzioni, ricalcolo, uscita dal percorso |
 | Voce | Text-to-Speech di Android | istruzioni in italiano |
 | Limiti | `limiti.sqlite` (da OSM) | avviso anticipato di sottopassi, ponti, divieti sul percorso |
 
 ```
-GPS → Ferrostar (guida) → openrouteservice / GraphHopper (percorso, guida da GhGuide) → limiti.sqlite (avvisi)
+GPS → Ferrostar (guida) → navmaster-engine (percorso con la logica di openrouteservice, istruzioni e fatti sulle strade) → OrsGuide (guida) → avvisi sui limiti
                   ↘ MapLibre (mappa PMTiles)
 ```
 
