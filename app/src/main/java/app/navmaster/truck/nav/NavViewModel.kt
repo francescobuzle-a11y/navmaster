@@ -762,7 +762,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val base = TripOptions(avoidTolls = avoidTolls, avoidMotorways = avoidMotorways, excludePolygons = exclusions, route = pref)
         // 1. the routes of the kind the driver prefers (the best one and an alternative) with the
         //    vehicle's measures: shown as soon as they are there, the driver can start at once
-        val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 1))
+        // the best route first (the alternatives come with «Altri percorsi»: they take longer)
+        val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 0))
         val routeNote = AppGraph.routes.note
         val req = Triple(from, waypoints, base)
         planRequest = req
@@ -931,7 +932,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           n++
           added += buildVariant(VariantKind.ALTERNATIVE, "Alternativa $n", r, base, departure)
         }
-        Log.i(TAG, "more routes (GraphHopper): ${routes.size} found, ${added.size} new")
+        Log.i(TAG, "more routes (engine): ${routes.size} found, ${added.size} new")
         if (planRequest !== req) return@launch
         _plan.update { it.copy(variants = it.variants + added, more = if (added.isEmpty()) MoreRoutes.NONE_FOUND else MoreRoutes.ADDED) }
       } catch (e: kotlinx.coroutines.CancellationException) {

@@ -46,7 +46,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager)
       Log.w(TAG, "engine: no graph in ${region.id}")
       return null
     }
-    val key = dir.absolutePath + ":" + regions.version.value
+    // the same graph stays open across refreshes of the regions: only a new graph file reopens it
+    val key = dir.absolutePath + ":" + File(dir, "profiles").lastModified() + ":" + File(dir, "edges").length()
     if (key != loadedKey) {
       close()
       val started = SystemClock.elapsedRealtime()
