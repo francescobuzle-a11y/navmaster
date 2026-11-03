@@ -1978,7 +1978,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   private fun setSimSpeed(v: Int) {
     _simSpeed.value = v
-    AppGraph.simulator.warpFactor = v.toUInt()
+    AppGraph.simulator.warp = v
   }
 
   // ---- simulation jumps. The route of the simulation is kept whole (simBase): after a jump the

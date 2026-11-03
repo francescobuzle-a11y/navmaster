@@ -271,6 +271,23 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
       }
 
   companion object {
+    /**
+     * A limit worth showing to this vehicle: one it does not pass (a real ban for it), or one it
+     * passes only just (height within 30 cm, width 20 cm, length 1 m, weight 2 t, axle 1 t). A 44 t
+     * limit for a 27 t lorry is not a ban: it is not shown.
+     */
+    fun relevant(l: RouteLimit, v: VehicleProfile, weightT: Double): Boolean {
+      if (l.blocking) return true
+      return when (l.kind) {
+        "maxheight" -> l.value - v.heightM < 0.3
+        "maxwidth" -> l.value - v.widthM < 0.2
+        "maxlength" -> l.value - v.lengthM < 1.0
+        "maxweight" -> l.value - weightT < 2.0
+        "maxaxleload" -> l.value - v.axleLoadT < 1.0
+        else -> false
+      }
+    }
+
     /** Countries where traffic keeps left. */
     private val LHT = setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE")
     private val DAYS = mapOf("Mo" to DayOfWeek.MONDAY, "Tu" to DayOfWeek.TUESDAY, "We" to DayOfWeek.WEDNESDAY,

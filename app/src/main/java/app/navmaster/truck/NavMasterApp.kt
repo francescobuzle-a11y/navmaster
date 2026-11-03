@@ -25,8 +25,6 @@ import com.stadiamaps.ferrostar.composeui.notification.DefaultForegroundNotifica
 import com.stadiamaps.ferrostar.core.AndroidTtsObserver
 import com.stadiamaps.ferrostar.core.FerrostarCore
 import com.stadiamaps.ferrostar.core.http.OkHttpClientProvider.Companion.toOkHttpClientProvider
-import com.stadiamaps.ferrostar.core.location.NavigationLocationProvider
-import com.stadiamaps.ferrostar.core.location.SimulatedLocationProvider
 import com.stadiamaps.ferrostar.core.service.FerrostarForegroundServiceManager
 import java.time.Duration
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -61,6 +59,10 @@ object AppGraph {
     TomTomGuard.init(application)
     HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)
+    // the border crossings of the downloaded countries, in the background a little after the start
+    Thread {
+      runCatching { Thread.sleep(30_000); engine.prepareBorders() }
+    }.apply { priority = Thread.MIN_PRIORITY; isDaemon = true; name = "valichi" }.start()
   }
 
   val settings by lazy { SettingsStore(app) }
@@ -106,18 +108,13 @@ object AppGraph {
 
   val routes by lazy { OfflineRouteProvider(nm, { profiles.garage.value }, { trip.value }) { remember(it) } }
 
-  /** The simulated drive (its speed can be changed while it runs). */
-  val simulator by lazy { SimulatedLocationProvider(warpFactor = 3u) }
+  /** The simulated drive, at a lorry's speeds (its pace can be changed while it runs). */
+  val simulator by lazy { app.navmaster.truck.location.NmSimulator() }
 
   /** GPS + network, and through tunnels the position along the route (see SmartLocationProvider). */
   val smartLocation by lazy { SmartLocationProvider(app) }
 
-  val locationProvider by lazy {
-    NavigationLocationProvider(
-        liveProviding = smartLocation,
-        simulatedProvider = simulator,
-    )
-  }
+  val locationProvider by lazy { app.navmaster.truck.location.NmLocationProvider(smartLocation, simulator) }
 
   val ferrostar by lazy {
     FerrostarCore(

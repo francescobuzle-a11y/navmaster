@@ -172,7 +172,8 @@ fun DrawScope.drawRoundabout(s: RoundaboutShape, color: Color) {
   val c = Offset(size.width / 2f, size.height * 0.46f)
   val r = side * 0.22f
   val armLen = side * 0.26f
-  val rot = 180.0 - s.entryAt
+  // turned so that the road arriving comes up from the bottom (the vehicle drives "up")
+  val rot = 180.0 - s.entryDir
   fun unit(bearing: Double): Offset {
     val b = Math.toRadians(bearing + rot)
     return Offset(sin(b).toFloat(), -cos(b).toFloat())

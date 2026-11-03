@@ -262,7 +262,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   var pendingPoint by remember { mutableStateOf<GeographicCoordinate?>(null) }
 
   val traveled = if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0) else 0.0
-  val nextLimit = nav.limits.firstOrNull { it.kind != "speed_camera" && !it.isSection && it.alongM - traveled > -15 }
+  // only what is a ban for this vehicle, or a limit it passes only just (not a 44 t sign for a 27 t lorry)
+  val limitWeightT = garage.active.tripWeightT(garage.loadT)
+  val nextLimit = nav.limits.firstOrNull {
+    it.kind != "speed_camera" && !it.isSection && it.alongM - traveled > -15 &&
+        app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, limitWeightT)
+  }
   // fixed speed cameras: only where warning about them is allowed, facing our way when the map says
   // the cameras that may be announced, worked out once per route (not at every position)
   val camerasOk = remember(nav.limits, nav.analysis, settings.enforcementEverywhere) {
@@ -497,7 +502,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       val crits = if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList()
       CritMarkers(crits)
       val limitsAll = if (navigating) nav.limits else plan.current?.limits ?: emptyList()
-      LimitMarkers(remember(limitsAll) { limitsAll.filter { it.kind != "speed_camera" && !it.isSection } })
+      // on the map too only what matters to this vehicle (a ban, or a limit passed only just)
+      LimitMarkers(remember(limitsAll, garage) {
+        val w = garage.active.tripWeightT(garage.loadT)
+        limitsAll.filter { it.kind != "speed_camera" && !it.isSection && app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, w) }
+      })
       val stopPts = remember(plan.stops) { plan.stops.map { it.coordinate } }
       StopMarkers(stopPts)
       // the departure chosen for a simulated trip: a green point
@@ -839,10 +848,11 @@ private fun NavigatingOverlay(
   val hereLanes = hereEdge?.lanes ?: 0
   val vehicleLane = if (hereEdge != null && (hereEdge.roadClass in setOf("motorway", "trunk") || hereEdge.isRamp) && hereLanes in 2..6)
     vm.laneTracker.lane(hereLanes, false, countryIso?.uppercase() in LEFT_HAND) else null
+  val measured by vm.speedMs.collectAsState()
   // junction view and lane guidance only at motorway junctions and complicated multi-lane ones
   val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso, vehicleLane,
       settings.junctionViewMotorwayM.toDouble(), settings.junctionViewRoadM.toDouble(), settings.junctionViewSeconds.toDouble(),
-      (ui.location?.speed?.value?.takeIf { it >= 0 } ?: vm.speedMs.collectAsState().value ?: 0.0))
+      (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured ?: 0.0))
   val jv = if (settings.junctionView) scene else null
   // the roundabout of the next manoeuvre as it is in the graph (worked out once per roundabout, off the main thread)
   val nextType = ui.visualInstruction?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
@@ -878,7 +888,6 @@ private fun NavigatingOverlay(
   // the speed the GPS gives, or measured from the last positions when it gives none; none at all
   // while the position is only worked out along the route (a tunnel: the speed of the entry is not
   // the real one) or when the satellites have been silent for 3 s (it stayed frozen on the last value)
-  val measured by vm.speedMs.collectAsState()
   val reckoningNow by AppGraph.smartLocation.reckoning.collectAsState()
   val lastRaw by AppGraph.smartLocation.raw.collectAsState()
   val simulatingNow by vm.simulating.collectAsState()

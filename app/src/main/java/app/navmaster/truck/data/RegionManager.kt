@@ -427,6 +427,9 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
       val nm = NmEngine.ready(dir)
       // the package unpacked is removed: its source is noted, to know when it changes
       if (nm != null && !File(dir, nmFile.file).exists()) File(nm, NmEngine.SOURCE_FILE).writeText(sums(nmFile))
+      // the crossings with the neighbouring countries, found now rather than at the first trip
+      // (a little later: the installation of the country ends first)
+      if (nm != null) scope.launch { kotlinx.coroutines.delay(20_000); runCatching { app.navmaster.truck.AppGraph.engine.prepareBorders() } }
     }
     removeOldRoutingData(dir)
     File(dir, "manifest.json").writeText(manifestText)

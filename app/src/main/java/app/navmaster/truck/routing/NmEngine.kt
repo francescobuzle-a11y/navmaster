@@ -179,6 +179,37 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     return list
   }
 
+  /**
+   * The border crossings between the downloaded countries that touch, found now (in the
+   * background, after the start and after a country is installed) so that the first trip across a
+   * border does not wait for them. The graphs are opened here for the time it takes, apart from the
+   * ones the routes use.
+   */
+  fun prepareBorders() {
+    val list = regions.installed.value.filter { installed(it.dir) }
+    fun box(id: String) = catalog?.country(id)?.bbox
+    for (i in list.indices) for (j in i + 1 until list.size) {
+      val a = list[i]; val b = list[j]
+      val ba = box(a.id) ?: continue
+      val bb = box(b.id) ?: continue
+      if (ba[0] > bb[2] || bb[0] > ba[2] || ba[1] > bb[3] || bb[1] > ba[3]) continue
+      var ga: RoutingGraph? = null
+      var gb: RoutingGraph? = null
+      try {
+        ga = RoutingGraph.load(File(a.dir, DIR), true)
+        gb = RoutingGraph.load(File(b.dir, DIR), true)
+        val ca = CountryGraph(a.id, DirectionsService(ga, DirectionsLimits(), ENGINE_VERSION))
+        val cbg = CountryGraph(b.id, DirectionsService(gb, DirectionsLimits(), ENGINE_VERSION))
+        transfersBetween(ca, cbg)
+      } catch (e: Throwable) {
+        Log.w(TAG, "valichi ${a.id}-${b.id}: $e")
+      } finally {
+        runCatching { ga?.close() }
+        runCatching { gb?.close() }
+      }
+    }
+  }
+
   /** The roads within [radiusM] of a point, from the graph of its country (empty without one). */
   fun roadsAround(lat: Double, lon: Double, radiusM: Double): List<Map<String, Any?>> {
     val region = regions.regionAt(lat, lon) ?: return emptyList()
