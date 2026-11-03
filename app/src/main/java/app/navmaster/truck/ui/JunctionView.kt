@@ -199,6 +199,8 @@ internal class Palette(night: Boolean) {
   val groundNear = if (night) Color(0xFF151A1F) else Color(0xFFC3D2B1)
   val asphalt = if (night) Color(0xFF3A3F47) else Color(0xFF6C7179)
   val asphaltFar = if (night) Color(0xFF2B3038) else Color(0xFFA3A8AE)
+  /** The roads around that the route does not take: lighter, without markings, under the others. */
+  val side = if (night) Color(0xFF2A2F36) else Color(0xFFB4B8BE)
   val shoulder = if (night) Color(0xFF30353C) else Color(0xFF8E9298)
   val marking = if (night) Color(0xFFC9CED4) else Color(0xFFFFFFFF)
   val lit = Color(0xFF2F7CF6)
@@ -438,16 +440,16 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
       // the route's own roads are drawn from the route's line (above); keep what leaves it
       val keep = xs.indices.map { i -> nearestRoute(xs[i], ys[i], rx, ry) > 2.5 }
       val parts = splitRuns(xs, ys, keep)
-      for ((px, py) in parts) addRoad(r, px, py, false, 0.0, 0.0, asphalt, markings, pal, lht)
+      for ((px, py) in parts) addRoad(r, px, py, false, 0.0, 0.0, asphalt, markings, pal, lht, main = false)
       continue
     }
     if (isOther) {
       // only after the node, starting where its lanes are
       val keep = xs.indices.map { xs[it] >= -1.0 }
-      for ((px, py) in splitRuns(xs, ys, keep)) addRoad(r, px, py, true, otherY, taper, asphalt, markings, pal, lht, forcedWidth = otherW)
+      for ((px, py) in splitRuns(xs, ys, keep)) addRoad(r, px, py, true, otherY, taper, asphalt, markings, pal, lht, forcedWidth = otherW, main = true)
       continue
     }
-    addRoad(r, xs, ys, false, 0.0, 0.0, asphalt, markings, pal, lht)
+    addRoad(r, xs, ys, false, 0.0, 0.0, asphalt, markings, pal, lht, main = false)
   }
 
   // the guidance arrow on the lanes to take: from 70 m before the node to 45 m after it
@@ -524,7 +526,9 @@ private fun splitRuns(xs: List<Double>, ys: List<Double>, keep: List<Boolean>): 
 
 /** A road of the graph: its carriageway, edge lines and lane lines; [shiftY] at the node going to 0 over [taper] metres. */
 private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, shifted: Boolean, shiftY: Double, taper: Double,
-                    asphalt: MutableList<Strip>, markings: MutableList<Strip>, pal: Palette, lht: Boolean, forcedWidth: Double? = null) {
+                    asphalt: MutableList<Strip>, markings: MutableList<Strip>, pal: Palette, lht: Boolean, forcedWidth: Double? = null,
+                    /** A road of the junction (the other branch): as dark as the route's, with its markings. */
+                    main: Boolean = false) {
   val cls = r.roadClass.let { if (it == "service_other") (if (r.hw.startsWith("service")) "service" else "minor") else it }
   if (cls in setOf("track", "path", "footway", "cycleway", "steps")) return
   val (x, y) = resample(xs0, ys0, 4.0)
@@ -535,7 +539,9 @@ private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, sh
       ?.takeIf { it > 0 } ?: defaultLanes(cls, oneway, r.isLink)
   val w = forcedWidth ?: (lanes * lw)
   val shift = DoubleArray(x.size) { i -> if (!shifted) 0.0 else shiftY * (1 - smooth(x[i].coerceAtLeast(0.0) / taper.coerceAtLeast(1.0))) }
-  asphalt += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 + 0.6 }, DoubleArray(x.size) { shift[it] - w / 2 - 0.6 }, pal.asphalt)
+  asphalt += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 + 0.6 }, DoubleArray(x.size) { shift[it] - w / 2 - 0.6 }, if (main) pal.asphalt else pal.side)
+  // the roads around: only their surface (their lines made the picture busy)
+  if (!main) return
   if (cls in setOf("motorway", "trunk", "primary") || r.isLink) {
     markings += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 - 0.15 }, DoubleArray(x.size) { shift[it] + w / 2 - 0.35 }, pal.marking)
     markings += Strip(x, y, DoubleArray(x.size) { shift[it] - w / 2 + 0.35 }, DoubleArray(x.size) { shift[it] - w / 2 + 0.15 }, pal.marking)
@@ -689,10 +695,12 @@ internal fun renderStatic(scene: Scene, w: Int, h: Int, density: Density): Image
     drawRect(Brush.verticalGradient(listOf(pal.skyTop, pal.skyLow), 0f, hy.coerceAtLeast(1f)), Offset.Zero, Size(size.width, hy))
     drawRect(Brush.verticalGradient(listOf(pal.groundFar, pal.groundNear), hy, size.height), Offset(0f, hy), Size(size.width, size.height - hy))
     // the roads, the far ones first, fading into the distance
-    val ground = ArrayList<Pair<Float, Path>>()
-    for (st in scene.asphalt) quads(st, p, ground)
-    ground.sortByDescending { it.first }
-    for ((d, path) in ground) drawPath(path, androidx.compose.ui.graphics.lerp(pal.asphalt, pal.asphaltFar, (d / 700f).coerceIn(0f, 1f)))
+    for (layer in listOf(scene.asphalt.filter { it.color == pal.side }, scene.asphalt.filter { it.color != pal.side })) {
+      val ground = ArrayList<Triple<Float, Path, Color>>()
+      for (st in layer) { val q = ArrayList<Pair<Float, Path>>(); quads(st, p, q); for ((d, path) in q) ground += Triple(d, path, st.color) }
+      ground.sortByDescending { it.first }
+      for ((d, path, c) in ground) drawPath(path, androidx.compose.ui.graphics.lerp(c, pal.asphaltFar, (d / 900f).coerceIn(0f, 0.7f)))
+    }
     // the lanes to take, the markings over them, then the guidance arrow
     val lit = ArrayList<Pair<Float, Path>>()
     for (st in scene.lit) quads(st, p, lit, 700f)
