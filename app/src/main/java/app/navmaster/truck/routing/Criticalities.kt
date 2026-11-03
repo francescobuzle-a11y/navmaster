@@ -212,7 +212,6 @@ class CriticalityFinder(regions: RegionManager) {
             h.alongM, h.alongM + 1, p.lat, p.lng)
       }
     }
-    }
 
     val sorted = (if (difficulties) out else out.filter { it.kind !in DIFFICULTIES }).sortedBy { it.startM }
     Log.i("NavMasterCrit", "criticalities: ${sorted.size} (${sorted.count { it.severity == Severity.CRITICAL }} critical) " +

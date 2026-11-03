@@ -49,7 +49,7 @@ data class InstalledRegion(val id: String, val manifest: Manifest, val dir: File
    * the newest one, or the plain mappa.pmtiles of the packages installed before.
    */
   val map: File
-    get() = currentMap(dir)
+    get() = RegionManager.currentMap(dir)
 
   val limits: File
     get() = File(dir, "limiti.sqlite")
