@@ -95,37 +95,10 @@ class CriticalityFinder(regions: RegionManager) {
     val difficulties = runCatching { app.navmaster.truck.AppGraph.settings.settings.value.roadDifficulties }.getOrDefault(false)
     fun headingAt(along: Double): Double = Geo.bearing(a.pointAt((along - 10).coerceAtLeast(0.0)), a.pointAt(along + 10))
 
-    // 1. mapped difficulties
-    val rows = dbs.perCells(m.cells) { db, inList ->
-      val list = mutableListOf<DbRow>()
-      db.rawQuery(
-          "SELECT DISTINCT k.id, k.kind, k.value, k.info, k.name, k.lat, k.lon, k.pts, k.osm FROM crit_cells c " +
-              "JOIN crit k ON k.id = c.cid WHERE c.cell IN ($inList)", null).use { c ->
-        while (c.moveToNext()) {
-          list += DbRow(c.getLong(0), c.getString(1), c.getDouble(2), c.getString(3), c.getString(4), c.getDouble(5), c.getDouble(6),
-              RouteMatcher.parsePts(c.getString(7)), c.getString(8))
-        }
-      }
-      list
-    }
-    val seen = HashSet<Long>()
-    // with the graph's way ids a mapped road is matched exactly: a road passing under a bridge of
-    // the route, or running right next to it, is not taken for the road the route is on
-    val exact = a.wayIds.isNotEmpty() && !a.partialWays
-    var skipped = 0
-    for (r in rows) {
-      if (!seen.add(r.id)) continue
-      val wayId = r.osm?.takeIf { it.startsWith("w") }?.substring(1)?.toLongOrNull()
-      val (lo, hi) = if (exact && wayId != null) {
-        if (wayId !in a.wayIds) {
-          if (m.span(r.pts, 12.0) != null) skipped++
-          continue
-        }
-        a.wayExtent(wayId)?.let { it.startM to it.endM } ?: continue
-      } else m.span(r.pts, 12.0) ?: continue
-      val info = runCatching { json.parseToJsonElement(r.info).jsonObject }.getOrNull()
-      judge(r, lo, hi, info, v, heavy, a, m, deadline, ::headingAt)?.let { out += it }
-    }
+    // (the difficulties mapped in the old criticita.sqlite are not used: everything comes from the
+    // engine's graph and the checks below)
+    val rows = emptyList<Any>()
+    val skipped = 0
 
     // 2. exit ramps with the swept path of this vehicle
     if (heavy && difficulties) {
@@ -238,12 +211,7 @@ class CriticalityFinder(regions: RegionManager) {
                 "dalle ${h.from.format(fmt)} alle ${h.to.format(fmt)}. Verifica deroghe e calendario ufficiale.",
             h.alongM, h.alongM + 1, p.lat, p.lng)
       }
-      val ro = a.edges.firstOrNull { e -> e.country == "RO" && (e.name?.contains(Regex("\\bDN ?1\\b|\\bE ?60\\b")) == true) }
-      if (ro != null) {
-        val p = a.pointAt(ro.startM)
-        out += Criticality("ban:RO:DN1", CritKind.BAN, Severity.INFO, "Restrizioni su DN1 (E60)", TruckBans.ROMANIA_NOTE,
-            ro.startM, ro.startM + 1, p.lat, p.lng)
-      }
+    }
     }
 
     val sorted = (if (difficulties) out else out.filter { it.kind !in DIFFICULTIES }).sortedBy { it.startM }

@@ -50,10 +50,16 @@ object MapStyles {
   fun styleUri(context: Context, regions: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String? = null, online: Boolean = false): String {
     val maps = regions.filter { it.map.exists() }
     val name = "style-${if (night) "n" else "d"}${if (satellite) "s" else ""}${if (traffic != null) "t" else ""}${if (online) "o" else ""}.json"
-    val out = File(context.filesDir, name)
     val text = if (maps.isEmpty() && !satellite && !online) EMPTY.replace("{BG}", if (night) "#1B1F24" else "#F2EFE9")
         else build(context, maps, night, satellite, traffic, online)
+    // the file is named after its content (and the map files it reads): a new map file gives a new
+    // style URI, and the map really loads it again (the same URI kept the old map's tiles index)
+    val stamp = (text + maps.joinToString { it.map.name + ":" + it.map.length() }).hashCode().toUInt().toString(16)
+    val out = File(context.filesDir, name.removeSuffix(".json") + "-" + stamp + ".json")
     if (!out.exists() || out.readText() != text) out.writeText(text)
+    // the older versions of this style are not needed any more
+    val prefix = name.removeSuffix(".json") + "-"
+    context.filesDir.listFiles { f -> f.name.startsWith(prefix) && f.name.endsWith(".json") && f != out }?.forEach { it.delete() }
     return "file://" + out.absolutePath
   }
 

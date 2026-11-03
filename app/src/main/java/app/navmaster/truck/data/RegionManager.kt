@@ -43,8 +43,13 @@ data class InstalledRegion(val id: String, val manifest: Manifest, val dir: File
   val label: String
     get() = manifest.label
 
+  /**
+   * The map: each version has its own file (mappa-<checksum>.pmtiles), so that an update never
+   * writes over the file the map is reading (that left the map blank until the app restarted);
+   * the newest one, or the plain mappa.pmtiles of the packages installed before.
+   */
   val map: File
-    get() = File(dir, "mappa.pmtiles")
+    get() = currentMap(dir)
 
   val limits: File
     get() = File(dir, "limiti.sqlite")
@@ -332,12 +337,16 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     fun unchanged(f: PackageFile): Boolean {
       // the engine graph: installed from this same package (unpacked)
       if (f.file == NmEngine.PACKAGE) return NmEngine.source(dir) == sums(f) && NmEngine.installed(dir)
+      // the map: its own file for each version
+      if (f.file == MAP_FILE && mapFileFor(dir, sums(f)).length() == f.size) return true
       val old = prev?.files?.firstOrNull { it.file == f.file } ?: return false
       if (sums(old) != sums(f)) return false
       return File(dir, f.file).length() == f.size
     }
-    // the routing data of the older versions (percorsi.tar, GraphHopper's gh*.tar.gz) are never downloaded
-    fun skipped(f: PackageFile) = f.file == OLD_ROUTING_FILE || f.file.startsWith("gh") && f.file.endsWith(".tar.gz") || f.file == "valichi.json"
+    // the routing data of the older versions (percorsi.tar, GraphHopper's gh*.tar.gz) and the old
+    // limits / difficulties databases (everything now comes from the engine's graph) are never downloaded
+    fun skipped(f: PackageFile) = f.file == OLD_ROUTING_FILE || f.file.startsWith("gh") && f.file.endsWith(".tar.gz") || f.file == "valichi.json" ||
+        f.file == "limiti.sqlite" || f.file == "criticita.sqlite"
     val files = manifest.files.filter { !skipped(it) && !unchanged(it) && (!job.lite || it.file in liteFiles()) }
     if (prev != null) Log.i(TAG, "update $id: ${files.joinToString { it.file }.ifEmpty { "nothing changed" }}")
     val parts = files.flatMap { f -> f.parts.map { "$base/${it.name}" to it } }
@@ -401,7 +410,13 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     // join the parts into the final files
     for (f in files) {
       put(DownloadState.Running(total, total, "Preparazione ${f.file}"))
-      join(f.parts.map { File(tmp, it.name) }, File(dir, f.file))
+      join(f.parts.map { File(tmp, it.name) }, if (f.file == MAP_FILE) mapFileFor(dir, sums(f)) else File(dir, f.file))
+    }
+    // the older map files: removed (the map reading one of them switches to the new file at once)
+    files.firstOrNull { it.file == MAP_FILE }?.let { mf ->
+      val keep = mapFileFor(dir, sums(mf))
+      keep.setLastModified(System.currentTimeMillis())
+      for (old in mapFiles(dir)) if (old != keep) old.delete()
     }
     // the engine graph comes packed: unpacked now, once, not at the first route
     val nmFile = files.firstOrNull { it.file == NmEngine.PACKAGE }
@@ -441,7 +456,8 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   fun removeOldRoutingData(dir: File? = null) {
     val dirs = if (dir != null) listOf(dir) else (root.listFiles() ?: emptyArray()).filter { it.isDirectory }
     for (d in dirs) {
-      for (name in listOf(OLD_ROUTING_FILE, "europa-tiles.txt", "gh", "gh.new", "gh.tar.gz", "gh-camion.tar.gz", "gh-auto.tar.gz", "valichi.json")) {
+      for (name in listOf(OLD_ROUTING_FILE, "europa-tiles.txt", "gh", "gh.new", "gh.tar.gz", "gh-camion.tar.gz", "gh-auto.tar.gz", "valichi.json",
+          "limiti.sqlite", "criticita.sqlite")) {
         val f = File(d, name)
         if (f.exists()) {
           Log.i(TAG, "${d.name}: old routing data $name removed")
@@ -470,6 +486,17 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     const val RELEASES = "https://github.com/francescobuzle-a11y/navmaster/releases/download"
     /** The routing graph of the versions before GraphHopper alone, never downloaded nor kept. */
     const val OLD_ROUTING_FILE = "percorsi.tar"
+    const val MAP_FILE = "mappa.pmtiles"
+
+    /** The map files of a country folder (mappa.pmtiles and mappa-<checksum>.pmtiles). */
+    fun mapFiles(dir: File): List<File> =
+        (dir.listFiles { f -> f.isFile && f.name.startsWith("mappa") && f.name.endsWith(".pmtiles") } ?: emptyArray()).toList()
+
+    /** The map in use: the newest map file. */
+    fun currentMap(dir: File): File = mapFiles(dir).maxByOrNull { it.lastModified() } ?: File(dir, MAP_FILE)
+
+    /** Where a map package with these part checksums is written. */
+    fun mapFileFor(dir: File, sums: String): File = File(dir, "mappa-" + sums.hashCode().toUInt().toString(16) + ".pmtiles")
     /** The files of a light package (the guidance online without the map). */
     val LITE_FILES = setOf("limiti.sqlite", "valichi.json")
   }

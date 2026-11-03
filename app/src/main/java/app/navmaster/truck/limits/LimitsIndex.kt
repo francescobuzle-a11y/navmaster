@@ -72,10 +72,11 @@ data class RouteLimit(
           "bus" -> "Divieto autobus"
           "motorhome" -> "Divieto camper"
           "hazmat" -> "Divieto merci pericolose"
+          "access" -> "Divieto di transito"
           "adr_tunnel" -> "Galleria ADR cat. ${raw ?: ""}"
           "speed_camera" -> "Autovelox"
           "average_speed" -> "Tutor"
-          else -> "Divieto a orario"
+          else -> "Divieto"
         }
 
   /** The value shown inside the round sign: "3,8m", "7,5t", or nothing for a ban. */
@@ -101,51 +102,52 @@ data class RouteLimit(
  */
 class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
 
-  /** The limits signed on the roads of the route [a], in route order. Nothing without the roads. */
+  /**
+   * The limits signed on the roads of the route [a], in route order, for this vehicle: only what
+   * the map has as a sign (maxheight, maxwidth, maxlength, maxweight, maxaxleload; the width of a
+   * carriageway is not a limit and the engine leaves it out), the bans that concern this kind of
+   * vehicle (dangerous goods, ADR tunnels, lorries, buses), and the restrictions at given hours
+   * only when they are in force at the time the vehicle is expected there. Nothing without the roads.
+   */
   fun scan(m: RouteMatcher, vehicle: VehicleProfile, weightT: Double, departure: LocalDateTime = LocalDateTime.now(),
            avgSpeedMs: Double = 16.0, a: RouteAnalysis? = null): List<RouteLimit> {
     if (a == null || a.edges.isEmpty() || m.route.size < 2) return emptyList()
     val out = mutableListOf<RouteLimit>()
     val seen = HashSet<String>()
+    // when the vehicle passes a point: the route's own times when known
+    fun at(alongM: Double): LocalDateTime =
+        departure.plusSeconds((if (a.length > 0 && a.durationS > 0) a.durationS * alongM / a.length else alongM / avgSpeedMs).toLong())
     for (e in a.edges) {
-      val items = e.limits.entries.map { it.key to it.value } + (if (e.hazmat) listOf("hazmat" to 0.0) else emptyList())
+      val osm = if (e.wayId > 0) "w${e.wayId}" else null
+      val items = ArrayList<Pair<String, Double>>()
+      for ((k, value) in e.limits) items += (SIGNED[k] ?: k) to value
+      if (e.hazmat && vehicle.hazmat) items += "hazmat" to 0.0
       for ((kind, value) in items) {
+        if (kind !in SIGNED.values && kind != "hazmat") continue
         // widths and heights no road vehicle fits: bollards and barriers of paths
         if ((kind == "maxwidth" || kind == "maxheight") && value < 1.6) continue
         // the same way signed with the same limit over several edges: said once, where it starts
         if (!seen.add("${e.wayId}:$kind:$value")) continue
-        val lo = e.startM
-        val p = a.pointAt(lo)
+        val p = a.pointAt(e.startM)
         // on a motorway a height, width or length limit is told as a warning to check on the spot, never a block
         val sizeOnMotorway = e.roadClass == "motorway" && (kind == "maxheight" || kind == "maxwidth" || kind == "maxlength")
-        out += RouteLimit(kind, value, null, null, null, lo, p.lat, p.lng, blocks(kind, value, vehicle, weightT) && !sizeOnMotorway,
-            if (e.wayId > 0) "w${e.wayId}" else null, "osm")
+        out += RouteLimit(kind, value, null, null, null, e.startM, p.lat, p.lng, blocks(kind, value, vehicle, weightT) && !sizeOnMotorway, osm, "osm")
       }
-      // ADR tunnel category
-      if (e.adrTunnel in 2..5 && seen.add("${e.wayId}:adr:${e.adrTunnel}")) {
+      // ADR tunnel category: only for a load with a tunnel code
+      if (e.adrTunnel in 2..5 && vehicle.adr != AdrTunnel.NONE && seen.add("${e.wayId}:adr:${e.adrTunnel}")) {
         val p = a.pointAt(e.startM)
         out += RouteLimit("adr_tunnel", e.adrTunnel.toDouble(), "BCDE"[e.adrTunnel - 2].toString(), null, null, e.startM, p.lat, p.lng,
-            blocks("adr_tunnel", e.adrTunnel.toDouble(), vehicle, weightT), if (e.wayId > 0) "w${e.wayId}" else null, "osm")
+            blocks("adr_tunnel", e.adrTunnel.toDouble(), vehicle, weightT), osm, "osm")
       }
-      // restrictions valid only at some hours: "key:conditional=value @ (hours)"
+      // restrictions at given hours: only those understood exactly, that concern this vehicle and
+      // are in force when it passes
       for (c in e.conditional) {
-        val key = c.substringBefore('=').removeSuffix(":conditional").removeSuffix(":hgv")
-        val raw = c.substringAfter('=', "")
-        val valueText = raw.substringBefore('@').trim()
-        val cond = raw.substringAfter('@', "").trim().removePrefix("(").removeSuffix(")").trim()
-        val kind = when (key) {
-          "maxweight", "maxheight", "maxwidth", "maxlength", "maxaxleload" -> key
-          "access", "vehicle", "motor_vehicle", "hgv", "goods" -> if (valueText.startsWith("no") || valueText.startsWith("private") || valueText.startsWith("destination")) "hgv" else continue
-          "bus" -> if (valueText.startsWith("no")) "bus" else continue
-          "hazmat" -> if (valueText.startsWith("no")) "hazmat" else continue
-          else -> continue
-        }
-        val value = valueText.replace(',', '.').filter { it.isDigit() || it == '.' }.toDoubleOrNull() ?: 0.0
-        if (!seen.add("${e.wayId}:$kind:$value:$cond")) continue
+        val r = conditionalRestriction(c, vehicle) ?: continue
+        val when0 = at(e.startM)
+        if (conditionalWindow(r.condition, when0) != true) continue
+        if (!seen.add("${e.wayId}:${r.kind}:${r.value}:${r.condition}")) continue
         val p = a.pointAt(e.startM)
-        val at = departure.plusSeconds((e.startM / avgSpeedMs).toLong())
-        out += RouteLimit(kind, value, valueText, null, cond, e.startM, p.lat, p.lng,
-            blocks(kind, value, vehicle, weightT) && conditionalActive(cond, at), if (e.wayId > 0) "w${e.wayId}" else null, "osm")
+        out += RouteLimit(r.kind, r.value, r.text, null, r.condition, e.startM, p.lat, p.lng, blocks(r.kind, r.value, vehicle, weightT), osm, "osm")
       }
     }
     // speed cameras, red-light cameras and average-speed sections (Tutor), from the graph
@@ -163,6 +165,35 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
     }
     Log.i("NavMasterLimits", "limits on the route: ${out.size} (${out.count { it.blocking }} blocking, ${out.count { it.kind == "speed_camera" || it.kind == "average_speed" }} cameras)")
     return out.sortedBy { it.alongM }
+  }
+
+  /** A restriction at given hours, understood: what it limits, its value, the hours ("Mo-Fr 07:00-19:00"). */
+  private class TimedRestriction(val kind: String, val value: Double, val text: String, val condition: String)
+
+  /**
+   * "key:conditional=value @ (hours)" as a limit of this vehicle, or null when it does not concern
+   * it or is not a plain prohibition / limit (a "destination only", a speed, a condition on the
+   * weather or the load: not shown).
+   */
+  private fun conditionalRestriction(c: String, v: VehicleProfile): TimedRestriction? {
+    val key = c.substringBefore('=').removeSuffix(":conditional")
+    val raw = c.substringAfter('=', "")
+    val valueText = raw.substringBefore('@').trim()
+    val cond = raw.substringAfter('@', "").trim().removePrefix("(").removeSuffix(")").trim()
+    if (cond.isEmpty() || valueText.isEmpty()) return null
+    val number = valueText.replace(',', '.').takeWhile { it.isDigit() || it == '.' }.toDoubleOrNull()
+    return when (key) {
+      "maxweight", "maxweight:hgv", "maxheight", "maxwidth", "maxlength", "maxaxleload" -> {
+        if (number == null || number <= 0) return null
+        if (key == "maxweight:hgv" && !v.isHgv) return null
+        TimedRestriction(key.removeSuffix(":hgv"), number, valueText, cond)
+      }
+      "hgv", "goods" -> if (valueText == "no" && v.isHgv) TimedRestriction("hgv", 0.0, valueText, cond) else null
+      "bus" -> if (valueText == "no" && v.isBus) TimedRestriction("bus", 0.0, valueText, cond) else null
+      "access", "vehicle", "motor_vehicle" -> if (valueText == "no") TimedRestriction("access", 0.0, valueText, cond) else null
+      "hazmat" -> if (valueText == "no" && v.hazmat) TimedRestriction("hazmat", 0.0, valueText, cond) else null
+      else -> null
+    }
   }
 
   /**
@@ -224,6 +255,7 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
         "bus" -> v.type == VehicleType.AUTOBUS
         "motorhome" -> v.type == VehicleType.CAMPER
         "hazmat" -> v.hazmat
+        "access" -> true
         // a tunnel of category X is closed to loads with tunnel code X or stricter (B < C < D < E)
         "adr_tunnel" -> v.adr != AdrTunnel.NONE && adrRank(v.adr) <= value.toInt()
         else -> false
@@ -248,6 +280,38 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
      * Whether a restriction written as "hgv=no @ (Mo-Fr 07:00-19:00)" applies at [at]. Only the
      * common day/hour forms are understood; anything else counts as always valid (safe side).
      */
+    /** The engine's limit names → the names of the signs. */
+    private val SIGNED = mapOf("height" to "maxheight", "width" to "maxwidth", "length" to "maxlength", "weight" to "maxweight", "axleload" to "maxaxleload",
+        "maxheight" to "maxheight", "maxwidth" to "maxwidth", "maxlength" to "maxlength", "maxweight" to "maxweight", "maxaxleload" to "maxaxleload")
+
+    /**
+     * Whether a time condition of OpenStreetMap ("Mo-Fr 07:00-19:00; Sa 07:00-13:00") holds at
+     * [at]: true / false, or null when it is not a plain list of days and hours (months, holidays,
+     * sunrise, the weather, the load …): such a restriction is not shown, it cannot be told for sure.
+     */
+    fun conditionalWindow(cond: String, at: LocalDateTime): Boolean? {
+      val spec = cond.trim().removePrefix("(").removeSuffix(")").trim()
+      if (spec.isEmpty()) return null
+      val dayRx = "(?:Mo|Tu|We|Th|Fr|Sa|Su)"
+      val partRx = Regex("^($dayRx(?:\\s*[-,]\\s*$dayRx)*)?\\s*((?:\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2})(?:\\s*,\\s*\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2})*)?$")
+      var any = false
+      for (part in spec.split(';').map { it.trim() }.filter { it.isNotEmpty() }) {
+        val m = partRx.matchEntire(part) ?: return null
+        val daysText = m.groupValues[1]; val hoursText = m.groupValues[2]
+        if (daysText.isEmpty() && hoursText.isEmpty()) return null
+        val days = if (daysText.isEmpty()) null else parseDays(daysText)
+        if (days != null && at.dayOfWeek !in days) continue
+        if (hoursText.isEmpty()) { any = true; continue }
+        val minute = at.hour * 60 + at.minute
+        for (h in Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})").findAll(hoursText)) {
+          val from = h.groupValues[1].toInt() * 60 + h.groupValues[2].toInt()
+          val to = h.groupValues[3].toInt() * 60 + h.groupValues[4].toInt()
+          if (if (from <= to) minute in from until to else minute >= from || minute < to) any = true
+        }
+      }
+      return any
+    }
+
     fun conditionalActive(cond: String, at: LocalDateTime): Boolean {
       val m = Regex("@\\s*\\(?([^)]*)\\)?").find(cond) ?: return true
       val spec = m.groupValues[1].trim()

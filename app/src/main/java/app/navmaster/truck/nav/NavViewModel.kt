@@ -247,6 +247,47 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private var lastOnRouteTraveled = 0.0
   /** The route (geometry key) the driver was already asked about: one question per route. */
   private var offRouteAskedKey: String? = null
+  /**
+   * The route (geometry key) the vehicle has already been on. Before that (a trip started in a
+   * yard, a car park, a field, away from the road the route starts on) leaving the route is not a
+   * wrong turn: nothing is asked, and the route is computed again only once the vehicle drives on
+   * another road.
+   */
+  private var joinedKey: String? = null
+
+  /**
+   * The vehicle is on a road and driving it: within 12 m of a road's line (up to 25 m with a poor
+   * fix) and, when it moves, in that road's direction (a one-way the wrong way does not count).
+   * Null when the roads here are not known (no graph).
+   */
+  private fun onRoad(loc: UserLocation): Boolean? {
+    val c = loc.coordinates
+    val tol = loc.horizontalAccuracy.takeIf { it.isFinite() && it > 0 }?.coerceIn(12.0, 25.0) ?: 15.0
+    val roads = runCatching { AppGraph.roads.near(c.lat, c.lng, 60.0) }.getOrNull() ?: return null
+    val heading = loc.courseOverGround?.degrees?.toDouble()
+    val moving = (loc.speed?.value ?: 0.0) >= 3.0 && heading != null
+    for (rd in roads) {
+      for (k in 0 until rd.pts.size - 1) {
+        val (d, _) = Geo.pointToSegment(c, rd.pts[k], rd.pts[k + 1])
+        if (d > tol) continue
+        if (!moving) return true
+        val diff = kotlin.math.abs(Geo.angleDiff(heading!!, Geo.bearing(rd.pts[k], rd.pts[k + 1])))
+        if ((diff < 40 && rd.oneway >= 0) || (diff > 140 && rd.oneway <= 0)) return true
+      }
+    }
+    return false
+  }
+
+  /** Metres from [p] to the route's line near the part driven last (−200 m … +1 km). */
+  private fun distanceToRoute(a: RouteAnalysis, p: GeographicCoordinate): Double {
+    val g = a.route.geometry
+    var best = Double.MAX_VALUE
+    for (k in 0 until g.size - 1) {
+      if (a.cum[k + 1] < lastOnRouteTraveled - 200 || a.cum[k] > lastOnRouteTraveled + 1_000) continue
+      best = minOf(best, Geo.pointToSegment(p, g[k], g[k + 1]).first)
+    }
+    return best
+  }
   /** The voice's question about leaving the route (cut as soon as the driver answers). */
   private val OFF_ROUTE_VOICE = "offroute"
 
@@ -355,10 +396,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       return
     }
     viewModelScope.launch(Dispatchers.IO) {
-      // no road here: nothing to recalculate from (and no question)
-      val road = runCatching { AppGraph.roads.near(lat, lon, 120.0).any { rd -> roadDistance(rd.pts, lat, lon) <= 45.0 } }.getOrNull()
-      if (road == false) {
-        Log.i(TAG, "off the route and off every road (${"%.5f,%.5f".format(java.util.Locale.ROOT, lat, lon)}): waiting for a road")
+      // not on a road (a field, a yard, a car park, a private track) or not driving it: nothing to
+      // recalculate from, and nothing to ask; checked again in a few seconds
+      val road = onRoad(loc)
+      if (road != true) {
+        Log.i(TAG, "off the route and not on a road (${"%.5f,%.5f".format(java.util.Locale.ROOT, lat, lon)}, ${road ?: "roads unknown"}): waiting for a road")
+        return@launch
+      }
+      // the trip started away from the route and the vehicle has not been on it yet: it is on
+      // another road now, so the route is computed again from here, quietly (no question)
+      if (joinedKey != key) {
+        withContext(Dispatchers.Main) {
+          if (offRouteAskedKey == key || lastGeometryKey != key || _nav.value.recalculating) return@withContext
+          offRouteAskedKey = key
+          Log.i(TAG, "not yet on the route, now on another road: route from here")
+          rerouteContinuing(quiet = true)
+        }
         return@launch
       }
       val rejoin = runCatching { rejoinAhead(lat, lon, heading) }.onFailure { Log.w(TAG, "rejoin check: $it") }.getOrNull()
@@ -998,6 +1051,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false, quick = false)
     asked.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
+    // the trip starts away from the road the route begins on (a yard, a car park): said once
+    if (!simulate) lastLocation.value?.coordinates?.let { here ->
+      val d = v.route.geometry.firstOrNull()?.let { Geo.dist(here, it) } ?: 0.0
+      if (d > 40) showNotice("Il percorso parte dalla strada a ${if (d < 1000) "${(d / 10).roundToInt() * 10} m" else "%.1f km".format(java.util.Locale.ITALIAN, d / 1000)}: raggiungila, la guida parte da sola.")
+    }
     _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, pois(v.route), v.analysis.length)
     if (navigationUiState.value.isNavigating()) core.replaceRoute(v.route) else core.startNavigation(v.route)
     startLive()
@@ -1499,6 +1557,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     if (ui.routeDeviation is uniffi.ferrostar.RouteDeviation.NoDeviation) {
       offRouteSince = 0L
       lastOnRouteTraveled = traveled
+    }
+    // the vehicle reached the route (within 25 m of its line): from now on leaving it is a wrong turn
+    if (joinedKey != lastGeometryKey) {
+      val loc = ui.location
+      val a = extras.analysis
+      if (loc != null && a != null && distanceToRoute(a, loc.coordinates) < 25.0) {
+        joinedKey = lastGeometryKey
+        Log.i(TAG, "on the route")
+      }
     }
     (extras.prompt as? DriverPrompt.OffRoute)?.let { p ->
       val loc = ui.location
