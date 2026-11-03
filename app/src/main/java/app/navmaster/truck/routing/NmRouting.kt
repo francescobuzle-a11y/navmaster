@@ -154,7 +154,8 @@ class NmRouting(
     // would only make the search slower
     if (s.topSpeedKmh > 0 && s.topSpeedKmh < (if (s.hgv) 85.0 else 130.0)) o["maximum_speed"] = JsonPrimitive(s.topSpeedKmh.coerceAtLeast(80.0))
     // alternatives (openrouteservice's alternative_routes): only between two points not too far apart
-    if (alternates > 0 && points.size == 2 && crow(points[0], points[1]) < 100_000) {
+    // (60 km: the alternatives use the full search, which on a longer trip does not fit the tablet's memory)
+    if (alternates > 0 && points.size == 2 && crow(points[0], points[1]) < 60_000) {
       o["alternative_routes"] = JsonObject(mapOf(
           "target_count" to JsonPrimitive((1 + alternates).coerceIn(2, 3)), "weight_factor" to JsonPrimitive(1.4), "share_factor" to JsonPrimitive(0.6),
       ))
