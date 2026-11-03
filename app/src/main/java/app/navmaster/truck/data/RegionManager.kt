@@ -475,10 +475,17 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     }
   }
 
-  fun delete(id: String) {
-    File(root, id).deleteRecursively()
-    setState(id, null)
-    refresh()
+  /**
+   * The country removed, off the main thread (gigabytes of files: the screen froze); [before] runs
+   * first (the engine closes the graph it is reading).
+   */
+  fun delete(id: String, before: () -> Unit = {}) {
+    scope.launch {
+      runCatching { before() }
+      File(root, id).deleteRecursively()
+      setState(id, null)
+      refresh()
+    }
   }
 
   companion object {

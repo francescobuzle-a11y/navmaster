@@ -99,7 +99,21 @@ object LaneModel {
    * The junction of the manoeuvre at [maneuverAtM] metres along the route of [a], or null when the
    * graph does not describe it (no other road leaves there). [lht]: traffic keeps left.
    */
+  /** The last junctions worked out (the screen, the voice and the junction view ask for the same one at every fix). */
+  private val cache = object : LinkedHashMap<String, Any>(8, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>?) = size > 6
+  }
+  private val NONE = Any()
+
   fun at(a: RouteAnalysis, maneuverAtM: Double, lht: Boolean = false): Junction? {
+    val key = "${System.identityHashCode(a)}:${Math.round(maneuverAtM / 5.0)}:$lht"
+    synchronized(cache) { cache[key]?.let { return if (it === NONE) null else it as Junction } }
+    val j = compute(a, maneuverAtM, lht)
+    synchronized(cache) { cache[key] = j ?: NONE }
+    return j
+  }
+
+  private fun compute(a: RouteAnalysis, maneuverAtM: Double, lht: Boolean): Junction? {
     if (a.edges.isEmpty() || a.length <= 0) return null
     val js = a.junctionShapes.filter { abs(it.atM - maneuverAtM) <= 35.0 }.minByOrNull { abs(it.atM - maneuverAtM) } ?: return null
     val node = js.atM

@@ -10,13 +10,19 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.stadiamaps.ferrostar.core.location.NavigationLocationProviding
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import uniffi.ferrostar.GeographicCoordinate
@@ -36,7 +42,15 @@ import uniffi.ferrostar.GeographicCoordinate
  */
 class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+  /** When the last satellite fix was handed on (elapsed realtime, ms: not the wall clock, which can be corrected). */
   @Volatile private var lastGpsAt = 0L
+  /**
+   * One stream of positions for everyone (the guidance and the view model): before, each collector
+   * started its own listeners and its own dead reckoning, and in a tunnel both carried the same
+   * position on, at twice the speed.
+   */
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+  private var shared: SharedFlow<Location>? = null
 
   // ---- the route being driven, for the tunnels (set by the guidance, null when not guiding)
   private class Line(val pts: List<GeographicCoordinate>, val cum: DoubleArray, @Volatile var wide: List<DoubleArray>, @Volatile var tunnels: List<DoubleArray>) {
@@ -48,6 +62,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   }
 
   @Volatile private var line: Line? = null
+  @Volatile private var lineKey = 0
 
   // ---- what the receiver gives, summed up in the log every 30 s (to read a tablet's trouble from its log)
   private inner class Diag {
@@ -106,7 +121,8 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
    * as if it were already there.
    */
   private fun plausibleSpeed(l: Location, acc: Double, el: Long): Double {
-    val reported = if (l.hasSpeed()) l.speed.toDouble() else 0.0
+    // a fix without speed (some external receivers, fused fixes): the speed measured from the positions
+    val reported = if (l.hasSpeed()) l.speed.toDouble() else maxOf(measured, 0.0)
     val dt = (el - spAt) / 1000.0
     if (spAt > 0L && dt in 0.3..5.0 && acc <= 25.0) {
       val vm = dist(GeographicCoordinate(spLat, spLon), GeographicCoordinate(l.latitude, l.longitude)) / dt
@@ -166,6 +182,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
    * route's way, still counts as on the route; elsewhere 30 m.
    */
   fun setRoute(geometry: List<GeographicCoordinate>?, wide: List<DoubleArray> = emptyList(), tunnels: List<DoubleArray> = emptyList()) {
+    lineKey = routeKeyOf(geometry)
     line = if (geometry == null || geometry.size < 2) null else {
       val cum = DoubleArray(geometry.size)
       for (i in 1 until geometry.size) cum[i] = cum[i - 1] + dist(geometry[i - 1], geometry[i])
@@ -173,6 +190,11 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     }
     drAlong = -1.0
     hintIndex = 0
+    // the position on the old route means nothing on the new one (the dead reckoning started from
+    // there, and the arrow jumped to the same distance along the new line)
+    fixAlong = -1.0
+    fixAt = 0L
+    tunnel = false
     _onRoute.value = null
   }
 
@@ -193,7 +215,20 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
    */
   class Fix(val alongM: Double, val speedMs: Double, val atNanos: Long, val accuracyM: Double, val reckoned: Boolean,
             /** Metres to the right of the route's line (negative: left), for the lane the vehicle is in. */
-            val lateralM: Double = 0.0)
+            val lateralM: Double = 0.0,
+            /** The route the position is on (the identity of its geometry, see [routeKeyOf]). */
+            val routeKey: Int = 0)
+
+  /** The key of a route's geometry, as in [Fix.routeKey]. */
+  fun routeKeyOf(geometry: List<GeographicCoordinate>?): Int {
+    if (geometry == null || geometry.isEmpty()) return 0
+    val a = geometry.first(); val m = geometry[geometry.size / 2]; val b = geometry.last()
+    return java.util.Objects.hash(geometry.size, a.lat, a.lng, m.lat, m.lng, b.lat, b.lng)
+  }
+
+  /** The position is worked out along the route (a tunnel, satellites silent): its speed is not measured. */
+  private val _reckoning = MutableStateFlow(false)
+  val reckoning: StateFlow<Boolean> = _reckoning.asStateFlow()
 
   @Volatile private var fixLateral = 0.0
 
@@ -214,9 +249,17 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
   @Volatile private var drAlong = -1.0
   @Volatile private var tunnel = false
   private var hintIndex = 0
+  /** Where the last fix was on the line: the window moves there only when the fix is used. */
+  private var pendingHint = -1
+  private var lastFullScan = 0L
 
   @SuppressLint("MissingPermission")
   override suspend fun lastLocation(): Location? = best(providers().mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() })
+
+  /** The last known position only when recent (2 minutes): an old one put the arrow, and a route asked at once, hours back. */
+  @SuppressLint("MissingPermission")
+  private fun recentLastLocation(): Location? = best(providers().mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+      .filter { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) < 120_000_000_000L })
 
   private fun providers(): List<String> {
     val enabled = runCatching { lm.getProviders(true) }.getOrDefault(emptyList())
@@ -272,8 +315,14 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         }
       }
     }
-    scan(hintIndex - 20, hintIndex + 400)
-    if (bestD > 90) scan(0, n - 1)
+    // the window around the last match, in metres (300 m back, 3 km ahead); the whole line only every 5 s off the route
+    val h = hintIndex.coerceIn(0, n - 1)
+    scan(indexAt(ln, ln.cum[h] - 300.0), indexAt(ln, ln.cum[h] + 3_000.0) + 1)
+    if (bestD > 90) {
+      val now = SystemClock.elapsedRealtime()
+      if (now - lastFullScan > 5_000) { lastFullScan = now; scan(0, n - 1) }
+      else scan(indexAt(ln, ln.cum[h] - 5_000.0), indexAt(ln, ln.cum[h] + 5_000.0) + 1)
+    }
     if (nearI >= 0 && nearI != bestI && nearD <= bestD + 12 && Math.abs(bestS - expected) > nearGap + 30) {
       bestD = nearD
       bestS = nearS
@@ -297,7 +346,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       // far from the line and no direction to tell by: not on the route
       return null
     }
-    hintIndex = bestI
+    pendingHint = bestI
     // on which side of the line: the cross product of the segment and the point (right is negative)
     val a = ln.pts[bestI]
     val b = ln.pts[bestI + 1]
@@ -310,22 +359,33 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     return bestS
   }
 
+  override fun locationUpdates(intervalMillis: Long): Flow<Location> = synchronized(this) {
+    shared ?: updates(intervalMillis).shareIn(scope, SharingStarted.WhileSubscribed(5_000), replay = 1).also { shared = it }
+  }
+
   @SuppressLint("MissingPermission")
-  override fun locationUpdates(intervalMillis: Long): Flow<Location> = callbackFlow {
+  private fun updates(intervalMillis: Long): Flow<Location> = callbackFlow {
     val listeners = mutableListOf<LocationListener>()
     // the last position handed on (to hold it still while the vehicle stands)
     var lastSent: Location? = null
     var lastOnRouteAt = 0L
-    fun send(l: Location) {
+    fun send(l0: Location) {
+      // the guidance keeps the speed (and the course) only with their accuracy: without it the
+      // speedometer fell back to a speed worked out from the positions, seconds late
+      val l = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+          ((l0.hasSpeed() && !l0.hasSpeedAccuracy()) || (l0.hasBearing() && !l0.hasBearingAccuracy()))) Location(l0).apply {
+        if (hasSpeed() && !hasSpeedAccuracy()) speedAccuracyMetersPerSecond = 1f
+        if (hasBearing() && !hasBearingAccuracy()) bearingAccuracyDegrees = 15f
+      } else l0
       lastSent = l
       _raw.value = l
       trySend(l)
     }
     fun accept(l: Location) {
-      val now = System.currentTimeMillis()
+      val now = SystemClock.elapsedRealtime()
       if (l.hasBearing() && l.hasSpeed() && l.speed >= 3f && l.provider != LocationManager.NETWORK_PROVIDER) {
         lastCourse = l.bearing.toDouble()
-        lastCourseAt = now
+        lastCourseAt = System.currentTimeMillis()
         lastCourseLat = l.latitude
         lastCourseLon = l.longitude
       }
@@ -337,14 +397,16 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       // carried on blindly at the last speed, ahead of the vehicle at every braking)
       val gpsLike = l.provider == LocationManager.GPS_PROVIDER || (l.provider != LocationManager.NETWORK_PROVIDER && acc0 <= 30.0 && now - lastGpsAt > 2_000)
       if (gpsLike) {
-        val el = SystemClock.elapsedRealtime()
+        // when the fix was measured (not when it arrived: a fix comes some hundreds of ms late)
+        val ageMs = if (l.elapsedRealtimeNanos > 0) ((SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos) / 1_000_000L).coerceIn(0L, 3_000L) else 0L
+        val el = now - ageMs
         val ln = line
         if (ln == null) {
           lastGpsAt = now
           send(l)
           return
         }
-        val s = alongOf(l)
+        var s = alongOf(l)
         val acc = acc0
         val v = plausibleSpeed(l, acc, el)
         val driving = fixAlong >= 0 && fixSpeed >= 3.0 && el - fixAt < 30_000
@@ -365,9 +427,16 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           return
         }
         lastGpsAt = now
+        if (pendingHint >= 0) hintIndex = pendingHint
         val wasTunnel = tunnel
         tunnel = false
+        _reckoning.value = false
         drAlong = -1.0
+        // standing still: the fixes wander by some metres; the position on the route stays where it
+        // was (before, the arrow crept forward at a long red light, past the stop line)
+        val stopped = if (l.hasSpeed()) v < 0.8 else (measured in 0.0..0.8)
+        val before = _onRoute.value
+        if (s != null && stopped && before != null && !before.reckoned && before.routeKey == lineKey && kotlin.math.abs(s - before.alongM) < 12.0) s = before.alongM
         if (s != null) {
           lastOnRouteAt = el
           fixAlong = s
@@ -375,7 +444,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
           fixSpeed = v
           fixAt = el
           diag.onRoute++
-          _onRoute.value = Fix(s, if (v < 0.8) 0.0 else v, System.nanoTime(), acc, false, fixLateral)
+          _onRoute.value = Fix(s, if (stopped) 0.0 else v, System.nanoTime() - ageMs * 1_000_000L, acc, false, fixLateral, lineKey)
         } else {
           fixAlong = -1.0
           _onRoute.value = null
@@ -384,7 +453,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         // standing still (a queue, a light, a roundabout entry): the fixes wander by some metres;
         // the position handed on stays where it is, so the map does not twitch
         val prev = lastSent
-        if (s != null && v < 0.8 && prev != null && prev.distanceTo(l) < 12f) {
+        if (s != null && stopped && prev != null && prev.distanceTo(l) < 12f) {
           send(Location(prev).apply {
             time = l.time
             elapsedRealtimeNanos = l.elapsedRealtimeNanos
@@ -396,12 +465,16 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         if (l.hasSpeed() && kotlin.math.abs(l.speed - v) > 0.3) send(Location(l).apply { speed = v.toFloat() }) else send(l)
       } else if (drAlong < 0 && now - lastGpsAt > 8000) {
         // the network position only when there is nothing better (never inside a tunnel being
-        // driven through: there the position along the route is far more precise)
-        send(l)
+        // driven through: there the position along the route is far more precise), and only when
+        // it says something: not a cell fix of a kilometre, not one whose circle holds the last
+        // satellite position anyway (stopped in a loading bay, the marker jumped around)
+        val prev = lastSent
+        val useless = prev != null && (acc0 > 150.0 || (prev.provider != LocationManager.NETWORK_PROVIDER && prev.distanceTo(l) <= acc0))
+        if (!useless) send(l)
       }
       diag.report()
     }
-    lastLocation()?.let { trySend(it) }
+    recentLastLocation()?.let { trySend(it) }
     val list = providers()
     Log.d(TAG, "location from ${list.joinToString()}")
     for (p in list) {
@@ -446,11 +519,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         if (silent > 240_000 || fixSpeed * silent / 1000.0 > 8000 || (!inTunnel && silent > 25_000)) {
           if (tunnel) Log.i(TAG, "dead reckoning stopped after ${silent / 1000} s")
           tunnel = false
+          _reckoning.value = false
           drAlong = -1.0
           fixAlong = -1.0
           _onRoute.value = null
           continue
         }
+        _reckoning.value = true
         if (!tunnel) {
           tunnel = true
           Log.i(TAG, "no satellites: dead reckoning along the route at ${"%.0f".format(fixSpeed * 3.6)} km/h" + (if (inTunnel) " (tunnel)" else ""))
@@ -464,7 +539,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         drAlong = s
         lastDr = now
         diag.drSeconds += stepS
-        _onRoute.value = Fix(s, fixSpeed * factor, System.nanoTime(), 8.0, true)
+        _onRoute.value = Fix(s, fixSpeed * factor, System.nanoTime(), 8.0, true, 0.0, lineKey)
         send(locationAt(ln, s, fixSpeed * factor))
       }
     }
@@ -520,6 +595,20 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       val x = ax + dx * t
       val y = ay + dy * t
       return Math.sqrt(x * x + y * y) to t
+    }
+
+    /** The index of the line's point at or before [s] metres. */
+    private fun indexAt(ln: Line, s: Double): Int {
+      val cum = ln.cum
+      if (s <= 0) return 0
+      if (s >= cum.last()) return cum.size - 1
+      var lo = 0
+      var hi = cum.size - 1
+      while (hi - lo > 1) {
+        val mid = (lo + hi) / 2
+        if (cum[mid] <= s) lo = mid else hi = mid
+      }
+      return lo
     }
 
     private fun pointAt(ln: Line, s: Double): GeographicCoordinate {

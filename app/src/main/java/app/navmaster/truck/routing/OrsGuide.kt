@@ -31,7 +31,12 @@ object OrsGuide {
    * Route [index] of the engine's GeoJSON [text] guided by its instructions. [heavy]: a lorry or a
    * bus (its own speed limits), [countryOf]: the ISO code of the country at a point.
    */
-  fun build(text: String, index: Int = 0, heavy: Boolean = false, countryOf: ((Double, Double) -> String?)? = null): Output? {
+  /**
+   * [kinds]: what each point of the trip is ("break": a stop, "via": a point the vehicle only passes
+   * through), the first being the start; the arrival at a stop is said as such, a point passed
+   * through is not said at all (before, both were announced as the destination).
+   */
+  fun build(text: String, index: Int = 0, heavy: Boolean = false, countryOf: ((Double, Double) -> String?)? = null, kinds: List<String>? = null): Output? {
     val root = json.parseToJsonElement(text).jsonObject
     val f = root["features"]?.jsonArray?.getOrNull(index)?.jsonObject ?: return null
     val coords = f["geometry"]?.jsonObject?.get("coordinates")?.jsonArray ?: return null
@@ -85,12 +90,21 @@ object OrsGuide {
       }
       b.append("\"distance\":[").append(dd).append("],\"duration\":[").append(du).append("],\"speed\":[").append(sp)
           .append("],\"maxspeed\":[").append(mx).append("]},\"steps\":[")
-      for ((k, s) in parsed.withIndex()) {
+      // the end of a leg that is not the last one: a stop ("Hai raggiunto la tappa", said by the
+      // step before it, whose next manoeuvre it is), or a point only passed through (nothing said,
+      // and the start of the next leg not said either)
+      val passEnd = L < segments.size - 1 && kinds?.getOrNull(L + 1) == "via"
+      val passStart = L > 0 && kinds?.getOrNull(L) == "via"
+      val named = parsed.map { st ->
+        when {
+          st.type == "arrive" && L < segments.size - 1 -> st.copy(instruction = if (passEnd) "" else "Hai raggiunto la tappa", quiet = passEnd)
+          st.type == "depart" && passStart -> st.copy(quiet = true)
+          else -> st
+        }
+      }
+      for ((k, s) in named.withIndex()) {
         if (k > 0) b.append(',')
-        val next = parsed.getOrNull(k + 1)
-        // the last step of a leg that is not the last one is a stop
-        val m = if (s.type == "arrive" && L < segments.size - 1) s.copy(instruction = "Hai raggiunto la tappa") else s
-        writeStep(b, m, next, pts)
+        writeStep(b, s, named.getOrNull(k + 1), pts)
       }
       b.append("]}")
     }
@@ -309,6 +323,8 @@ object OrsGuide {
       val bearingBefore: Int, val bearingAfter: Int,
       /** The lanes before this manoeuvre: [arrows, active 0/1, active arrow]. */
       val lanes: List<Array<String>>? = null,
+      /** Not said (a point passed through: its arrival, the start of the next leg). */
+      val quiet: Boolean = false,
   )
 
   /** One step of openrouteservice: its manoeuvre in OSRM terms (types 0..13 of openrouteservice). */
@@ -354,6 +370,8 @@ object OrsGuide {
     if (j == i) return 0.0
     return if (dir > 0) Geo.bearing(pts[i], pts[j]) else Geo.bearing(pts[j], pts[i])
   }
+
+  private fun sd0(s: Step) = s.distance
 
   private fun writeStep(b: StringBuilder, s: Step, next: Step?, pts: List<GeographicCoordinate>) {
     b.append("{\"distance\":").append(num(s.distance)).append(",\"duration\":").append(num(s.duration)).append(",\"weight\":").append(num(s.duration))
@@ -403,17 +421,22 @@ object OrsGuide {
       b.append('}')
     }
     b.append("],\"voiceInstructions\":[")
-    if (next != null) {
+    if (next != null && !(next.quiet && sd0(s) < 600)) {
       val sd = s.distance
       val fast = s.duration > 0 && sd / s.duration > 20.0
       val say = next.instruction.trimEnd('.') + "."
       val vs = mutableListOf<Pair<Double, String>>()
-      if (s.type == "depart") vs += sd to (s.instruction.trimEnd('.') + "." + if (sd < 400) " Poi " + say.replaceFirstChar { it.lowercase() } else "")
+      if (s.type == "depart" && !s.quiet) vs += sd to (s.instruction.trimEnd('.') + "." + if (sd < 400 && !next.quiet) " Poi " + say.replaceFirstChar { it.lowercase() } else "")
       else if (sd >= 600) vs += (sd - 10).coerceAtLeast(0.0) to "Continua per ${distanceWords(sd)}."
       val pre = if (fast) 1300.0 else 450.0
       val fin = if (fast) 300.0 else 140.0
-      if (sd > pre + 200) vs += pre to "Tra ${distanceWords(pre)}, ${say.replaceFirstChar { it.lowercase() }}"
-      vs += minOf(sd, fin) to say
+      if (!next.quiet) {
+        if (sd > pre + 200) vs += pre to "Tra ${distanceWords(pre)}, ${say.replaceFirstChar { it.lowercase() }}"
+        // the manoeuvre's own cue comes after the start's one (a short first step: both were at the
+        // same distance, and the start's "Avanti Nord su …" was taken for the manoeuvre)
+        val at = minOf(sd, fin)
+        vs += (if (s.type == "depart" && at >= sd) sd * 0.5 else at) to say
+      }
       for ((k, v) in vs.withIndex()) {
         if (k > 0) b.append(',')
         b.append("{\"distanceAlongGeometry\":").append(num(v.first)).append(",\"announcement\":")

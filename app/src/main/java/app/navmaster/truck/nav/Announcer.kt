@@ -62,14 +62,17 @@ class Announcer(
 
   /** What to say for the manoeuvre at the end of [step]: its closest spoken instruction. */
   fun textOf(step: RouteStep): String? {
-    val raw = step.spokenInstructions.minByOrNull { it.triggerDistanceBeforeManeuver }?.text?.let { clean(it) } ?: return null
+    val raw = closest(step)?.text?.let { clean(it) } ?: return null
     val p = step.visualInstructions.firstOrNull()?.primaryContent
     // in good Italian, as a person says it (see SpeechIt); null = not said at all
     return SpeechIt.maneuver(raw, p?.maneuverType?.name, p?.maneuverModifier?.name)
   }
 
-  private fun rawTextOf(step: RouteStep): String? =
-      step.spokenInstructions.minByOrNull { it.triggerDistanceBeforeManeuver }?.text?.let { clean(it) }
+  private fun rawTextOf(step: RouteStep): String? = closest(step)?.text?.let { clean(it) }
+
+  /** The cue said closest to the manoeuvre (of two at the same distance, the later one: the manoeuvre's own). */
+  private fun closest(step: RouteStep) = step.spokenInstructions.withIndex()
+      .minWithOrNull(compareBy<IndexedValue<uniffi.ferrostar.SpokenInstruction>> { it.value.triggerDistanceBeforeManeuver }.thenByDescending { it.index })?.value
 
   private fun typeOf(step: RouteStep): String = step.visualInstructions.firstOrNull()?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
 

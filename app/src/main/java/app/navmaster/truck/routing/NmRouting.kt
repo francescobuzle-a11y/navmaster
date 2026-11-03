@@ -46,33 +46,22 @@ class NmRouting(
    * [note] says why). [passThrough]: the vehicle goes on through the intermediate points in its
    * direction of travel (openrouteservice's `continue_straight`).
    */
-  fun routes(points: List<DoubleArray>, spec: RouteSpec, passThrough: Boolean = false, alternates: Int = 0): List<RouteResult>? {
+  fun routes(points: List<DoubleArray>, spec: RouteSpec, passThrough: Boolean = false, alternates: Int = 0, headings: List<Double?>? = null): List<RouteResult>? {
     if (points.size < 2) return null
     val started = SystemClock.elapsedRealtime()
-    val body = request(points, spec, passThrough, alternates).toString()
-    // a trip across a border (or through a country not on the tablet) goes to the server when there is one
-    val countries = points.map { countryOf(it[0], it[1]) }
-    val across = countries.any { it != null && it != countries[0] }
-    var text: String? = null
+    val body = request(points, spec, passThrough, alternates, headings).toString()
+    // the engine on the tablet (also across borders, with the graphs of the countries crossed); the
+    // NavMaster server when a country of the trip is not on the tablet and a server is set
     var from = "engine"
-    if (across && server != null && server.unavailable() == null) {
+    var text: String? = engine.directions(points, spec.profile, body)
+    if (text == null && server != null && server.unavailable() == null) {
       text = server.directions(spec.profile, body)
       from = "server"
       if (text == null) Log.w(TAG, "server: ${server.note}")
     }
     if (text == null) {
-      text = engine.directions(points[0][0], points[0][1], spec.profile, body)
-      from = "engine"
-    }
-    if (text == null && server != null && !across) {
-      // no graph here: the server, when it is reachable
-      val why = engine.problem
-      if (server.unavailable() == null) { text = server.directions(spec.profile, body); from = "server" }
-      if (text == null) { note = why ?: server.note ?: "motore non disponibile"; Log.w(TAG, "engine: $note"); return null }
-    }
-    if (text == null) {
       note = engine.problem ?: server?.note ?: "motore non disponibile"
-      Log.w(TAG, "engine: ${note}")
+      Log.w(TAG, "engine: $note")
       return null
     }
     return try {
@@ -112,7 +101,7 @@ class NmRouting(
     else -> "errore del motore ($code): ${message.take(120)}"
   }
 
-  private fun request(points: List<DoubleArray>, s: RouteSpec, passThrough: Boolean, alternates: Int): JsonObject {
+  private fun request(points: List<DoubleArray>, s: RouteSpec, passThrough: Boolean, alternates: Int, headings: List<Double?>?): JsonObject {
     val options = mutableMapOf<String, JsonElement>()
     val avoid = mutableListOf<JsonElement>()
     if (s.avoidTolls) avoid += JsonPrimitive("tollways")
@@ -152,6 +141,12 @@ class NmRouting(
         "navmaster" to JsonObject(mapOf("roads" to JsonPrimitive(true))),
     )
     if (options.isNotEmpty()) o["options"] = JsonObject(options)
+    // ORS bearings: the direction of travel at the start and at the points passed through ([] where none)
+    if (headings != null && headings.size == points.size && headings.any { it != null }) {
+      o["bearings"] = JsonArray(headings.map { h ->
+        if (h == null || h.isNaN()) JsonArray(emptyList()) else JsonArray(listOf(JsonPrimitive(((h % 360) + 360) % 360), JsonPrimitive(45)))
+      })
+    }
     // pass-through points (the driver going on along his road, or back onto the planned route): no u-turn at them
     if (passThrough && points.size > 2) o["continue_straight"] = JsonPrimitive(true)
     // the vehicle's top speed (openrouteservice accepts 80 km/h and more): only when it is below the

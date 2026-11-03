@@ -207,8 +207,14 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     here?.let { AppGraph.regions.ensureLite(it.id, it.name) }
     destCountry?.let { AppGraph.regions.ensureLite(it.id, it.name) }
   }
-  val styleUri = remember(installed, night, satellite, trafficTiles, onlineMap) {
-    MapStyles.styleUri(context, installed, night, satellite, trafficTiles, onlineMap)
+  // the map's style written off the main thread (reading, rewriting and saving the style JSON froze
+  // the screen for a moment at every switch of day/night, satellite or country); the style in use
+  // stays until the new one is ready, the first one is made at once
+  val styleFirst = remember { MapStyles.styleUri(context, installed, night, satellite, trafficTiles, onlineMap) }
+  val styleUri by androidx.compose.runtime.produceState(styleFirst, installed, night, satellite, trafficTiles, onlineMap) {
+    value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+      runCatching { MapStyles.styleUri(context, installed, night, satellite, trafficTiles, onlineMap) }.getOrDefault(value)
+    }
   }
 
   // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible. Near a
@@ -340,8 +346,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // the guidance's own snapping stands still at the end of a step until the step moves on, then
   // jumps; in the simulation (no satellites) the guidance's position is what there is
   val gpsFix by AppGraph.smartLocation.onRoute.collectAsState()
+  // only a position on the route the map is showing: after a recalculation the provider has the
+  // new route before the analysis is there, and its distances put on the old line sent the arrow
+  // back to the start of the old route
+  val trackKey = remember(trackAnalysis) { AppGraph.smartLocation.routeKeyOf(trackAnalysis?.route?.geometry) }
   val fixFresh = gpsFix != null && (System.nanoTime() - gpsFix!!.atNanos) < 4_000_000_000L &&
-      trackAnalysis != null && gpsFix!!.alongM <= trackAnalysis.length + 5
+      trackAnalysis != null && gpsFix!!.alongM <= trackAnalysis.length + 5 && gpsFix!!.routeKey == trackKey
   val simulatingTrack by vm.simulating.collectAsState()
   // the arrow glides along the route only while the satellites' provider puts the vehicle ON the
   // route (in the simulation: while the guidance's position is on it); the moment it leaves it,
@@ -351,10 +361,15 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       (fixFresh || (simulatingTrack && app.navmaster.truck.core.Geo.dist(trackAnalysis.pointAt(traveled), coreLoc.coordinates) < 60.0))
   // the real position (the provider's last fix) for the map while the vehicle is off the route
   val rawFix by AppGraph.smartLocation.raw.collectAsState()
+  // its direction only while moving (2 m/s): manoeuvring slowly in a yard the course of the fixes
+  // swings around and the map spun with it; below that the last good direction stays
+  val rawBearing = remember { doubleArrayOf(Double.NaN) }
   val rawLoc = remember(rawFix) { rawFix?.let { l ->
+    if (l.hasBearing() && l.hasSpeed() && l.speed >= 2f) rawBearing[0] = l.bearing.toDouble()
+    val b = rawBearing[0]
     uniffi.ferrostar.UserLocation(
         GeographicCoordinate(l.latitude, l.longitude), if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0,
-        if (l.hasBearing()) uniffi.ferrostar.CourseOverGround(l.bearing.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()) else null,
+        if (!b.isNaN()) uniffi.ferrostar.CourseOverGround(b.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()) else null,
         java.time.Instant.ofEpochMilli(l.time), null)
   } }
   SideEffect {
@@ -389,7 +404,14 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     track.lastFrame = 0L
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
-        smoothLoc.value = track.step(t, a)
+        val next = track.step(t, a)
+        val cur = smoothLoc.value
+        // a new position for the map only when the arrow really moved (4 cm) or turned: standing
+        // still the map was redrawn 60 times a second for nothing (the tablet heated and slowed down)
+        if (cur == null || next == null || kotlin.math.abs(cur.coordinates.lat - next.coordinates.lat) > 4e-7 ||
+            kotlin.math.abs(cur.coordinates.lng - next.coordinates.lng) > 4e-7 || cur.courseOverGround?.degrees != next.courseOverGround?.degrees) {
+          smoothLoc.value = next
+        }
         smoothAlong.value = track.shown
       }
     }
@@ -413,6 +435,21 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }) {
     // only this part is redrawn at every frame while the arrow glides (not the whole screen)
     ScopedMap {
+    // the map's options made once, not at every frame of the arrow
+    val mapOptionsFixed = remember { MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false)) }
+    val routeOverlayFixed = remember {
+      RouteOverlayBuilder(
+          // the route handed to the map once per route, not at every frame (see MapLines)
+          navigationPath = { state ->
+            // under the names of roads, towns and motorways (the style's slot), over the roads
+            org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
+              NmRouteLine(state.routeGeometry, "nm-route", Nm.Route, 13f, 3f)
+            }
+          })
+    }
+    val puckStyleFixed = remember {
+      NavigationMapPuckStyle(dotFillColorCurrentLocation = Color(0xFF1E88E5), bearingColor = Color(0xFF0D47A1), dotRadius = 11.dp, dotStrokeWidth = 4.dp)
+    }
     val smooth = smoothLoc.value
     NavigationMapView(
         baseStyle = BaseStyle.Uri(styleUri),
@@ -425,24 +462,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           navigating && !simulatingTrack && rawLoc != null -> ui.copy(location = rawLoc, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
           else -> ui
         },
-        mapOptions = MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false)),
-        routeOverlayBuilder =
-            RouteOverlayBuilder(
-                // the route handed to the map once per route, not at every frame (see MapLines)
-                navigationPath = { state ->
-                  // under the names of roads, towns and motorways (the style's slot), over the roads
-                  org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
-                    NmRouteLine(state.routeGeometry, "nm-route", Nm.Route, 13f, 3f)
-                  }
-                }),
+        mapOptions = mapOptionsFixed,
+        routeOverlayBuilder = routeOverlayFixed,
         navigationCameraOptions = cameraOptions,
-        locationPuckStyle =
-            NavigationMapPuckStyle(
-                dotFillColorCurrentLocation = Color(0xFF1E88E5),
-                bearingColor = Color(0xFF0D47A1),
-                dotRadius = 11.dp,
-                dotStrokeWidth = 4.dp,
-            ),
+        locationPuckStyle = puckStyleFixed,
         onMapClick = { _, _ ->
           lastMapTap = System.currentTimeMillis()
           NavigationMapClickResult.Pass
@@ -852,9 +875,21 @@ private fun NavigatingOverlay(
   }
   val fastRoad = analysis?.edgeAt(traveled)?.roadClass in setOf("motorway", "trunk")
   val nextLive = live.firstOrNull { it.endM - traveled > -20 && it.startM - traveled < (if (fastRoad) 5000.0 else 2000.0) }
-  // the speed the GPS gives, or measured from the last positions when it gives none
+  // the speed the GPS gives, or measured from the last positions when it gives none; none at all
+  // while the position is only worked out along the route (a tunnel: the speed of the entry is not
+  // the real one) or when the satellites have been silent for 3 s (it stayed frozen on the last value)
   val measured by vm.speedMs.collectAsState()
-  val speedKmh = (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured)?.let { (it * 3.6).roundToInt() }
+  val reckoningNow by AppGraph.smartLocation.reckoning.collectAsState()
+  val lastRaw by AppGraph.smartLocation.raw.collectAsState()
+  val simulatingNow by vm.simulating.collectAsState()
+  var speedStale by remember { mutableStateOf(false) }
+  LaunchedEffect(lastRaw) {
+    speedStale = false
+    kotlinx.coroutines.delay(3_000)
+    speedStale = true
+  }
+  val speedKmh = if (!simulatingNow && (reckoningNow || speedStale)) null
+      else (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured)?.let { (it * 3.6).roundToInt() }
   val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
   // the junction view fits the screen: about a third of the height upright, never taller than wide

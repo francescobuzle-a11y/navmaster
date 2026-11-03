@@ -68,7 +68,7 @@ object AppGraph {
   val catalog by lazy { CatalogStore(app) }
   val regions by lazy { RegionManager(app, catalog) }
   /** navmaster-engine on the tablet: the graphs of the downloaded countries (see OfflineRouteProvider). */
-  val engine by lazy { NmEngine(app, regions) }
+  val engine by lazy { NmEngine(app, regions, catalog) }
   /** The NavMaster server (engine-server on a graph of Europe), when one is set in the settings. */
   val server by lazy { NmServer(app, { settings.settings.value.engineServer }, { ApiKeys.ors(settings.settings.value) }) }
   /** The routes computed by the engine with openrouteservice's logic (on the tablet, or by the server across borders). */
@@ -92,7 +92,7 @@ object AppGraph {
   private fun remember(routes: List<Route>) {
     for (r in routes) {
       recent.addFirst(r)
-      while (recent.size > 16) recent.removeLast()
+      while (recent.size > 8) recent.removeLast()
     }
   }
 

@@ -292,48 +292,52 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
     fun conditionalWindow(cond: String, at: LocalDateTime): Boolean? {
       val spec = cond.trim().removePrefix("(").removeSuffix(")").trim()
       if (spec.isEmpty()) return null
-      val dayRx = "(?:Mo|Tu|We|Th|Fr|Sa|Su)"
+      val dayRx = "(?:Mo|Tu|We|Th|Fr|Sa|Su|PH)"
       val partRx = Regex("^($dayRx(?:\\s*[-,]\\s*$dayRx)*)?\\s*((?:\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2})(?:\\s*,\\s*\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2})*)?$")
       var any = false
       for (part in spec.split(';').map { it.trim() }.filter { it.isNotEmpty() }) {
         val m = partRx.matchEntire(part) ?: return null
         val daysText = m.groupValues[1]; val hoursText = m.groupValues[2]
         if (daysText.isEmpty() && hoursText.isEmpty()) return null
-        val days = if (daysText.isEmpty()) null else parseDays(daysText)
-        if (days != null && at.dayOfWeek !in days) continue
-        if (hoursText.isEmpty()) { any = true; continue }
-        val minute = at.hour * 60 + at.minute
-        for (h in Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})").findAll(hoursText)) {
-          val from = h.groupValues[1].toInt() * 60 + h.groupValues[2].toInt()
-          val to = h.groupValues[3].toInt() * 60 + h.groupValues[4].toInt()
-          if (if (from <= to) minute in from until to else minute >= from || minute < to) any = true
-        }
+        if (inWindow(daysText, hoursText, at)) any = true
       }
       return any
     }
+
+    /**
+     * The time [at] is in the window "days hours" of OSM's opening hours. A window past midnight
+     * ("Mo-Fr 22:00-06:00") goes on into the next day: Saturday 03:00 is in it, Monday 03:00 not.
+     * PH (public holiday) is only taken for the holidays every country keeps (1 January, 25
+     * December): a ban is shown only when it surely applies.
+     */
+    private fun inWindow(daysText: String, hoursText: String, at: LocalDateTime): Boolean {
+      val days = if (daysText.isEmpty()) null else parseDays(daysText)
+      val ph = Regex("\\bPH\\b").containsMatchIn(daysText)
+      fun dayOk(d: java.time.LocalDate) = days == null || d.dayOfWeek in days || (ph && sureHoliday(d))
+      val today = at.toLocalDate()
+      if (hoursText.isEmpty()) return dayOk(today)
+      val minute = at.hour * 60 + at.minute
+      for (h in Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})").findAll(hoursText)) {
+        val from = h.groupValues[1].toInt() * 60 + h.groupValues[2].toInt()
+        val to = h.groupValues[3].toInt() * 60 + h.groupValues[4].toInt()
+        if (from <= to) { if (dayOk(today) && minute in from until to) return true }
+        else if ((dayOk(today) && minute >= from) || (dayOk(today.minusDays(1)) && minute < to)) return true
+      }
+      return false
+    }
+
+    private fun sureHoliday(d: java.time.LocalDate) = (d.monthValue == 1 && d.dayOfMonth == 1) || (d.monthValue == 12 && d.dayOfMonth == 25)
 
     fun conditionalActive(cond: String, at: LocalDateTime): Boolean {
       val m = Regex("@\\s*\\(?([^)]*)\\)?").find(cond) ?: return true
       val spec = m.groupValues[1].trim()
       if (spec.isEmpty()) return true
       for (part in spec.split(';').map { it.trim() }) {
-        var days: Set<DayOfWeek>? = null
-        var rest = part
-        val dm = Regex("^((?:Mo|Tu|We|Th|Fr|Sa|Su)(?:\\s*[-,]\\s*(?:Mo|Tu|We|Th|Fr|Sa|Su))*)\\s*").find(part)
-        if (dm != null) {
-          days = parseDays(dm.groupValues[1])
-          rest = part.substring(dm.range.last + 1).trim()
-        }
-        if (days != null && at.dayOfWeek !in days) continue
-        if (rest.isEmpty()) return true
-        val hm = Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})").findAll(rest).toList()
-        if (hm.isEmpty()) return true
-        val minute = at.hour * 60 + at.minute
-        for (h in hm) {
-          val from = h.groupValues[1].toInt() * 60 + h.groupValues[2].toInt()
-          val to = h.groupValues[3].toInt() * 60 + h.groupValues[4].toInt()
-          if (if (from <= to) minute in from until to else minute >= from || minute < to) return true
-        }
+        val dm = Regex("^((?:Mo|Tu|We|Th|Fr|Sa|Su|PH)(?:\\s*[-,]\\s*(?:Mo|Tu|We|Th|Fr|Sa|Su|PH))*)\\s*").find(part)
+        val daysText = dm?.groupValues?.get(1) ?: ""
+        val rest = if (dm != null) part.substring(dm.range.last + 1).trim() else part
+        if (rest.isNotEmpty() && !Regex("\\d{1,2}:\\d{2}\\s*-\\s*\\d{1,2}:\\d{2}").containsMatchIn(rest)) return true
+        if (inWindow(daysText, rest, at)) return true
       }
       return false
     }

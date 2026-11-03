@@ -26,8 +26,8 @@ data class XY(val x: Double, val y: Double) {
 
 /** Converts between coordinates and metres around a reference point (good for a few km). */
 class LocalPlane(private val lat0: Double, private val lon0: Double) {
-  private val kx = 111320.0 * cos(Math.toRadians(lat0))
-  private val ky = 110540.0
+  private val kx = Geo.M_PER_DEG * cos(Math.toRadians(lat0))
+  private val ky = Geo.M_PER_DEG
 
   fun toXY(c: GeographicCoordinate) = XY((c.lng - lon0) * kx, (c.lat - lat0) * ky)
 
@@ -43,10 +43,19 @@ object Geo {
 
   fun dist(a: GeographicCoordinate, b: GeographicCoordinate): Double = dist(a.lat, a.lng, b.lat, b.lng)
 
+  /**
+   * Metres between two points on the sphere of the engine and of the guidance (radius 6 371 km, as
+   * GraphHopper/openrouteservice and Ferrostar): every distance along the route (the analysis, the
+   * limits, the cameras, the voice) must be measured the same way as the guidance's own, else on a
+   * long north-south trip they drifted apart by 0.6 % (a camera announced 2 km late after 400 km).
+   */
   fun dist(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val k = cos(Math.toRadians((lat1 + lat2) / 2))
-    return hypot((lon2 - lon1) * 111320.0 * k, (lat2 - lat1) * 110540.0)
+    return hypot((lon2 - lon1) * M_PER_DEG * k, (lat2 - lat1) * M_PER_DEG)
   }
+
+  /** Metres per degree of latitude on that sphere. */
+  const val M_PER_DEG = 6_371_000.0 * Math.PI / 180.0
 
   /** Compass bearing from a to b in degrees (0 = north, clockwise). */
   fun bearing(a: GeographicCoordinate, b: GeographicCoordinate): Double {
@@ -67,10 +76,10 @@ object Geo {
   /** Distance from p to segment ab (metres) and the position t (0..1) of the closest point. */
   fun pointToSegment(p: GeographicCoordinate, a: GeographicCoordinate, b: GeographicCoordinate): Pair<Double, Double> {
     val k = cos(Math.toRadians(a.lat))
-    val bx = (b.lng - a.lng) * 111320.0 * k
-    val by = (b.lat - a.lat) * 110540.0
-    val px = (p.lng - a.lng) * 111320.0 * k
-    val py = (p.lat - a.lat) * 110540.0
+    val bx = (b.lng - a.lng) * M_PER_DEG * k
+    val by = (b.lat - a.lat) * M_PER_DEG
+    val px = (p.lng - a.lng) * M_PER_DEG * k
+    val py = (p.lat - a.lat) * M_PER_DEG
     val len2 = bx * bx + by * by
     val t = if (len2 <= 0.0) 0.0 else ((px * bx + py * by) / len2).coerceIn(0.0, 1.0)
     return hypot(px - bx * t, py - by * t) to t
@@ -192,8 +201,8 @@ object Geo {
 
   /** A small square around a point, as a GeoJSON ring of the zones to avoid ([lon, lat]). */
   fun squareAround(lat: Double, lon: Double, halfM: Double): List<List<Double>> {
-    val dLat = halfM / 110540.0
-    val dLon = halfM / (111320.0 * cos(Math.toRadians(lat)))
+    val dLat = halfM / M_PER_DEG
+    val dLon = halfM / (M_PER_DEG * cos(Math.toRadians(lat)))
     return listOf(
         listOf(lon - dLon, lat - dLat),
         listOf(lon + dLon, lat - dLat),

@@ -474,28 +474,30 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
     val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
     return doubleArrayOf(-dy / l, dx / l)
   }
-  // the gantry: over the road arriving, 60 m before the node, when the map has the signs
-  val gi = (0..n).minByOrNull { abs(routeAlong[it] - (node - 60)) } ?: 0
+  // the camera: fixed, behind and high above the road arriving, looking down at the junction as
+  // the dedicated navigators do (the whole junction and the roads leaving it in the picture, the
+  // horizon near the top)
+  val camBack = if (exitLike) 150.0 else 70.0
+  val camH = if (exitLike) 32.0 else 26.0
+  // the gantry: over the road arriving, halfway between the camera and the node, when the map has the signs
+  val gi = (0..n).minByOrNull { abs(routeAlong[it] - (node - camBack * 0.5)) } ?: 0
   val gantry = gantryOf(j, s.country, ourLeft, laneW, nLanes, active)?.let { g ->
     val nn = normal(gi)
     Gantry(rx[gi], ry[gi], nn[0], nn[1], g.yLeft, g.yRight, g.panels)
   }
 
-  // the camera: fixed, behind and above the road arriving, looking at the junction
-  val camBack = if (exitLike) 175.0 else 95.0
-  val camH = if (exitLike) 9.0 else 6.5
   val ci = (0..n).minByOrNull { abs(routeAlong[it] - (node - camBack)) } ?: 0
   // over the middle of our lanes, looking a little past the junction, towards the lanes to take
   val camY = (ourLeft - nLanes * laneW / 2)
   val cn = normal(ci)
   val camera = doubleArrayOf(rx[ci] + cn[0] * camY, ry[ci] + cn[1] * camY, camH)
-  val ti = (0..n).minByOrNull { abs(routeAlong[it] - (node + if (exitLike) 70.0 else 30.0)) } ?: n
+  val ti = (0..n).minByOrNull { abs(routeAlong[it] - (node + if (exitLike) 70.0 else 15.0)) } ?: n
   val tn = normal(ti)
   val tY = camY * 0.5 + activeY * 0.3
   // halfway between the route's point there and the straight line ahead: the other road stays in the picture
-  val target = doubleArrayOf((rx[ti] + tn[0] * tY + (if (exitLike) 70.0 else 30.0)) / 2, (ry[ti] + tn[1] * tY + tY) / 2, 0.0)
-  return Scene(asphalt, markings, lit, arrow, head, gantry, camera, target, if (exitLike) 42.0 else 50.0,
-      from, (to - from) / n, node, routeAlong[ci] + 22.0, rx.copyOf(), ry.copyOf(), routeLaneY, laneY, laneW, pal)
+  val target = doubleArrayOf((rx[ti] + tn[0] * tY + (if (exitLike) 70.0 else 15.0)) / 2, (ry[ti] + tn[1] * tY + tY) / 2, 0.0)
+  return Scene(asphalt, markings, lit, arrow, head, gantry, camera, target, if (exitLike) 44.0 else 52.0,
+      from, (to - from) / n, node, routeAlong[ci] + camH * 1.8, rx.copyOf(), ry.copyOf(), routeLaneY, laneY, laneW, pal)
 }
 
 private fun nearestRoute(x: Double, y: Double, rx: DoubleArray, ry: DoubleArray): Double {
@@ -611,7 +613,21 @@ private fun gantryOf(j: LaneModel.Junction, country: String?, ourLeft: Double, l
     }
   }
   if (panels.isEmpty()) return null
-  return Gantry(0.0, 0.0, 0.0, 1.0, ourLeft + 1.2, ourLeft - nLanes * laneW - 1.2, panels)
+  // a real panel is wider than one lane: at least 6.5 m, side by side without overlapping
+  val wide = panels.map { pn ->
+    val w = pn.yLeft - pn.yRight
+    if (w >= 6.5) pn else { val c = (pn.yLeft + pn.yRight) / 2; Panel(c + 3.25, c - 3.25, pn.lines, pn.exit, pn.bg, pn.fg, pn.arrowDeg, pn.taken) }
+  }.sortedByDescending { it.yLeft }.toMutableList()
+  for (i in 1 until wide.size) {
+    val prev = wide[i - 1]; val cur = wide[i]
+    if (cur.yLeft > prev.yRight - 0.3) {
+      val shift = cur.yLeft - (prev.yRight - 0.3)
+      wide[i] = Panel(cur.yLeft - shift, cur.yRight - shift, cur.lines, cur.exit, cur.bg, cur.fg, cur.arrowDeg, cur.taken)
+    }
+  }
+  val left = maxOf(ourLeft + 1.2, wide.first().yLeft + 0.6)
+  val right = minOf(ourLeft - nLanes * laneW - 1.2, wide.last().yRight - 0.6)
+  return Gantry(0.0, 0.0, 0.0, 1.0, left, right, wide)
 }
 
 // ------------------------------------------------------------------------------------- projection

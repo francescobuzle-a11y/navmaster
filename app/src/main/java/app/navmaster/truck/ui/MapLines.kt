@@ -31,21 +31,27 @@ fun rememberJsonSource(json: String): GeoJsonSource {
   return rememberGeoJsonSource(data)
 }
 
-/** The route as GeoJSON text, made once per route (keyed by its size and a few of its points). */
+/**
+ * The route as GeoJSON text, made once per route (keyed by its size and a few of its points), off
+ * the main thread (a long trip is a megabyte of text: the screen stopped for a moment at every
+ * recalculation); the line of before stays on the map until the new text is ready.
+ */
 @Composable
 fun rememberLineJson(points: List<GeographicCoordinate>?): String? {
   val n = points?.size ?: 0
-  return remember(n, points?.firstOrNull(), points?.lastOrNull(), points?.getOrNull(n / 2)) {
-    if (points == null || n < 2) null
-    else buildString(n * 24 + 120) {
-      append("""{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"LineString","coordinates":[""")
-      for ((i, p) in points.withIndex()) {
-        if (i > 0) append(',')
-        append('[').append(p.lng).append(',').append(p.lat).append(']')
+  val state = androidx.compose.runtime.produceState<String?>(null, n, points?.firstOrNull(), points?.lastOrNull(), points?.getOrNull(n / 2)) {
+    value = if (points == null || n < 2) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+      buildString(n * 24 + 120) {
+        append("""{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"LineString","coordinates":[""")
+        for ((i, p) in points.withIndex()) {
+          if (i > 0) append(',')
+          append('[').append(p.lng).append(',').append(p.lat).append(']')
+        }
+        append("""]},"properties":{}}]}""")
       }
-      append("""]},"properties":{}}]}""")
     }
   }
+  return state.value
 }
 
 /** A line with a border (the route), drawn from GeoJSON text that is handed to the map once. */

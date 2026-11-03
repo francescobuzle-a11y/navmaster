@@ -265,6 +265,11 @@ object SpeechIt {
       val where = m.groupValues[2].takeIf { it.isNotBlank() }?.let { " " + toward(it) } ?: ""
       return "Tieni la ${m.groupValues[1].lowercase()}$where"
     }
+    // at a fork the engine's "Gira a sinistra su A4" is a lane to keep, not a turn
+    if ("FORK" in t && side != null) {
+      TURN_ON.find(raw)?.let { m -> return "Tieni la $side ${toward(m.groupValues[4])}" }
+      TURN_TO.find(raw)?.let { m -> return "Tieni la $side ${toward(m.groupValues[4])}" }
+    }
     TURN_ON.find(raw)?.let { m ->
       val how = m.groupValues[2].trim()
       val road = normalize("su " + m.groupValues[4])

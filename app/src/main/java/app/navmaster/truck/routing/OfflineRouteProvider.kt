@@ -58,7 +58,7 @@ class OfflineRouteProvider(
   private fun remember(route: Route, json: String?) = synchronized(attributes) {
     if (json == null) return@synchronized
     attributes[key(route)] = json
-    while (attributes.size > 24) attributes.remove(attributes.keys.first())
+    while (attributes.size > 6) attributes.remove(attributes.keys.first())
   }
 
   override suspend fun getRoutes(userLocation: UserLocation, waypoints: List<Waypoint>): List<Route> =
@@ -97,7 +97,16 @@ class OfflineRouteProvider(
         note = null
         val started = System.currentTimeMillis()
         val alternates = if (options.moreRoutes) options.alternates.coerceIn(1, 2) else options.alternates.coerceIn(0, 2)
-        val found = nm.routes(stops.points, spec, stops.kinds.any { it == "via" }, alternates)
+        // the direction of travel where the route starts (moving, or the last one while it moved
+        // there) and at the points passed through: the route starts on the vehicle's carriageway
+        // and goes on its way (ORS bearings), not back the way it came
+        val c0 = userLocation.coordinates
+        val startHeading = userLocation.courseOverGround?.degrees?.toDouble()?.takeIf { (userLocation.speed?.value ?: 0.0) >= 2.0 }
+            ?: runCatching { app.navmaster.truck.AppGraph.smartLocation.courseNear(c0.lat, c0.lng) }.getOrNull()
+        val headings = stops.points.mapIndexed { i, p ->
+          if (i == 0) startHeading else options.viaHeadings[app.navmaster.truck.vehicle.TripOptions.pointKey(p[0], p[1])]
+        }
+        val found = nm.routes(stops.points, spec, stops.kinds.any { it == "via" }, alternates, headings)
         if (found == null) {
           val why = nm.note ?: "il motore non ha trovato un percorso"
           Log.w(TAG, "no route: $why")
@@ -107,7 +116,7 @@ class OfflineRouteProvider(
         val countryOf = { lat: Double, lon: Double -> app.navmaster.truck.AppGraph.catalog.countryAt(lat, lon)?.iso?.uppercase() }
         val out = mutableListOf<Route>()
         for (i in found.indices) {
-          val guided = runCatching { OrsGuide.build(answer, i, spec.hgv, countryOf) }
+          val guided = runCatching { OrsGuide.build(answer, i, spec.hgv, countryOf, stops.kinds) }
               .onFailure { Log.w(TAG, "guidance not written: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }.getOrNull() ?: break
           val route = runCatching { parser.parseResponse(guided.osrm.encodeToByteArray()).firstOrNull() }
               .onFailure { Log.w(TAG, "guidance not readable: $it") }.getOrNull() ?: break

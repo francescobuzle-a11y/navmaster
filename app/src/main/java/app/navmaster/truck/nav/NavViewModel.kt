@@ -142,9 +142,12 @@ sealed class DriverPrompt {
       val tollKm: Double,
       val tollFree: Route,
       val distanceToTollM: Double,
+      /** Where the toll starts (metres along the route) and when it was asked (System.currentTimeMillis). */
+      val tollStartM: Double = 0.0,
+      val askedAt: Long = System.currentTimeMillis(),
   ) : DriverPrompt()
 
-  data class Break(override val id: String, val drivenMin: Int, val parking: RoutePoi?) : DriverPrompt()
+  data class Break(override val id: String, val drivenMin: Int, val parking: RoutePoi?, val askedAt: Long = System.currentTimeMillis()) : DriverPrompt()
 
   /** The road ahead is closed (official information): look for another way? */
   data class Closure(override val id: String, val event: RouteLiveEvent, val distanceM: Double) : DriverPrompt()
@@ -200,7 +203,21 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   /** Where from, through which stops and with which choices the routes on screen were computed. */
   private var planRequest: Triple<UserLocation, List<Waypoint>, TripOptions>? = null
   private val asked = mutableSetOf<String>()
-  private var lastGeometryKey: String? = null
+
+  /**
+   * What was said or asked, by place (kind and position): a recalculation changes the metres along
+   * the route of every warning, and the same warning, the same tight ramp question, the same toll
+   * check came again after each one.
+   */
+  private val saidPlaces = ArrayList<Triple<String, Double, Double>>()
+
+  private fun saidNear(kind: String, lat: Double, lon: Double): Boolean = saidPlaces.any { it.first == kind && Geo.dist(lat, lon, it.second, it.third) < 150.0 }
+
+  private fun markSaid(kind: String, lat: Double, lon: Double) {
+    saidPlaces += Triple(kind, lat, lon)
+    if (saidPlaces.size > 400) saidPlaces.removeAt(0)
+  }
+  @Volatile private var lastGeometryKey: String? = null
 
   /** Before navigation starts, the map still shows where the vehicle is. */
   override val navigationUiState: StateFlow<NavigationUiState> =
@@ -263,6 +280,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private fun onRoad(loc: UserLocation): Boolean? {
     val c = loc.coordinates
     val tol = loc.horizontalAccuracy.takeIf { it.isFinite() && it > 0 }?.coerceIn(12.0, 25.0) ?: 15.0
+    // no graph here (a country not on the tablet): the roads are not known, which is not "no road"
+    if (!AppGraph.engine.hasGraphAt(c.lat, c.lng)) return null
     val roads = runCatching { AppGraph.roads.near(c.lat, c.lng, 60.0) }.getOrNull() ?: return null
     val heading = loc.courseOverGround?.degrees?.toDouble()
     val moving = (loc.speed?.value ?: 0.0) >= 3.0 && heading != null
@@ -399,7 +418,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       // not on a road (a field, a yard, a car park, a private track) or not driving it: nothing to
       // recalculate from, and nothing to ask; checked again in a few seconds
       val road = onRoad(loc)
-      if (road != true) {
+      // null: the roads are not known here (no graph): the route is computed all the same (the
+      // server may know them); before, the app waited for a road for ever and never recalculated
+      if (road == false) {
         Log.i(TAG, "off the route and not on a road (${"%.5f,%.5f".format(java.util.Locale.ROOT, lat, lon)}, ${road ?: "roads unknown"}): waiting for a road")
         return@launch
       }
@@ -499,12 +520,20 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   }
 
   /** The stops of the trip still to reach, in order, as waypoints (the last one is the destination). */
+  /** The intermediate stops the vehicle reached (within 80 m): never routed to again. */
+  private val reachedStops = HashSet<String>()
+
+  private fun stopKey(c: GeographicCoordinate) = "%.5f,%.5f".format(java.util.Locale.ROOT, c.lat, c.lng)
+
   private fun remainingStops(): List<Waypoint> {
     val stops = _plan.value.stops
     if (stops.size <= 1) return stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }
     val a = _nav.value.analysis
     val out = mutableListOf<Waypoint>()
     for ((i, st) in stops.withIndex()) {
+      // a delivery already made is not a stop any more (before, two wrong turns after it and the
+      // recalculation sent the lorry back to it)
+      if (i < stops.size - 1 && stopKey(st.coordinate) in reachedStops) continue
       if (i < stops.size - 1 && a != null) {
         // an intermediate stop already passed on the old route does not count any more
         val g = a.route.geometry
@@ -566,6 +595,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       } catch (e: Exception) {
         Log.w(TAG, "reroute along this road: $e")
         if (!quiet) say("Non trovo un percorso da questa strada: prosegui con attenzione.")
+        // tried again in 15 s (before, one failure meant no recalculation for the rest of the trip)
+        withContext(Dispatchers.Main) {
+          offRouteAskedKey = null
+          noRoadCheckedAt = System.currentTimeMillis() + 12_000
+        }
       } finally {
         _nav.update { it.copy(recalculating = false) }
       }
@@ -1050,13 +1084,17 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     laneTracker.reset()
     AppGraph.trip.value = v.options.copy(alternates = 0, moreRoutes = false, quick = false)
     asked.clear()
+    saidPlaces.clear()
+    reachedStops.clear()
     lastGeometryKey = geometryKey(v.route.geometry)
     // the trip starts away from the road the route begins on (a yard, a car park): said once
     if (!simulate) lastLocation.value?.coordinates?.let { here ->
       val d = v.route.geometry.firstOrNull()?.let { Geo.dist(here, it) } ?: 0.0
       if (d > 40) showNotice("Il percorso parte dalla strada a ${if (d < 1000) "${(d / 10).roundToInt() * 10} m" else "%.1f km".format(java.util.Locale.ITALIAN, d / 1000)}: raggiungila, la guida parte da sola.")
     }
-    _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, pois(v.route), v.analysis.length)
+    // the places along the route from their databases off the main thread (it froze the tap on "Vai")
+    _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, emptyList(), v.analysis.length)
+    refreshPois()
     if (navigationUiState.value.isNavigating()) core.replaceRoute(v.route) else core.startNavigation(v.route)
     startLive()
   }
@@ -1558,6 +1596,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       offRouteSince = 0L
       lastOnRouteTraveled = traveled
     }
+    // the intermediate stops reached
+    ui.location?.coordinates?.let { here ->
+      val stops = _plan.value.stops
+      for (st in stops.dropLast(1)) if (Geo.dist(here, st.coordinate) < 80.0) reachedStops += stopKey(st.coordinate)
+    }
     // the vehicle reached the route (within 25 m of its line): from now on leaving it is a wrong turn
     if (joinedKey != lastGeometryKey) {
       val loc = ui.location
@@ -1570,9 +1613,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     (extras.prompt as? DriverPrompt.OffRoute)?.let { p ->
       val loc = ui.location
       // the vehicle is back on the old route by itself: nothing to ask any more
+      // (only the old route near where it was left: −500 m … +5 km, not the whole line at every fix)
       val onOld = loc != null && p.old.route.geometry.let { g ->
         val c = loc.coordinates
-        (0 until g.size - 1).any { k -> Geo.pointToSegment(c, g[k], g[k + 1]).first < 30 }
+        val cum = p.old.cum
+        (0 until g.size - 1).any { k ->
+          cum[k + 1] >= p.oldTraveled - 500 && cum[k] <= p.oldTraveled + 5_000 && Geo.pointToSegment(c, g[k], g[k + 1]).first < 30
+        }
       }
       if (onOld) {
         voice.cancel(OFF_ROUTE_VOICE)
@@ -1616,7 +1663,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       // a question nobody answered in time goes away
       val p = extras.prompt
       if (p is DriverPrompt.TightRamp && p.crit.startM - traveled < 150) dismissPrompt()
-      if (p is DriverPrompt.TollChoice && remaining < 0) dismissPrompt()
+      // the toll question: until 200 m before the toll, at most 40 s (before, a question not answered
+      // stayed for the whole trip and every later warning was silent); the break one a minute
+      if (p is DriverPrompt.TollChoice && (p.tollStartM - traveled < 200 || System.currentTimeMillis() - p.askedAt > 40_000)) dismissPrompt()
+      if (p is DriverPrompt.Break && System.currentTimeMillis() - p.askedAt > 60_000) dismissPrompt()
       if (p is DriverPrompt.Closure && p.event.startM - traveled < 300) dismissPrompt()
       return
     }
@@ -1628,10 +1678,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     if (settings.voiceWarnings && now - critSaidAt > 10_000L) {
       val c = extras.criticalities.filter { c ->
         c.kind != CritKind.RAMP && c.kind != CritKind.BAN && c.severity != Severity.INFO &&
-            c.startM - traveled in 0.0..(if (c.severity == Severity.CRITICAL) 1000.0 else 400.0) && "say:${c.id}" !in asked
+            c.startM - traveled in 0.0..(if (c.severity == Severity.CRITICAL) 1000.0 else 400.0) && "say:${c.id}" !in asked &&
+            !saidNear("say:${c.kind}", c.lat, c.lon)
       }.minByOrNull { it.startM }
       if (c != null) {
         asked += "say:${c.id}"
+        markSaid("say:${c.kind}", c.lat, c.lon)
         critSaidAt = now
         // only what it is and where: the street is on the screen ("Svolta a destra stretta tra 400 metri")
         val what = c.title.substringBefore(" (").substringBefore(" in ").trim().replaceFirstChar { it.lowercase() }
@@ -1643,9 +1695,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // toll booths and borders: said once, about a kilometre before
     if (settings.voiceWarnings) {
       val a = extras.analysis
-      val booth = a?.nodes?.firstOrNull { it.alongM - traveled in 150.0..1100.0 && "node:${it.alongM.toLong()}" !in asked }
+      val booth = a?.nodes?.firstOrNull { n ->
+        n.alongM - traveled in 150.0..1100.0 && "node:${n.alongM.toLong()}" !in asked && a.pointAt(n.alongM).let { !saidNear("node", it.lat, it.lng) }
+      }
       if (a != null && booth != null) {
         asked += "node:${booth.alongM.toLong()}"
+        a.pointAt(booth.alongM).let { markSaid("node", it.lat, it.lng) }
         val d = app.navmaster.truck.nav.SpeechIt.distance(booth.alongM - traveled)
         val what = if (booth.isToll) when (a.boothRole(booth)) {
           "entrata" -> "casello d'ingresso in autostrada"
@@ -1659,10 +1714,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // a tight exit ramp ahead: ask the driver
     if (settings.askTightRamps) {
       val ramp = extras.criticalities.firstOrNull { c ->
-        c.kind == CritKind.RAMP && c.severity != Severity.INFO && c.startM - traveled in 250.0..1600.0 && c.id !in asked
+        c.kind == CritKind.RAMP && c.severity != Severity.INFO && c.startM - traveled in 250.0..1600.0 && c.id !in asked && !saidNear("ramp", c.lat, c.lon)
       }
       if (ramp != null) {
         asked += ramp.id
+        markSaid("ramp", ramp.lat, ramp.lon)
         val d = ramp.startM - traveled
         _nav.update { it.copy(prompt = DriverPrompt.TightRamp(ramp.id, ramp, d)) }
         say("Attenzione: tra ${app.navmaster.truck.nav.SpeechIt.distance(d)} lo svincolo ha una curva stretta" +
@@ -1675,9 +1731,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // a toll stretch ahead: is the toll-free way almost as quick?
     if (settings.tollPolicy == TollPolicy.ASK && !AppGraph.trip.value.avoidTolls) {
       val a = extras.analysis
-      val toll = a?.tolls?.firstOrNull { it.startM - traveled in 1200.0..6000.0 && "toll:${it.startM.toLong()}" !in asked }
+      val toll = a?.tolls?.firstOrNull { t ->
+        t.startM - traveled in 1200.0..6000.0 && "toll:${t.startM.toLong()}" !in asked && a.pointAt(t.startM).let { !saidNear("toll", it.lat, it.lng) }
+      }
       if (toll != null) {
         asked += "toll:${toll.startM.toLong()}"
+        a.pointAt(toll.startM).let { markSaid("toll", it.lat, it.lng) }
         val from = ui.location ?: lastLocation.value
         if (from != null) checkTollFree(from, toll.startM - traveled, a, traveled, ui.progress?.durationRemaining ?: 0.0)
       }
@@ -1742,7 +1801,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private fun checkTollFree(from: UserLocation, distToToll: Double, a: RouteAnalysis, traveled: Double, remainingS: Double) {
     viewModelScope.launch(Dispatchers.IO) {
       try {
-        val waypoints = _plan.value.stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }.takeLast(1)
+        // every stop still to make, not only the last one (the others were silently skipped)
+        val waypoints = remainingStops()
         if (waypoints.isEmpty()) return@launch
         val alt = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value.copy(avoidTolls = true, alternates = 0)).firstOrNull() ?: return@launch
         val altS = alt.steps.sumOf { it.duration }
@@ -1752,7 +1812,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         Log.i(TAG, "toll check: ${distToToll.toInt()} m to the toll, ${"%.1f".format(tollKm)} km toll, toll-free +${extra.toInt()} s (max $max s)")
         if (extra <= max && tollKm > 1) {
           val extraKm = (alt.distance - (a.length - traveled)) / 1000.0
-          val p = DriverPrompt.TollChoice("toll", (extra / 60).roundToInt().coerceAtLeast(0), extraKm, tollKm, alt, distToToll)
+          val p = DriverPrompt.TollChoice("toll", (extra / 60).roundToInt().coerceAtLeast(0), extraKm, tollKm, alt, distToToll, traveled + distToToll)
           _nav.update { it.copy(prompt = p) }
           say("Tra ${app.navmaster.truck.nav.SpeechIt.distance(distToToll)} inizia un tratto a pedaggio. " +
               "Senza pedaggio arrivi solo ${p.extraMin} minuti più tardi. Vuoi evitarlo?")
@@ -2123,7 +2183,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     say(message)
     viewModelScope.launch(Dispatchers.IO) {
       try {
-        val waypoints = _plan.value.stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }.takeLast(1)
+        // every stop still to make, not only the last one (the others were silently skipped)
+        val waypoints = remainingStops()
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
           if (_simulating.value) locationProvider.enableSimulationOn(r)
@@ -2150,7 +2211,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val m = RouteMatcher(r.geometry)
         val limits = AppGraph.limits.scan(m, v, v.tripWeightT(g.loadT), a = a)
         val crit = AppGraph.criticalities.find(a, m, limits, v, g.loadT, LocalDateTime.now())
-        _nav.update { it.copy(analysis = a, limits = limits, criticalities = crit, pois = pois(r), routeLength = a.length) }
+        val pois = pois(r)
+        // a newer route came meanwhile (two recalculations close together): this analysis is old
+        if (lastGeometryKey != geometryKey(r.geometry)) { Log.i(TAG, "analysis of an old route dropped"); return@launch }
+        _nav.update { it.copy(analysis = a, limits = limits, criticalities = crit, pois = pois, routeLength = a.length) }
         if (!_simulating.value) AppGraph.smartLocation.setSpans(wideSpans(a), tunnelSpans(a))
         Log.i(TAG, "new route checked: ${crit.size} criticalities")
       } catch (e: Exception) {

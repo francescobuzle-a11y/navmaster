@@ -439,6 +439,20 @@ fun PoiColumn(
 
   fun distOf(p: RoutePoi): String = Fmt.distanceText((p.alongM - traveledM).coerceAtLeast(0.0))
 
+  /**
+   * The distance on a pin of the map, in steps (500 m up to 2 km, then whole kilometres): each new
+   * value draws the pin's picture again, and with the exact distance the pictures were redrawn
+   * every few seconds on the motorway.
+   */
+  fun pinDistOf(p: RoutePoi): String {
+    val d = (p.alongM - traveledM).coerceAtLeast(0.0)
+    return when {
+      d < 500 -> "< 500 m"
+      d < 2_000 -> Fmt.distanceText(Math.round(d / 500.0) * 500.0)
+      else -> "${Math.round(d / 1000.0)} km"
+    }
+  }
+
   fun runQuick(q: QuickPoi) {
     quick = q
     resultsTitle = q.label
@@ -468,13 +482,13 @@ fun PoiColumn(
     PanelMode.RESULTS -> found?.list.orEmpty().take(8)
     else -> ahead.filter { it.alongM < traveledM + 3_000 }.take(8)
   }
-  val pinKey = pinSource.map { it.poi.key + ":" + distOf(it) } + settings.poiPinNames.toString()
+  val pinKey = pinSource.map { it.poi.key + ":" + pinDistOf(it) } + settings.poiPinNames.toString()
   LaunchedEffect(pinKey) {
     onPins(pinSource.map { p ->
       val q = quick
       val (g, c) = if (mode == PanelMode.RESULTS && q != null) q.glyph to q.color else PoiGlyphs.of(p.poi.cat)
       val name = p.poi.title.trim()
-      val tag = if (settings.poiPinNames && name.isNotEmpty()) (if (name.length > 16) name.take(15) + "…" else name) + " · " + distOf(p) else distOf(p)
+      val tag = if (settings.poiPinNames && name.isNotEmpty()) (if (name.length > 16) name.take(15) + "…" else name) + " · " + pinDistOf(p) else pinDistOf(p)
       PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, tag, p)
     })
   }
