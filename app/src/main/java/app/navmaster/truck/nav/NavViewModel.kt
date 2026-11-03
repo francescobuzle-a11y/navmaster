@@ -2180,15 +2180,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   /** What to say about the lanes of a step of the route (only where a lane can be missed). */
   private fun lanePhrase(route: uniffi.ferrostar.Route, index: Int, maneuverAt: Double, a: RouteAnalysis?): String? {
-    val st = route.steps.getOrNull(index) ?: return null
-    val vi = st.visualInstructions.lastOrNull() ?: return null
-    val p = vi.primaryContent
-    val lanes = (vi.subContent?.laneInfo ?: p.laneInfo).orEmpty().map { LanePlan.In(it.directions, it.active, it.activeDirection) }
-    val before = a?.edgeAt((maneuverAt - 60).coerceAtLeast(0.0))
-    val after = a?.edgeAt(maneuverAt + 120)
-    val motorway = before?.roadClass in setOf("motorway", "trunk") || after?.roadClass in setOf("motorway", "trunk")
-    val out = a?.junctionShapeNear(maneuverAt, 90.0)?.outLanes?.takeIf { it >= 1 } ?: after?.lanes?.takeIf { it >= 1 }
-    return LanePlan.of(lanes, p.maneuverType?.name ?: "", p.maneuverModifier?.name ?: "", before?.lanes, out, motorway)?.say
+    // the same lanes as on the screen (nav.LaneModel)
+    val an = a ?: return null
+    val type = route.steps.getOrNull(index)?.visualInstructions?.lastOrNull()?.primaryContent?.maneuverType?.name ?: return null
+    if (type.contains("ARRIVE") || type.contains("DEPART") || type.contains("ROUNDABOUT")) return null
+    return LaneModel.at(an, maneuverAt)?.plan?.say
   }
 
   private fun announce(ui: NavigationUiState, geometry: List<GeographicCoordinate>, key: String) {

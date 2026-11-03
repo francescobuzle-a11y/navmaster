@@ -32,7 +32,7 @@ PALETTES = {
         "background": "#F3F1ED", "residential": "#ECE8E1", "industrial": "#E9E5EE", "retail": "#F2E6E1",
         "wood": "#CDE2BF", "grass": "#E3EDD3", "farm": "#EEF0DF", "park": "#C8E3B6", "pitch": "#BFE0AE",
         "water": "#9CC8EC", "water_line": "#86B8E2", "water_text": "#2F6596",
-        "building": "#E0DAD1", "building_line": "#CEC6BB", "building_3d": "#E3DDD4", "building_3d_top": "#EFEAE3",
+        "building": "#E0DAD1", "building_line": "#CEC6BB", "building_3d": "#E8E3DB", "building_3d_top": "#F5F2ED",
         "boundary": "#9C8FB8", "rail": "#A3A3A3", "aeroway": "#DCDCE2",
         "motorway": "#F08A4E", "motorway_case": "#B85A26",
         "trunk": "#F5B357", "trunk_case": "#BB8236",
@@ -182,10 +182,13 @@ def road_names(p):
 
 
 def road_shields(p):
-    """Road numbers on shields: motorways green, national roads blue, the others white."""
-    def layer(lid, classes, minz, image, text_color, sort):
+    """Road numbers on shields: motorways green, national roads blue (also the SS/SR mapped as
+    secondary roads, as on the Italian plates), the others white."""
+    national_ref = ["in", ["slice", ["get", "ref"], 0, 2], ["literal", ["SS", "SR", "SN", "RN"]]]
+
+    def layer(lid, where, minz, image, text_color, sort):
         return {"id": lid, "type": "symbol", "source": "omt", "source-layer": "transportation_name", "minzoom": minz,
-                "filter": ["all", ["has", "ref"], ["<=", ["coalesce", ["get", "ref_length"], 99], 7], ["in", ["get", "class"], ["literal", classes]]],
+                "filter": ["all", ["has", "ref"], ["<=", ["coalesce", ["get", "ref_length"], 99], 7], where],
                 "layout": {"symbol-placement": "line", "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 8, 300, 14, 450],
                            "text-field": ["get", "ref"], "text-font": FONT_BOLD,
                            "text-size": ["interpolate", ["linear"], ["zoom"], 8, 11, 14, 13, 17, 15],
@@ -193,9 +196,11 @@ def road_shields(p):
                            "icon-image": image, "icon-text-fit": "both", "icon-text-fit-padding": [2, 5, 2, 5],
                            "symbol-sort-key": sort, "text-padding": 6, "icon-padding": 6},
                 "paint": {"text-color": text_color}}
-    return [layer("road-shield-secondary", ["secondary"], 11, "shield-white", "#1C1C1C", 3),
-            layer("road-shield-national", ["trunk", "primary"], 9, "shield-blue", "#FFFFFF", 1),
-            layer("road-shield-motorway", ["motorway"], 7, "shield-green", "#FFFFFF", 0)]
+    minor = ["in", ["get", "class"], ["literal", ["secondary", "tertiary"]]]
+    return [layer("road-shield-secondary", ["all", ["==", ["get", "class"], "secondary"], ["!", national_ref]], 11, "shield-white", "#1C1C1C", 3),
+            layer("road-shield-national", ["any", ["in", ["get", "class"], ["literal", ["trunk", "primary"]]], ["all", minor, national_ref]],
+                  9, "shield-blue", "#FFFFFF", 1),
+            layer("road-shield-motorway", ["==", ["get", "class"], "motorway"], 7, "shield-green", "#FFFFFF", 0)]
 
 
 def style(name, p):
@@ -242,7 +247,7 @@ def style(name, p):
          "paint": {"fill-extrusion-color": ["interpolate", ["linear"], ["coalesce", ["get", "render_height"], 6], 0, p["building_3d"], 40, p["building_3d_top"]],
                    "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 15, 0, 16, ["coalesce", ["get", "render_height"], 6]],
                    "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
-                   "fill-extrusion-opacity": 0.88, "fill-extrusion-vertical-gradient": True}},
+                   "fill-extrusion-opacity": ["interpolate", ["linear"], ["zoom"], 15, 0.0, 16, 0.72, 18, 0.8], "fill-extrusion-vertical-gradient": True}},
         # one-way streets: small arrows in the direction of travel
         {"id": "oneway", "type": "symbol", "source": "omt", "source-layer": "transportation", "minzoom": 16,
          "filter": ["all", ["in", ["get", "oneway"], ["literal", [1, -1]]],
@@ -272,12 +277,11 @@ def style(name, p):
          "filter": ["==", ["get", "class"], "fuel"],
          "paint": {"circle-color": p["poi_fuel"], "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 3, 17, 7],
                    "circle-stroke-color": "#FFFFFF", "circle-stroke-width": 1.5}},
-        {"id": "poi-parking", "type": "symbol", "source": "omt", "source-layer": "poi", "minzoom": 15,
+        # the parking sign: a small fixed-size picture (blue square, white P), only close up
+        {"id": "poi-parking", "type": "symbol", "source": "omt", "source-layer": "poi", "minzoom": 16,
          "filter": ["==", ["get", "class"], "parking"],
-         "layout": {"icon-image": "poi-square", "icon-size": ["interpolate", ["linear"], ["zoom"], 15, 0.7, 18, 1.0],
-                    "text-field": "P", "text-font": FONT_BOLD, "text-size": ["interpolate", ["linear"], ["zoom"], 15, 10, 18, 14],
-                    "icon-text-fit": "both", "icon-text-fit-padding": [2, 4, 2, 4], "text-optional": False},
-         "paint": {"text-color": "#FFFFFF", "icon-color": p["poi_parking"]}},
+         "layout": {"icon-image": "poi-parking", "icon-size": ["interpolate", ["linear"], ["zoom"], 16, 0.75, 18, 1.0],
+                    "icon-allow-overlap": False, "icon-padding": 4}},
         {"id": "poi-label", "type": "symbol", "source": "omt", "source-layer": "poi", "minzoom": 16,
          "filter": ["all", ["in", ["get", "class"], ["literal", ["fuel", "parking"]]], ["has", "name"]],
          "layout": {"text-field": ["coalesce", ["get", "name:it"], ["get", "name"]], "text-font": FONT,
@@ -382,8 +386,52 @@ SPRITES = {
     "shield-green": ("#1E7B3F", "#FFFFFF"),
     "shield-blue": ("#1F4F9C", "#FFFFFF"),
     "shield-white": ("#FFFFFF", "#2A2A2A"),
-    "poi-square": ("#FFFFFF", "#FFFFFF"),
 }
+
+
+def parking_sign(scale):
+    """The parking sign, 16×16: a blue rounded square with a white border and a white P."""
+    size = 16
+    w = h = size * scale
+    blue = hexrgb("#1F5FBF")
+    white = (255, 255, 255)
+    buf = bytearray(w * h * 4)
+
+    def rr(x, y, x0, y0, x1, y1, r):
+        if x < x0 or x > x1 or y < y0 or y > y1:
+            return False
+        cx = min(max(x, x0 + r), x1 - r)
+        cy = min(max(y, y0 + r), y1 - r)
+        return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
+
+    def p_letter(x, y):
+        if 5.0 <= x <= 7.3 and 3.3 <= y <= 12.7:
+            return True                      # the stem
+        if 5.0 <= x <= 8.6 and (3.3 <= y <= 5.2 or 7.6 <= y <= 9.5):
+            return True                      # the bars of the bowl
+        if x >= 8.6:
+            d = ((x - 8.6) ** 2 + (y - 6.4) ** 2) ** 0.5
+            return 1.2 <= d <= 3.1           # the round of the bowl
+        return False
+
+    for py in range(h):
+        for px in range(w):
+            acc = [0, 0, 0, 0]
+            for sy in range(4):
+                for sx in range(4):
+                    x = (px + (sx + 0.5) / 4) / scale
+                    y = (py + (sy + 0.5) / 4) / scale
+                    if not rr(x, y, 0.5, 0.5, size - 0.5, size - 0.5, 3.0):
+                        continue
+                    inner = rr(x, y, 1.7, 1.7, size - 1.7, size - 1.7, 2.0)
+                    c = white if (not inner or p_letter(x, y)) else blue
+                    acc[0] += c[0]; acc[1] += c[1]; acc[2] += c[2]; acc[3] += 1
+            if acc[3] == 0:
+                continue
+            i = (py * w + px) * 4
+            buf[i] = round(acc[0] / acc[3]); buf[i + 1] = round(acc[1] / acc[3]); buf[i + 2] = round(acc[2] / acc[3])
+            buf[i + 3] = round(255 * acc[3] / 16)
+    return buf, w, h
 
 
 def write_sprite(out_dir):
@@ -393,22 +441,21 @@ def write_sprite(out_dir):
         images = []
         for name, (fill, edge) in SPRITES.items():
             buf, w, h = rounded_rect(size, radius, fill, edge, border, scale)
-            images.append((name, buf, w, h))
-        total_w = sum(w for _, _, w, _ in images)
-        total_h = max(h for _, _, _, h in images)
+            r = radius * scale
+            # the shields stretch around their text (icon-text-fit)
+            meta = {"stretchX": [[r + scale, w - r - scale]], "stretchY": [[r + scale, h - r - scale]], "content": [r, r, w - r, h - r]}
+            images.append((name, buf, w, h, meta))
+        buf, w, h = parking_sign(scale)
+        images.append(("poi-parking", buf, w, h, {}))
+        total_w = sum(im[2] for im in images)
+        total_h = max(im[3] for im in images)
         atlas = bytearray(total_w * total_h * 4)
         index = {}
         x0 = 0
-        for name, buf, w, h in images:
+        for name, buf, w, h, meta in images:
             for y in range(h):
                 atlas[(y * total_w + x0) * 4:(y * total_w + x0 + w) * 4] = buf[y * w * 4:(y + 1) * w * 4]
-            r = radius * scale
-            entry = {"x": x0, "y": 0, "width": w, "height": h, "pixelRatio": scale,
-                     "stretchX": [[r + scale, w - r - scale]], "stretchY": [[r + scale, h - r - scale]],
-                     "content": [r, r, w - r, h - r]}
-            if name == "poi-square":
-                entry["sdf"] = True
-            index[name] = entry
+            index[name] = {"x": x0, "y": 0, "width": w, "height": h, "pixelRatio": scale, **meta}
             x0 += w
         with open(os.path.join(out_dir, f"nm{suffix}.png"), "wb") as f:
             f.write(png(total_w, total_h, atlas))

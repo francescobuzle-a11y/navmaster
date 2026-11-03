@@ -374,12 +374,12 @@ class RouteAnalysis(
           val o = x as? JsonObject ?: return@mapNotNull null
           if (o.str("driveability") !in setOf("forward", "both") || o.str("use") in NOT_ROADS) return@mapNotNull null
           val h = o["begin_heading"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
-          Branch(h, o.str("road_class") ?: "", o.int("lane_count") ?: 1, o.str("use") ?: "road", o["way_id"]?.jsonPrimitive?.longOrNull ?: 0L, signOf(o["sign"] as? JsonObject))
+          Branch(h, o.str("road_class") ?: "", o.int("lane_count") ?: 0, o.str("use") ?: "road", o["way_id"]?.jsonPrimitive?.longOrNull ?: 0L, signOf(o["sign"] as? JsonObject))
         } ?: emptyList()
         if (branches.isNotEmpty()) {
           val next = edges.getOrNull(idx + 1) as? JsonObject
           shapes += JunctionShape(cum[en], e["end_heading"]?.jsonPrimitive?.doubleOrNull,
-              next?.get("begin_heading")?.jsonPrimitive?.doubleOrNull, next?.int("lane_count") ?: 1, branches)
+              next?.get("begin_heading")?.jsonPrimitive?.doubleOrNull, next?.int("lane_count") ?: 0, branches)
         }
         EdgeInfo(
             startM = cum[b],
@@ -388,7 +388,7 @@ class RouteAnalysis(
             use = e.str("use") ?: "road",
             toll = e.bool("toll") ?: false,
             surface = e.str("surface") ?: "",
-            lanes = e.int("lane_count") ?: 1,
+            lanes = e.int("lane_count") ?: 0,
             wayId = e["way_id"]?.jsonPrimitive?.longOrNull ?: 0,
             name = e["names"]?.jsonArray?.firstOrNull()?.jsonPrimitive?.contentOrNull,
             country = adminIdx?.let { admins.getOrNull(it) }?.trim()?.uppercase()?.takeIf { it.length == 2 && it.all(Char::isLetter) },

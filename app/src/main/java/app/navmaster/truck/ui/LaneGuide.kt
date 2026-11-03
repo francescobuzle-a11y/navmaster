@@ -39,28 +39,25 @@ data class LaneGuide(val plan: LanePlan.Plan, val distanceM: Double, val rangeM:
 private val FAST = setOf("motorway", "trunk")
 
 /**
- * The lane guidance for the next manoeuvre, or null: from 2 km before a motorway exit, fork or
- * merge, from 400 m before a junction where only some lanes go the right way.
+ * The lane guidance for the next manoeuvre, or null (nav.LaneModel: the lanes of the graph, the
+ * same ones the voice and the junction view use): from 1.5 km before a motorway exit or fork, from
+ * 300 m before a junction in town where only some lanes go the route's way (600 m on fast roads).
  */
-fun laneGuideOf(instruction: VisualInstruction?, distanceM: Double?, a: RouteAnalysis?, traveled: Double): LaneGuide? {
-  if (instruction == null || distanceM == null || distanceM < 0) return null
-  val p = instruction.primaryContent
-  val type = p.maneuverType?.name ?: return null
+fun laneGuideOf(instruction: VisualInstruction?, distanceM: Double?, a: RouteAnalysis?, traveled: Double, lht: Boolean = false): LaneGuide? {
+  if (instruction == null || distanceM == null || distanceM < 0 || a == null) return null
+  val type = instruction.primaryContent.maneuverType?.name ?: return null
+  if (type.contains("ARRIVE") || type.contains("DEPART") || type.contains("ROUNDABOUT") || type.contains("ROTARY")) return null
   val at = traveled + distanceM
-  val here = a?.edgeAt(traveled)
-  val before = a?.edgeAt((at - 60).coerceAtLeast(0.0))
-  val after = a?.edgeAt(at + 120)
-  val motorway = here?.roadClass in FAST || before?.roadClass in FAST || after?.roadClass in FAST
-  val lanes = (instruction.subContent?.laneInfo ?: p.laneInfo).orEmpty().map { LanePlan.In(it.directions, it.active, it.activeDirection) }
-  val out = a?.junctionShapeNear(at, 90.0)?.outLanes?.takeIf { it >= 1 } ?: after?.lanes?.takeIf { it >= 1 }
-  val plan = LanePlan.of(lanes, type, p.maneuverModifier?.name ?: "", before?.lanes ?: here?.lanes, out, motorway) ?: return null
-  val range = when {
-    plan.kind == LanePlan.Kind.JUNCTION -> if (motorway) 1000.0 else 400.0
-    motorway || plan.kind == LanePlan.Kind.EXIT -> 2000.0
-    else -> 600.0
+  val j = app.navmaster.truck.nav.LaneModel.at(a, at, lht) ?: return null
+  val fast = a.edgeAt((at - 40).coerceAtLeast(0.0))?.roadClass in FAST
+  val range = when (j.kind) {
+    LanePlan.Kind.EXIT, LanePlan.Kind.FORK -> 1500.0
+    else -> if (fast) 600.0 else 300.0
   }
   if (distanceM > range) return null
-  return LaneGuide(plan, distanceM, range)
+  // at a junction in town: only when the lanes say something
+  if (j.kind == LanePlan.Kind.JUNCTION && j.lanes.isEmpty()) return null
+  return LaneGuide(j.plan, distanceM, range)
 }
 
 private val LaneRoad = Color(0xFF30343A)
@@ -122,7 +119,7 @@ fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier, vehicleLane: Int?
  * The lanes seen from above, across the road: edges, dashed lines between lanes, arrows; under them
  * the vehicle (a blue mark) in the lane the satellites put it in, when known.
  */
-private fun DrawScope.drawLanes(plan: LanePlan.Plan, vehicleLane: Int?) {
+internal fun DrawScope.drawLanes(plan: LanePlan.Plan, vehicleLane: Int?) {
   val lanes = plan.lanes
   val n = lanes.size
   if (n == 0) return
@@ -157,12 +154,17 @@ private fun DrawScope.drawLanes(plan: LanePlan.Plan, vehicleLane: Int?) {
     drawLine(Color.White, Offset(xs[i], 0f), Offset(xs[i], h), if (mergeLine) lw * 1.4f else lw * 0.8f,
         pathEffect = PathEffect.dashPathEffect(dash, 0f))
   }
-  // an arrow in each lane, white on the lanes to take, faint on the others
+  // the arrows painted on each lane (all of them, the one of the route bright on the lanes to
+  // take); lanes known from their number only get no arrows: none are painted on the map
   for (i in 0 until n) {
+    if (!lanes[i].painted) continue
     val cw = xs[i + 1] - xs[i]
     val cell = min(cw * 0.86f, h * 0.9f)
     translate(xs[i] + (cw - cell) / 2, (h - cell) / 2) {
-      drawIntoCell(cell, directionAngle(lanes[i].arrow), if (lanes[i].take) Color.White else Color(0x66FFFFFF), cw)
+      for (ar in lanes[i].arrows.distinct().sortedBy { if (it == lanes[i].arrow && lanes[i].take) 1 else 0 }) {
+        val bright = lanes[i].take && ar == lanes[i].arrow
+        drawIntoCell(cell, directionAngle(ar), if (bright) Color.White else Color(0x66FFFFFF), cw)
+      }
     }
   }
   // the vehicle under its lane (the lanes drawn are the carriageway's, merge lanes aside)

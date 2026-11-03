@@ -208,7 +208,7 @@ object OrsGuide {
           "dirt", "ground", "grass", "grass_paver", "sand", "unpaved", "ice" -> "dirt"
           else -> "paved"
         })
-        edges.append(",\"lane_count\":").append(r.lanes ?: 1)
+        edges.append(",\"lane_count\":").append(r.lanes ?: 0)
             .append(",\"length\":").append(String.format(Locale.ROOT, "%.4f", (cum[c] - cum[a]) / 1000))
             .append(",\"begin_shape_index\":").append(a).append(",\"end_shape_index\":").append(c)
             .append(",\"tunnel\":").append(r.tunnel).append(",\"bridge\":").append(r.bridge)
@@ -259,7 +259,7 @@ object OrsGuide {
             val rc = when (br.cls) { "living_street" -> "residential"; "service", "road", "other", "track" -> "service_other"; else -> br.cls }
             edges.append("{\"driveability\":").append(JsonPrimitive(drive)).append(",\"use\":").append(JsonPrimitive(if (br.link) "ramp" else "road"))
                 .append(",\"begin_heading\":").append(Math.round(br.heading)).append(",\"road_class\":").append(JsonPrimitive(rc))
-                .append(",\"lane_count\":").append(br.lanes ?: 1).append(",\"way_id\":").append(br.way)
+                .append(",\"lane_count\":").append(br.lanes ?: 0).append(",\"way_id\":").append(br.way)
             val bExitRef = br.exit?.substringBefore('|')?.takeIf { it.isNotBlank() }
             val bExitName = br.exit?.substringAfter('|', "")?.takeIf { it.isNotBlank() }
             val bToward = br.sign?.destination?.takeIf { it.isNotBlank() } ?: br.destination

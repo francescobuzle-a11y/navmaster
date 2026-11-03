@@ -18,8 +18,12 @@ object LanePlan {
   /** A lane of the route ([dirs] as the OSRM answer writes them: "straight", "slight right"…). */
   data class In(val dirs: List<String>, val active: Boolean, val activeDir: String?)
 
-  /** A lane to draw: its arrow, whether to take it, and whether it is the lane of a merge. */
-  data class Lane(val arrow: String, val take: Boolean, val merge: Boolean = false)
+  /**
+   * A lane to draw: its arrow (the one that goes the route's way when there is one), every arrow
+   * painted on it ([arrows]), whether to take it, whether it is the lane of a merge, and whether
+   * arrows are painted on it at all (false: lanes known from their number only, drawn without arrows).
+   */
+  data class Lane(val arrow: String, val take: Boolean, val merge: Boolean = false, val arrows: List<String> = listOf(arrow), val painted: Boolean = true)
 
   enum class Kind { EXIT, FORK, MERGE, JUNCTION }
 

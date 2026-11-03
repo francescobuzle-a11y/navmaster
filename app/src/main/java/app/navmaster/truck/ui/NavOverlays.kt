@@ -45,7 +45,7 @@ import uniffi.ferrostar.VisualInstruction
 val NmGreenTop = Color(0xFF1B8B47)
 val NmGreenBottom = Color(0xFF0D5A2C)
 val NmPanel = Color(0xF21B222B)
-val NmRoute = Color(0xFFC2189A)
+val NmRoute = Color(0xFF2F7CF6)
 val NmRed = Color(0xFFE03131)
 val NmAmber = Color(0xFFFFB300)
 
