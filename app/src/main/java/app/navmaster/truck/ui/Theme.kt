@@ -73,7 +73,9 @@ object Nm {
   val Muted = Color(0xFF9AA5B1)
   val Accent = Color(0xFF2EB85C)
   val AccentDark = Color(0xFF1B8B47)
-  val Route = Color(0xFFC2189A)
+  /** The route on the map: a navigation blue, clear over the orange and yellow roads by day and by night. */
+  val Route = Color(0xFF2F7CF6)
+  val RouteBorder = Color(0xFF0E3A82)
   val Blue = Color(0xFF3D8BFD)
   val Amber = Color(0xFFFFB300)
   val Red = Color(0xFFE03131)

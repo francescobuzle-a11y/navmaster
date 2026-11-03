@@ -74,7 +74,7 @@ fun NmLine(json: String, idPrefix: String, color: Color, lineWidth: Float, borde
 /** The same for a list of points, the text made once per route. */
 @Composable
 @MaplibreComposable
-fun NmRouteLine(points: List<GeographicCoordinate>?, idPrefix: String, color: Color, lineWidth: Float, borderWidth: Float) {
+fun NmRouteLine(points: List<GeographicCoordinate>?, idPrefix: String, color: Color, lineWidth: Float, borderWidth: Float, borderColor: Color = Nm.RouteBorder) {
   val json = rememberLineJson(points) ?: return
-  NmLine(json, idPrefix, color, lineWidth, borderWidth)
+  NmLine(json, idPrefix, color, lineWidth, borderWidth, borderColor)
 }

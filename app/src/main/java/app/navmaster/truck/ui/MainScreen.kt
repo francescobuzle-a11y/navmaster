@@ -460,7 +460,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       if (!navigating) {
         org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
           plan.variants.forEachIndexed { i, v ->
-            if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF8C97A3), 8f, 2f)
+            if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF9AA8B8), 8f, 2f, Color(0xFF5B6878))
           }
           plan.current?.let { NmRouteLine(it.route.geometry, "nm-preview", Nm.Route, 11f, 3f) }
         }
