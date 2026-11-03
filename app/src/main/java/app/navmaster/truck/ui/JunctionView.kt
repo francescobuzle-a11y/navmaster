@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -75,13 +76,30 @@ data class JunctionScene(
     val junction: LaneModel.Junction,
     val distanceM: Double,
     val rangeM: Double,
-    val analysis: RouteAnalysis,
+    val route: JvRoute,
     val traveledM: Double,
     val maneuverAtM: Double,
     val country: String?,
     /** The lane the vehicle is really in (0 = leftmost of its direction), from the satellites; null when not known. */
     val vehicleLane: Int?,
 )
+
+/** What the junction view needs of the route: its line and its roads (from RouteAnalysis, or made up in the tests). */
+class JvRoute(
+    /** The same object for the same route (the picture is kept while it does not change). */
+    val key: Any,
+    val length: Double,
+    val pointAt: (Double) -> uniffi.ferrostar.GeographicCoordinate,
+    val edgeAt: (Double) -> app.navmaster.truck.routing.EdgeInfo?,
+    val edges: List<app.navmaster.truck.routing.EdgeInfo>,
+) {
+  companion object {
+    fun of(a: RouteAnalysis) = JvRoute(a, a.length, a::pointAt, a::edgeAt, a.edges)
+  }
+}
+
+/** The roads of the graph around a point (the tests put their own). */
+internal var jvRoadsNear: (Double, Double, Double) -> List<RoadsIndex.Road> = { lat, lon, r -> AppGraph.roads.near(lat, lon, r) }
 
 /** Countries whose motorway signs are green (the others use blue). */
 private val GREEN_MOTORWAY = setOf("IT", "CH", "SI", "HR", "CZ", "SK", "RS", "BA", "ME", "MK", "GR", "RO", "BG", "AL", "XK", "DK", "SE")
@@ -169,12 +187,12 @@ fun junctionSceneOf(
   if (!exitLike && !(j.painted && j.lanes.size >= 3 && j.active.size < j.lanes.size)) return null
   val range = if (exitLike) max(motorwayRangeM, speedMs * minSeconds) else roadRangeM
   if (distanceM > range) return null
-  return JunctionScene(j, distanceM, range, a, traveled, at, country, vehicleLane)
+  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, vehicleLane)
 }
 
 // ---------------------------------------------------------------------------------- the picture
 
-private class Palette(night: Boolean) {
+internal class Palette(night: Boolean) {
   val skyTop = if (night) Color(0xFF0B1220) else Color(0xFF8FB9E6)
   val skyLow = if (night) Color(0xFF1C2635) else Color(0xFFDCE9F6)
   val groundFar = if (night) Color(0xFF1A2026) else Color(0xFFD9E2CF)
@@ -190,10 +208,10 @@ private class Palette(night: Boolean) {
 }
 
 /** A strip of ground along a line: the centre line in the junction's frame and, at each point, its left and right edges (metres, left positive). */
-private class Strip(val x: DoubleArray, val y: DoubleArray, val left: DoubleArray, val right: DoubleArray, val color: Color, val z: Double = 0.0)
+internal class Strip(val x: DoubleArray, val y: DoubleArray, val left: DoubleArray, val right: DoubleArray, val color: Color, val z: Double = 0.0)
 
 /** What is drawn, in metres: x along the road arriving at the junction (the node at 0), y to the left, z up. */
-private class Scene(
+internal class Scene(
     val asphalt: List<Strip>,
     val markings: List<Strip>,
     val lit: List<Strip>,
@@ -218,9 +236,9 @@ private class Scene(
     val palette: Palette,
 )
 
-private class Panel(val yLeft: Double, val yRight: Double, val lines: List<String>, val exit: String?, val bg: Color, val fg: Color, val arrowDeg: Float, val taken: Boolean)
+internal class Panel(val yLeft: Double, val yRight: Double, val lines: List<String>, val exit: String?, val bg: Color, val fg: Color, val arrowDeg: Float, val taken: Boolean)
 /** The gantry across the road at the route's point ([px], [py]), its offsets along the normal ([nx], [ny]) of the road there. */
-private class Gantry(val px: Double, val py: Double, val nx: Double, val ny: Double, val yLeft: Double, val yRight: Double, val panels: List<Panel>) {
+internal class Gantry(val px: Double, val py: Double, val nx: Double, val ny: Double, val yLeft: Double, val yRight: Double, val panels: List<Panel>) {
   fun at(o: Double, z: Double, p: Projector): FloatArray? = p.project(px + nx * o, py + ny * o, z)
 }
 
@@ -297,8 +315,8 @@ private fun dashes(x: DoubleArray, y: DoubleArray, o: Double, w: Double, on: Dou
 }
 
 /** Builds the junction's picture (off the main thread): roads, lanes, markings, signs, camera. */
-private fun buildScene(s: JunctionScene, night: Boolean): Scene? {
-  val a = s.analysis
+internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
+  val a = s.route
   val j = s.junction
   val pal = Palette(night)
   val node = j.atM
@@ -320,7 +338,7 @@ private fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val routeAlong = DoubleArray(n + 1) { from + (to - from) * it / n }
 
   // the lanes before the junction: those of the lane model, else the map's, else the class's
-  val approachRoad = runCatching { AppGraph.roads.near(p0.lat, p0.lng, 60.0) }.getOrDefault(emptyList()).firstOrNull { it.osm == j.approachWay }
+  val approachRoad = runCatching { jvRoadsNear(p0.lat, p0.lng, 60.0) }.getOrDefault(emptyList()).firstOrNull { it.osm == j.approachWay }
   val approachOneway = approachRoad?.let { it.oneway != 0 } ?: (j.approachClass in setOf("motorway", "trunk") || j.approachRamp)
   val laneW = laneWidth(j.approachClass, j.approachRamp)
   val edgeLanes = a.edgeAt((node - 5).coerceAtLeast(0.0))?.lanes?.takeIf { it > 0 }
@@ -378,7 +396,7 @@ private fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   }
   // the road taken: from the lanes it starts from to its own line (at exits and forks); a two-way
   // road lit on our half
-  val takenRoad = runCatching { AppGraph.roads.near(a.pointAt((node + 20).coerceAtMost(a.length)).lat, a.pointAt((node + 20).coerceAtMost(a.length)).lng, 40.0) }
+  val takenRoad = runCatching { a.pointAt((node + 20).coerceAtMost(a.length)).let { q -> jvRoadsNear(q.lat, q.lng, 40.0) } }
       .getOrDefault(emptyList()).firstOrNull { it.osm == j.taken.wayId }
   val takenOneway = takenRoad?.let { it.oneway != 0 } ?: (j.taken.ramp || j.taken.roadClass in setOf("motorway", "trunk"))
   val takenLw = laneWidth(j.taken.roadClass, j.taken.ramp)
@@ -408,7 +426,7 @@ private fun buildScene(s: JunctionScene, night: Boolean): Scene? {
 
   // the other roads of the graph around the junction (the other main road from the lanes it starts from)
   val routeWays = a.edges.filter { it.endM > node - back - 20 && it.startM < node + ahead + 20 }.map { it.wayId }.toSet()
-  val roads = runCatching { AppGraph.roads.near(p0.lat, p0.lng, 420.0) }.getOrDefault(emptyList())
+  val roads = runCatching { jvRoadsNear(p0.lat, p0.lng, 420.0) }.getOrDefault(emptyList())
   val otherWay = j.other?.wayId ?: 0L
   val otherW = (if (j.otherLanes > 0) j.otherLanes else otherIdx.size.coerceAtLeast(1)) * laneW
   for (r in roads) {
@@ -598,7 +616,7 @@ private fun gantryOf(j: LaneModel.Junction, country: String?, ourLeft: Double, l
 
 // ------------------------------------------------------------------------------------- projection
 
-private class Projector(scene: Scene, val w: Float, val h: Float) {
+internal class Projector(scene: Scene, val w: Float, val h: Float) {
   private val c = scene.camera
   private val fx: DoubleArray; private val rx: DoubleArray; private val ux: DoubleArray
   private val focal: Double
@@ -644,7 +662,7 @@ private fun quads(st: Strip, p: Projector, out: MutableList<Pair<Float, Path>>, 
 }
 
 /** The fixed part of the picture, drawn once into a bitmap. */
-private fun renderStatic(scene: Scene, w: Int, h: Int, density: Density): ImageBitmap {
+internal fun renderStatic(scene: Scene, w: Int, h: Int, density: Density): ImageBitmap {
   val img = ImageBitmap(w, h)
   val canvas = ComposeCanvas(img)
   val ds = CanvasDrawScope()
@@ -743,7 +761,7 @@ private fun DrawScope.drawGantry(g: Gantry, p: Projector, pal: Palette) {
 }
 
 /** The vehicle's mark on the picture at [alongM] metres of the route, in [lane] (null: the lanes to take). */
-private fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?) {
+internal fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?) {
   if (alongM < scene.visibleFromM) return
   val total = scene.routeX.size - 1
   if (total < 1) return
@@ -781,7 +799,7 @@ private fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?) {
 fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier, fill: Boolean = false,
                  height: Dp = 260.dp, vehAlong: State<Double>? = null) {
   // the same junction keeps its picture while the point wobbles by a few metres
-  val key = remember(scene.analysis, (scene.maneuverAtM / 60.0).roundToLong()) { Any() }
+  val key = remember(scene.route.key, (scene.maneuverAtM / 60.0).roundToLong()) { Any() }
   var closed by remember(key) { mutableStateOf(false) }
   if (closed) return
   Column(modifier.shadow(10.dp, RoundedCornerShape(18.dp)).clip(RoundedCornerShape(18.dp)).background(Color(0xFF11161C))) {
@@ -791,12 +809,13 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
       val hPx = with(density) { maxHeight.roundToPx() }.coerceAtLeast(1)
       val built by produceState<Pair<Scene, ImageBitmap>?>(null, key, night, wPx, hPx) {
         value = withContext(Dispatchers.Default) {
-          runCatching { buildScene(scene, night)?.let { sc -> sc to renderStatic(sc, wPx, hPx, density) } }.getOrNull()
+          runCatching { buildScene(scene, night)?.let { sc -> sc to renderStatic(sc, wPx, hPx, density) } }
+              .onFailure { android.util.Log.w("NmJunction", "vista svincolo", it) }.getOrNull()
         }
       }
       val pic = built
       if (pic != null) {
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(Modifier.fillMaxSize().testTag("jv-picture")) {
           drawImage(pic.second)
           val along = vehAlong?.value?.takeIf { it >= 0 } ?: scene.traveledM
           drawVehicle(pic.first, along, scene.vehicleLane)
