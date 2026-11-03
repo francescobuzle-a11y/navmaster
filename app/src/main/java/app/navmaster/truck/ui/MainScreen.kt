@@ -821,6 +821,18 @@ private fun NavigatingOverlay(
       settings.junctionViewMotorwayM.toDouble(), settings.junctionViewRoadM.toDouble(), settings.junctionViewSeconds.toDouble(),
       (ui.location?.speed?.value?.takeIf { it >= 0 } ?: vm.speedMs.collectAsState().value ?: 0.0))
   val jv = if (settings.junctionView) scene else null
+  // the roundabout of the next manoeuvre as it is in the graph (worked out once per roundabout, off the main thread)
+  val nextType = ui.visualInstruction?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
+  val ringAt = if (analysis != null && (nextType.contains("ROUNDABOUT") || nextType.contains("ROTARY")))
+    ui.progress?.distanceToNextManeuver?.let { traveled + it } else null
+  val ringKey = ringAt?.let { (it / 25.0).toLong() }
+  val roundabout by androidx.compose.runtime.produceState<RoundaboutShape?>(null, analysis, ringKey) {
+    val an = analysis
+    val at = ringAt
+    value = if (an == null || at == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+      runCatching { RoundaboutShape.of(JvRoute.of(an), at) }.getOrNull()
+    }
+  }
   // the lanes to keep, from 2 km before a motorway exit, fork or merge (400 m in town)
   val laneGuide = laneGuideOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled)
   // the vehicle's lane among the lanes drawn (the same count, or one exit lane added on the right)
@@ -908,14 +920,14 @@ private fun NavigatingOverlay(
       // lying down: the speedometer beside the manoeuvre bar, the lanes and banners under the bar
       Row(Modifier.fillMaxWidth()) {
         Column(Modifier.weight(1f)) {
-          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false, roundabout = roundabout)
           underManeuver()
         }
         Spacer(Modifier.width(10.dp))
         speedArc(Modifier)
       }
     } else {
-      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false)
+      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false, roundabout = roundabout)
       underManeuver()
     }
     Box(Modifier.weight(1f).fillMaxWidth()) {

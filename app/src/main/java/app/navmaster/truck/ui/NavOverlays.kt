@@ -54,7 +54,7 @@ val NmAmber = Color(0xFFFFB300)
  * road or the text of the sign, and on the right the lane assist with every lane of the road.
  */
 @Composable
-fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier: Modifier = Modifier, showLanes: Boolean = true) {
+fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier: Modifier = Modifier, showLanes: Boolean = true, roundabout: RoundaboutShape? = null) {
   if (instruction == null) return
   val primary = instruction.primaryContent
   val lanes = instruction.subContent?.laneInfo ?: primary.laneInfo
@@ -75,12 +75,18 @@ fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier
       }
       Spacer(Modifier.width(12.dp))
     }
-    ManeuverGlyph(
-        type = primary.maneuverType?.name,
-        modifier = primary.maneuverModifier?.name,
-        color = Color.White,
-        mod = Modifier.size(52.dp),
-    )
+    // a roundabout drawn as it really is (its roads, the exit taken), else the glyph of the manoeuvre
+    val t = primary.maneuverType?.name?.uppercase() ?: ""
+    if (roundabout != null && (t.contains("ROUNDABOUT") || t.contains("ROTARY"))) {
+      RoundaboutGlyph(roundabout, Color.White, Modifier.size(60.dp))
+    } else {
+      ManeuverGlyph(
+          type = primary.maneuverType?.name,
+          modifier = primary.maneuverModifier?.name,
+          color = Color.White,
+          mod = Modifier.size(52.dp),
+      )
+    }
     Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f)) {
       if (primary.exitNumbers.isNotEmpty()) {
