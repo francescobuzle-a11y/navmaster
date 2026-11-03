@@ -1,5 +1,7 @@
 package app.navmaster.truck
 
+import app.navmaster.truck.location.NmLocationProvider
+import app.navmaster.truck.location.NmSimulator
 import android.app.Application
 import app.navmaster.truck.data.CatalogStore
 import app.navmaster.truck.data.RegionManager
@@ -109,12 +111,12 @@ object AppGraph {
   val routes by lazy { OfflineRouteProvider(nm, { profiles.garage.value }, { trip.value }) { remember(it) } }
 
   /** The simulated drive, at a lorry's speeds (its pace can be changed while it runs). */
-  val simulator by lazy { app.navmaster.truck.location.NmSimulator() }
+  val simulator by lazy { NmSimulator() }
 
   /** GPS + network, and through tunnels the position along the route (see SmartLocationProvider). */
   val smartLocation by lazy { SmartLocationProvider(app) }
 
-  val locationProvider by lazy { app.navmaster.truck.location.NmLocationProvider(smartLocation, simulator) }
+  val locationProvider by lazy { NmLocationProvider(smartLocation, simulator) }
 
   val ferrostar by lazy {
     FerrostarCore(
