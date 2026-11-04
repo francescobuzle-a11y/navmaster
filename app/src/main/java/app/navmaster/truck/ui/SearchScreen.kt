@@ -156,10 +156,12 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
               app.navmaster.truck.settings.PoiCategories.byId(p.cat)?.icon ?: "📍",
               near?.let { app.navmaster.truck.core.Geo.dist(it.lat, it.lng, p.lat, p.lon) })
         }.sortedBy { it.distanceM ?: 0.0 }.take(8).filter { x -> places.none { app.navmaster.truck.core.Geo.dist(it.coordinate, x.coordinate) < 60 } }
-        // a place whose name IS what was typed comes before the streets of the same name
+        // the town of that name first ("Verona": the city, not the Hotel Verona nor the station),
+        // then a place whose name IS what was typed, before the streets of the same name
         val exact = TextNorm.norm(q)
+        val (towns, addrRest) = addr.partition { it.icon == "🏙" && TextNorm.norm(it.title) == exact }
         val (first, rest) = places.partition { TextNorm.norm(it.title) == exact || TextNorm.norm(it.title).startsWith("$exact ") }
-        (first + addr + rest + pois)
+        (towns + first + addrRest + rest + pois)
       }
     }
     // online results complete what is not on the tablet (other countries, shops, companies ...)
