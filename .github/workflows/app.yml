@@ -47,6 +47,22 @@ jobs:
           python3 data/style/make_style.py app/src/main/assets/style
           npx --yes -p @maplibre/maplibre-gl-style-spec gl-style-validate app/src/main/assets/style/style-day.json app/src/main/assets/style/style-night.json
 
+      # the engine from its repository (main): its tests, then the jar the app is built with (the
+      # jar in app/libs is only for building on a computer without the engine)
+      - name: Motore (navmaster-engine)
+        uses: actions/checkout@v4
+        with:
+          repository: francescobuzle-a11y/navmaster-engine
+          ref: main
+          path: engine
+      - name: Motore, prove e jar per l'app
+        working-directory: engine
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon -q :engine-core:test :engine-core:androidJar
+          cp engine-core/build/libs/navmaster-engine-core.jar "$GITHUB_WORKSPACE/app/libs/navmaster-engine-core.jar"
+          echo "motore $(git rev-parse --short HEAD)"; ls -la "$GITHUB_WORKSPACE/app/libs/"
+
       - name: Compila APK
         # service keys from the repository secrets (empty when not set): openrouteservice online routing,
         # TomTom and HERE traffic (one free account each for the whole fleet); fleet size and free
