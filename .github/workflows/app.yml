@@ -59,7 +59,8 @@ jobs:
         working-directory: engine
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon -q :engine-core:test :engine-core:androidJar
+          ./gradlew --no-daemon -q :engine-core:test || { for f in engine-core/build/test-results/test/*.xml; do grep -q "<failure" "$f" && { echo "== $f"; grep -A6 "<failure" "$f" | head -14; }; done; exit 1; }
+          ./gradlew --no-daemon -q :engine-core:androidJar
           cp engine-core/build/libs/navmaster-engine-core.jar "$GITHUB_WORKSPACE/app/libs/navmaster-engine-core.jar"
           echo "motore $(git rev-parse --short HEAD)"; ls -la "$GITHUB_WORKSPACE/app/libs/"
 
