@@ -875,7 +875,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         // and the toll-free one (only where it can be found in reasonable time), each with a
         // time limit and without the "fewest limits" retry
         val crowKm = (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0
+        // for a lorry or a bus openrouteservice's "fastest" is its "recommended": the same route
+        // computed twice (on a trip across a border half a minute more on the tablet)
+        val heavy = AppGraph.profiles.garage.value.active.let { it.isHgv || it.isBus }
+        val twin = setOf(app.navmaster.truck.vehicle.RouteKind.FASTEST, app.navmaster.truck.vehicle.RouteKind.RECOMMENDED)
         val kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
+            .filter { !(heavy && pref in twin && it in twin) }
             .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
         val tryNoToll = !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
         val extras = kinds.isNotEmpty() || tryNoToll
