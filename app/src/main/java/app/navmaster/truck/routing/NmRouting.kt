@@ -108,17 +108,18 @@ class NmRouting(
     if (s.avoidFerries) avoid += JsonPrimitive("ferries")
     if (s.avoidMotorways) avoid += JsonPrimitive("highways")
     if (avoid.isNotEmpty()) options["avoid_features"] = JsonArray(avoid)
-    if (s.hgv) {
-      options["vehicle_type"] = JsonPrimitive(s.vehicleType.ifBlank { "hgv" })
-      val r = mutableMapOf<String, JsonElement>()
-      if (s.heightM > 0) r["height"] = JsonPrimitive(s.heightM)
-      if (s.widthM > 0) r["width"] = JsonPrimitive(s.widthM)
-      if (s.lengthM > 0) r["length"] = JsonPrimitive(s.lengthM)
-      if (s.weightT > 0) r["weight"] = JsonPrimitive(s.weightT)
-      if (s.axleLoadT > 0) r["axleload"] = JsonPrimitive(s.axleLoadT)
-      if (s.hazmat) r["hazmat"] = JsonPrimitive(true)
-      options["profile_params"] = JsonObject(mapOf("restrictions" to JsonObject(r)))
-    }
+    // the vehicle's measures: for lorries and buses as openrouteservice takes them; for campers and
+    // vans too (a NavMaster extension of the engine: the physical limits of the roads, height,
+    // width, length, weight, axle load, apply to them, the bans for goods vehicles over 3.5 t do not)
+    if (s.hgv) options["vehicle_type"] = JsonPrimitive(s.vehicleType.ifBlank { "hgv" })
+    val r = mutableMapOf<String, JsonElement>()
+    if (s.heightM > 0) r["height"] = JsonPrimitive(s.heightM)
+    if (s.widthM > 0) r["width"] = JsonPrimitive(s.widthM)
+    if (s.lengthM > 0) r["length"] = JsonPrimitive(s.lengthM)
+    if (s.weightT > 0) r["weight"] = JsonPrimitive(s.weightT)
+    if (s.axleLoadT > 0) r["axleload"] = JsonPrimitive(s.axleLoadT)
+    if (s.hgv && s.hazmat) r["hazmat"] = JsonPrimitive(true)
+    if (r.isNotEmpty()) options["profile_params"] = JsonObject(mapOf("restrictions" to JsonObject(r)))
     if (s.avoidZones.isNotEmpty()) {
       // rings of [lon, lat] → GeoJSON MultiPolygon
       options["avoid_polygons"] = JsonObject(mapOf(
