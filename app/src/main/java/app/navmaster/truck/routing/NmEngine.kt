@@ -186,6 +186,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
    * ones the routes use.
    */
   fun prepareBorders() {
+    // first the graphs still on the shared storage into the internal one (see internalRoot)
+    for (r in regions.installed.value) migrate(r.dir) { reset() }
     val list = regions.installed.value.filter { installed(it.dir) }
     fun box(id: String) = catalog?.country(id)?.bbox
     for (i in list.indices) for (j in i + 1 until list.size) {
@@ -196,8 +198,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       var ga: RoutingGraph? = null
       var gb: RoutingGraph? = null
       try {
-        ga = RoutingGraph.load(File(a.dir, DIR), true)
-        gb = RoutingGraph.load(File(b.dir, DIR), true)
+        ga = RoutingGraph.load(graphDir(a.dir) ?: continue, true)
+        gb = RoutingGraph.load(graphDir(b.dir) ?: continue, true)
         val ca = CountryGraph(a.id, DirectionsService(ga, DirectionsLimits(), ENGINE_VERSION))
         val cbg = CountryGraph(b.id, DirectionsService(gb, DirectionsLimits(), ENGINE_VERSION))
         transfersBetween(ca, cbg)
@@ -252,41 +254,102 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     /** Which package the graph was unpacked from (the SHA-256 of its parts), to know when it changed. */
     const val SOURCE_FILE = ".package"
 
+    /**
+     * Where the graphs live: the app's internal storage. The country folders are on the shared
+     * storage (/sdcard/Android/data), which Android serves through FUSE: every page of a graph
+     * mapped in memory was read through it, and a search on the core took seconds instead of tens
+     * of milliseconds. Same partition, same space, no FUSE. Null in the tests: next to the country.
+     */
+    @Volatile var internalRoot: File? = null
+
+    private fun complete(d: File) = File(d, "profiles").exists() && File(d, "edges").exists()
+
+    /** The internal folder of a country's graph (or its folder next to the country without one). */
+    private fun internal(regionDir: File): File = internalRoot?.let { File(it, regionDir.name) } ?: File(regionDir, DIR)
+
+    /** The old place of a graph, next to the country (packages installed before). */
+    private fun legacy(regionDir: File): File = File(regionDir, DIR)
+
+    /** The folder the graph of a country is read from: the internal one when complete, else the old one. */
+    fun graphDir(regionDir: File): File? = internal(regionDir).takeIf { complete(it) } ?: legacy(regionDir).takeIf { complete(it) }
+
     /** The package the graph came from (see SOURCE_FILE), or null. */
-    fun source(regionDir: File): String? = File(File(regionDir, DIR), SOURCE_FILE).takeIf { it.exists() }?.readText()?.trim()
+    fun source(regionDir: File): String? = graphDir(regionDir)?.let { File(it, SOURCE_FILE) }?.takeIf { it.exists() }?.readText()?.trim()
 
     /** The graph of a country is there and complete. */
-    fun installed(regionDir: File): Boolean = File(File(regionDir, DIR), "profiles").exists() && File(File(regionDir, DIR), "edges").exists()
+    fun installed(regionDir: File): Boolean = graphDir(regionDir) != null
 
     /** A graph (unpacked or still packed) is there. */
     fun present(regionDir: File): Boolean = installed(regionDir) || File(regionDir, PACKAGE).let { it.exists() && it.length() > 0 }
 
+    /** The graph of a removed country goes too. */
+    fun deleteGraph(regionDir: File) {
+      runCatching { internal(regionDir).deleteRecursively() }
+      runCatching { legacy(regionDir).deleteRecursively() }
+    }
+
     /**
-     * The "nm" folder of a country, unpacked from [PACKAGE] when a new one arrived (the package is
-     * then removed, it is not needed any more). Null when the country has no graph.
+     * The graph folder of a country, unpacked from [PACKAGE] when a new one arrived (into the
+     * internal storage; the package is then removed). Null when the country has no graph.
      */
     @Synchronized
     fun ready(regionDir: File): File? {
-      val dir = File(regionDir, DIR)
       val gz = File(regionDir, PACKAGE)
       if (gz.exists() && gz.length() > 0) {
+        val dir = internal(regionDir)
         val started = SystemClock.elapsedRealtime()
-        val tmp = File(regionDir, "$DIR.new")
+        val tmp = File(dir.parentFile, dir.name + ".new")
         tmp.deleteRecursively()
         tmp.mkdirs()
         try {
           GZIPInputStream(gz.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, tmp) }
-          if (!File(tmp, "profiles").exists() || !File(tmp, "edges").exists()) throw IllegalStateException("grafo incompleto")
+          if (!complete(tmp)) throw IllegalStateException("grafo incompleto")
           dir.deleteRecursively()
           if (!tmp.renameTo(dir)) throw IllegalStateException("impossibile installare il grafo")
           gz.delete()
-          Log.i(TAG, "engine graph unpacked in ${regionDir.name} in ${SystemClock.elapsedRealtime() - started} ms")
+          // the copy of before next to the country is not needed any more
+          if (legacy(regionDir) != dir) legacy(regionDir).deleteRecursively()
+          Log.i(TAG, "engine graph unpacked for ${regionDir.name} in ${SystemClock.elapsedRealtime() - started} ms")
         } catch (e: Throwable) {
           Log.e(TAG, "engine graph of ${regionDir.name} not unpacked", e)
           tmp.deleteRecursively()
         }
       }
-      return dir.takeIf { installed(regionDir) }
+      return graphDir(regionDir)
+    }
+
+    /**
+     * A graph still next to the country (installed before) copied into the internal storage, once,
+     * in the background; then [onMoved] (the engine closes the old one) and the old copy goes.
+     * Not done without twice its size free.
+     */
+    fun migrate(regionDir: File, onMoved: () -> Unit): Boolean {
+      val old = legacy(regionDir)
+      val dir = internal(regionDir)
+      if (old == dir || !complete(old) || complete(dir)) return false
+      val size = old.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+      val free = dir.parentFile?.let { it.mkdirs(); it.usableSpace } ?: 0L
+      if (free < size + (512L shl 20)) {
+        Log.w(TAG, "graph of ${regionDir.name} left on the shared storage: ${size shr 20} MB, free ${free shr 20} MB")
+        return false
+      }
+      val started = SystemClock.elapsedRealtime()
+      val tmp = File(dir.parentFile, dir.name + ".new")
+      return try {
+        tmp.deleteRecursively()
+        old.copyRecursively(tmp, overwrite = true)
+        if (!complete(tmp)) throw IllegalStateException("copia incompleta")
+        dir.deleteRecursively()
+        if (!tmp.renameTo(dir)) throw IllegalStateException("impossibile spostare il grafo")
+        onMoved()
+        old.deleteRecursively()
+        Log.i(TAG, "engine graph of ${regionDir.name} moved to the internal storage (${size shr 20} MB) in ${SystemClock.elapsedRealtime() - started} ms")
+        true
+      } catch (e: Throwable) {
+        Log.e(TAG, "graph of ${regionDir.name} not moved", e)
+        tmp.deleteRecursively()
+        false
+      }
     }
   }
 }

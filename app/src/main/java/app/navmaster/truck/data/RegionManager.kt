@@ -485,6 +485,7 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
   fun delete(id: String, before: () -> Unit = {}) {
     scope.launch {
       runCatching { before() }
+      NmEngine.deleteGraph(File(root, id))
       File(root, id).deleteRecursively()
       setState(id, null)
       refresh()
