@@ -169,9 +169,13 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
   val ghSize = c.files[NmEngine.PACKAGE]
   val ghState = inst?.let { if (NmEngine.installed(it.dir)) "ready" else "missing" }
   // a new engine graph with the same data date (the graph made again with a newer engine): the
-  // package in the catalog is not the one installed (the download compares the checksums)
+  // package in the catalog is not the one installed, by its checksums (the size where the catalog
+  // has none); the download compares the checksums again
   val ghInstalledSize = inst?.manifest?.files?.firstOrNull { it.file == NmEngine.PACKAGE }?.size
-  val ghNewer = ghState == "ready" && ghSize != null && ghInstalledSize != null && ghInstalledSize != ghSize
+  val ghNewer = ghState == "ready" && ghSize != null && inst != null && when {
+    c.nm != null -> NmEngine.source(inst.dir)?.let { it != c.nm } ?: false
+    else -> ghInstalledSize != null && ghInstalledSize != ghSize
+  }
   val ghUpdate = inst != null && ghSize != null && (ghState != "ready" || ghNewer)
   val newer = inst != null && c.built != null && c.built > inst.manifest.built
   val busy = state is DownloadState.Running || state is DownloadState.Queued

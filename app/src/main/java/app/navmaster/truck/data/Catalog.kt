@@ -28,6 +28,8 @@ data class CountryInfo(
     val built: String? = null,
     val size: Long = 0,
     val files: Map<String, Long> = emptyMap(),
+    /** The checksums of the engine graph package (as NmEngine.source records them), when the catalog has them. */
+    val nm: String? = null,
 ) {
   fun contains(lat: Double, lon: Double): Boolean {
     val b = bbox ?: return false

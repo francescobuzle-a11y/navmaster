@@ -48,6 +48,11 @@ def main():
             m = json.load(open(mf, encoding="utf-8"))
             files = {f["file"]: f["size"] for f in m.get("files", [])}
             entry.update(available=True, built=m.get("built"), files=files, size=sum(files.values()))
+            # the engine graph's checksums (as the tablet records them when it installs the package):
+            # a graph made again with the same data date is still seen as new
+            for f in m.get("files", []):
+                if f["file"] == "nm.tar.gz" and f.get("parts"):
+                    entry["nm"] = ",".join(p["sha256"] for p in f["parts"])
         out.append(entry)
     cat = {"format": 1, "built": time.strftime("%Y-%m-%d"), "countries": out}
     json.dump(cat, open(out_file, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
