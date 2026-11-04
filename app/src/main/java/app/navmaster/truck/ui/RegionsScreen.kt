@@ -168,7 +168,11 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
   val inst = if (installed) AppGraph.regions.get(c.id) else null
   val ghSize = c.files[NmEngine.PACKAGE]
   val ghState = inst?.let { if (NmEngine.installed(it.dir)) "ready" else "missing" }
-  val ghUpdate = inst != null && ghSize != null && ghState != "ready"
+  // a new engine graph with the same data date (the graph made again with a newer engine): the
+  // package in the catalog is not the one installed (the download compares the checksums)
+  val ghInstalledSize = inst?.manifest?.files?.firstOrNull { it.file == NmEngine.PACKAGE }?.size
+  val ghNewer = ghState == "ready" && ghSize != null && ghInstalledSize != null && ghInstalledSize != ghSize
+  val ghUpdate = inst != null && ghSize != null && (ghState != "ready" || ghNewer)
   val newer = inst != null && c.built != null && c.built > inst.manifest.built
   val busy = state is DownloadState.Running || state is DownloadState.Queued
   Column(
@@ -184,6 +188,7 @@ fun CountryRow(c: CountryInfo, installed: Boolean, state: DownloadState?, wifiOn
         Caption(
             when {
               installed -> "Scaricato · dati del ${inst?.manifest?.built ?: c.built ?: "?"}" + when {
+                ghNewer -> " · calcolo percorsi ✓ · nuovo grafo del motore"
                 ghState == "ready" -> " · calcolo percorsi ✓"
                 ghUpdate -> " · manca il grafo del motore"
                 else -> ""
