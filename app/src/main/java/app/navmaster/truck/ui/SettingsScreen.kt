@@ -572,8 +572,8 @@ private fun OfflinePage(s: Settings, set: ((Settings) -> Settings) -> Unit, onRe
     BigButton("Gestisci i Paesi scaricati", Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), style = BtnStyle.SECONDARY, onClick = onRegions)
   }
   Card("Percorsi") {
-    Text("Il percorso si calcola sul grafo del Paese di partenza: per ora un viaggio che attraversa un confine va calcolato " +
-        "a tappe nei singoli Paesi scaricati.", color = Nm.Muted, fontSize = 13.sp)
+    Text("Il percorso si calcola sui grafi dei Paesi scaricati, anche attraverso i confini: il valico si sceglie fra tutti " +
+        "i passaggi del confine, col peso del viaggio intero. Serve il grafo di ogni Paese attraversato.", color = Nm.Muted, fontSize = 13.sp)
   }
 }
 
