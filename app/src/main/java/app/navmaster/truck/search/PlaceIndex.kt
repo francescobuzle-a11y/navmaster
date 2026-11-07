@@ -245,8 +245,10 @@ object Terms {
     val to = from.dropLast(1) + (from.last() + 1)
     val out = ArrayList<Pair<String, Int>>()
     runCatching {
-      db.rawQuery("SELECT term, documents FROM temp.$aux WHERE col = '*' AND term >= ? AND term < ? AND length(term) BETWEEN ? AND ?",
-          arrayOf(from, to, (token.length - 2).toString(), (token.length + 2).toString())).use { c ->
+      // the lengths in the SQL itself: Android binds every argument as text, and a number never
+      // falls between two texts (nothing came back on the tablet)
+      db.rawQuery("SELECT term, documents FROM temp.$aux WHERE col = '*' AND term >= ? AND term < ? " +
+          "AND length(term) BETWEEN ${token.length - 2} AND ${token.length + 2}", arrayOf(from, to)).use { c ->
         while (c.moveToNext()) out += c.getString(0) to c.getInt(1)
       }
     }.onFailure { Log.w("NavMasterSearch", "terms $fts: $it") }

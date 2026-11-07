@@ -35,10 +35,17 @@ object HereSearch {
   /** What HERE answered for the query (empty without a key, over the allowance, or offline). */
   fun discover(query: String, near: GeographicCoordinate?, key: String, limit: Int = 8): List<Found> {
     val q = query.trim()
-    if (q.length < 3 || key.isBlank()) return emptyList()
+    if (q.length < 3) return emptyList()
+    if (key.isBlank()) {
+      Log.i(TAG, "HERE discover: no key")
+      return emptyList()
+    }
     val cacheKey = TextNorm.norm(q) + "|" + (near?.let { "%.2f,%.2f".format(java.util.Locale.ROOT, it.lat, it.lng) } ?: "")
     synchronized(cache) { cache[cacheKey] }?.let { return it }
-    if (!HereGuard.canSearch()) return emptyList()
+    if (!HereGuard.canSearch()) {
+      Log.i(TAG, "HERE discover: over the allowance (${HereGuard.summary()})")
+      return emptyList()
+    }
     // "at" is required with a free text; without a position, the middle of the installed country (Italy)
     val at = near ?: GeographicCoordinate(45.0, 10.5)
     val url = "https://discover.search.hereapi.com/v1/discover?q=${URLEncoder.encode(q, "UTF-8")}" +
@@ -50,6 +57,7 @@ object HereSearch {
           return emptyList()
         }
         val out = parse(resp.body.string())
+        Log.i(TAG, "HERE discover «$q»: ${out.size} results")
         synchronized(cache) { cache[cacheKey] = out }
         out
       }
