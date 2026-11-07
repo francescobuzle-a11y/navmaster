@@ -185,6 +185,26 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
    * border does not wait for them. The graphs are opened here for the time it takes, apart from the
    * ones the routes use.
    */
+  /**
+   * Warms the graphs of the downloaded countries for [profile] (`driving-hgv` or `driving-car`):
+   * the files a core search reads at random (levels, landmarks, shortcuts, nodes) go into the
+   * system's file cache, up to [budget] bytes a country. The first route after the start read them
+   * cold and took 28 s to Komjatice against 16 s warm. In the background, at low priority; the
+   * graphs stay open (see [graphOf]).
+   */
+  fun warmUp(profile: String, budget: Long = 512L shl 20) {
+    for (r in regions.installed.value.filter { installed(it.dir) }) {
+      val o = graphOf(r) ?: continue
+      try {
+        val line = lock.read { if (open[r.id] === o) o.graph.warm(profile, budget = budget) else null } ?: continue
+        o.used = SystemClock.elapsedRealtime()
+        Log.i(TAG, "${r.id}: $line")
+      } catch (e: Throwable) {
+        Log.w(TAG, "${r.id}: riscaldamento fallito: $e")
+      }
+    }
+  }
+
   fun prepareBorders() {
     // first the graphs still on the shared storage into the internal one (see internalRoot)
     for (r in regions.installed.value) migrate(r.dir) { reset() }

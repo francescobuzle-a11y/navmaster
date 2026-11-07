@@ -63,9 +63,14 @@ object AppGraph {
     TomTomGuard.init(application)
     HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)
-    // the border crossings of the downloaded countries, in the background a little after the start
+    // the border crossings of the downloaded countries, in the background a little after the start;
+    // then the graphs of the active vehicle's profile warmed (the first route cold cost twice: see NmEngine.warmUp)
     Thread {
       runCatching { Thread.sleep(30_000); engine.prepareBorders() }
+      runCatching {
+        val v = profiles.garage.value.active
+        engine.warmUp(if (v.isHgv || v.isBus) "driving-hgv" else "driving-car")
+      }
     }.apply { priority = Thread.MIN_PRIORITY; isDaemon = true; name = "valichi" }.start()
   }
 
