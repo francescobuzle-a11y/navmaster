@@ -1,8 +1,6 @@
 package app.navmaster.truck.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -37,7 +35,7 @@ import kotlinx.coroutines.delay
 /**
  * The start screen: over the map for the few seconds the engine's graphs take to warm up
  * (AppGraph.startup), with the bar and the country being prepared. Gone when the warm-up is over,
- * at a touch (the warm-up goes on behind), or after [MAX_S] seconds anyway. Shown once per start
+ * or after [MAX_S] seconds anyway (the warm-up goes on behind). Shown once per start
  * of the app, not when the activity is made again (the state is already done).
  */
 @Composable
@@ -48,8 +46,7 @@ fun StartupScreen() {
   if (s.done || skipped) return
   LaunchedEffect(Unit) { delay(MAX_S * 1000L); skipped = true }
   Box(
-      Modifier.fillMaxSize().background(Nm.Bg)
-          .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { skipped = true },
+      Modifier.fillMaxSize().background(Nm.Bg),
       contentAlignment = Alignment.Center) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(360.dp)) {
       Image(painterResource(R.drawable.ic_launcher_fg), contentDescription = null, modifier = Modifier.size(132.dp).clip(RoundedCornerShape(28.dp)))
@@ -61,7 +58,7 @@ fun StartupScreen() {
       Spacer(Modifier.height(14.dp))
       Text(s.label, color = Nm.Text, fontSize = 18.sp)
       Spacer(Modifier.height(6.dp))
-      Text("Carico mappe e motore di calcolo · tocca per saltare", color = Nm.Muted, fontSize = 13.sp)
+      Text("Carico mappe e motore di calcolo", color = Nm.Muted, fontSize = 13.sp)
     }
   }
 }

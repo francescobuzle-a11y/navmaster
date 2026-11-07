@@ -53,6 +53,7 @@ import app.navmaster.truck.nav.LanePlan
 import app.navmaster.truck.routing.EdgeSign
 import app.navmaster.truck.routing.RouteAnalysis
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -65,12 +66,13 @@ import kotlinx.coroutines.withContext
 import uniffi.ferrostar.LaneInfo
 
 /**
- * The junction view: the junction as it is, seen from a fixed point before it, as on the dedicated
- * truck navigators. The roads of the graph with their real number of lanes and their markings, the
- * lanes to take lit up (the same ones as in the lane strip and the voice: nav.LaneModel), going on
- * along the road taken, the gantry with the direction signs over the right lanes when the map has
- * them, a bar with the distance. The picture is drawn once per junction; only the vehicle's mark
- * moves on it, in its lane.
+ * The junction view: the junction as the driver sees it from the cab, a few tens of metres before
+ * it, as on the dedicated truck navigators. The roads of the graph with their real number of lanes
+ * and their markings, the arrows painted on the lanes, the lanes to take lit up (the same ones as
+ * in the lane strip and the voice: nav.LaneModel), the ribbon of the way through the junction, the
+ * sign over the lanes (the map's direction signs when it has them, else a sign made from the road
+ * taken: its number, its name, the turn), a bar with the distance. The picture is drawn once per
+ * junction; only the vehicle's mark moves on it, in its lane.
  */
 data class JunctionScene(
     val junction: LaneModel.Junction,
@@ -82,6 +84,10 @@ data class JunctionScene(
     val country: String?,
     /** The lane the vehicle is really in (0 = leftmost of its direction), from the satellites; null when not known. */
     val vehicleLane: Int?,
+    /** The road taken leads to the entry booth of a motorway (the sign shows the booth). */
+    val tollEntry: Boolean = false,
+    /** The number of the motorway entered at the booth ("A21"), when the graph has it. */
+    val tollRef: String? = null,
 )
 
 /** What the junction view needs of the route: its line and its roads (from RouteAnalysis, or made up in the tests). */
@@ -187,26 +193,37 @@ fun junctionSceneOf(
   if (!exitLike && !(j.painted && j.lanes.size >= 3 && j.active.size < j.lanes.size)) return null
   val range = if (exitLike) max(motorwayRangeM, speedMs * minSeconds) else roadRangeM
   if (distanceM > range) return null
-  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, vehicleLane)
+  // the entry booth of a motorway just past the junction (the booth's node is on the link, a
+  // little before or after the turn): the sign of the booth, with the motorway's number
+  val booth = a.tollBooths.firstOrNull { it.alongM >= at - 300 && it.alongM <= at + 800 }
+  val tollEntry = booth != null && a.boothRole(booth) == "entrata"
+  val tollRef = if (tollEntry) a.edges.firstOrNull { it.roadClass == "motorway" && it.startM >= at - 50 && it.startM <= at + 4000 }?.refs?.firstOrNull() else null
+  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, vehicleLane, tollEntry, tollRef)
 }
 
 // ---------------------------------------------------------------------------------- the picture
 
 internal class Palette(night: Boolean) {
-  val skyTop = if (night) Color(0xFF0B1220) else Color(0xFF8FB9E6)
+  val skyTop = if (night) Color(0xFF0B1220) else Color(0xFF7FB0E4)
   val skyLow = if (night) Color(0xFF1C2635) else Color(0xFFDCE9F6)
-  val groundFar = if (night) Color(0xFF1A2026) else Color(0xFFD9E2CF)
-  val groundNear = if (night) Color(0xFF151A1F) else Color(0xFFC3D2B1)
-  val asphalt = if (night) Color(0xFF3A3F47) else Color(0xFF6C7179)
-  val asphaltFar = if (night) Color(0xFF2B3038) else Color(0xFFA3A8AE)
+  val groundFar = if (night) Color(0xFF1A2026) else Color(0xFFCBD6BE)
+  val groundNear = if (night) Color(0xFF151A1F) else Color(0xFFB9CBA3)
+  val asphalt = if (night) Color(0xFF3A3F47) else Color(0xFF5F646C)
+  val asphaltFar = if (night) Color(0xFF2B3038) else Color(0xFF9EA3A9)
   /** The roads around that the route does not take: lighter, without markings, under the others. */
-  val side = if (night) Color(0xFF2A2F36) else Color(0xFFB4B8BE)
+  val side = if (night) Color(0xFF2A2F36) else Color(0xFFA9ADB3)
   val shoulder = if (night) Color(0xFF30353C) else Color(0xFF8E9298)
   val marking = if (night) Color(0xFFC9CED4) else Color(0xFFFFFFFF)
   val lit = Color(0xFF2F7CF6)
   val litEdge = Color(0xFF9CC4FF)
-  val arrow = Color(0xF2FFFFFF)
+  /** The arrows painted on the lanes: bright on the lanes to take, dull on the others. */
+  val paint = if (night) Color(0xFFE6EAEE) else Color(0xFFFFFFFF)
+  val paintDim = if (night) Color(0xFF7C828A) else Color(0xFFB9BDC2)
+  /** The ribbon of the way through the junction. */
+  val ribbon = Color(0xFFFFFFFF)
+  val ribbonEdge = Color(0xFF123B73)
   val post = if (night) Color(0xFF6A7078) else Color(0xFF8D949C)
+  val beam = if (night) Color(0xFF4A5058) else Color(0xFF5C636B)
 }
 
 /** A strip of ground along a line: the centre line in the junction's frame and, at each point, its left and right edges (metres, left positive). */
@@ -217,12 +234,21 @@ internal class Scene(
     val asphalt: List<Strip>,
     val markings: List<Strip>,
     val lit: List<Strip>,
-    val arrow: Strip?,
-    val arrowHead: List<DoubleArray>?,
+    /** The arrows painted on the lanes: polygons on the ground with their colour. */
+    val paint: List<Pair<List<DoubleArray>, Color>>,
+    /** The ribbon of the way through the junction: its centre line (a point every few metres), on the lanes to take. */
+    val guideX: DoubleArray,
+    val guideY: DoubleArray,
+    /** The first point of the ribbon past the node. */
+    val guideNode: Int,
     val gantry: Gantry?,
+    /** The eye: on the vehicle's lane, a few tens of metres before the node, at a truck driver's height. */
     val camera: DoubleArray,
-    val target: DoubleArray,
-    val vfovDeg: Double,
+    /** The line of sight in the plane (unit vector): the direction of travel at the camera. */
+    val forward: DoubleArray,
+    val hfovDeg: Double,
+    /** Where the horizon is, as a fraction of the picture's height from the top. */
+    val horizonFrac: Double,
     /** The route's line in the frame, a point every [routeStep] metres from [routeFrom] (route metres), with the lateral position of the lanes to take. */
     val routeFrom: Double,
     val routeStep: Double,
@@ -236,17 +262,42 @@ internal class Scene(
     val laneY: DoubleArray,
     val laneW: Double,
     val palette: Palette,
+    /** The country of the junction (the colours of the road-number plates). */
+    val country: String?,
 )
 
-internal class Panel(val yLeft: Double, val yRight: Double, val lines: List<String>, val exit: String?, val bg: Color, val fg: Color, val arrowDeg: Float, val taken: Boolean)
-/** The gantry across the road at the route's point ([px], [py]), its offsets along the normal ([nx], [ny]) of the road there. */
-internal class Gantry(val px: Double, val py: Double, val nx: Double, val ny: Double, val yLeft: Double, val yRight: Double, val panels: List<Panel>) {
+/**
+ * One panel of the sign: over the lanes from [yLeft] to [yRight] (metres, left positive), the road
+ * numbers as plates, the towns, the exit number, its colours, the arrow of its lanes.
+ */
+internal class Panel(val yLeft: Double, val yRight: Double, val refs: List<String>, val towns: List<String>, val exit: String?,
+                     val bg: Color, val fg: Color, val arrowDeg: Float, val taken: Boolean) {
+  /** The lines as the old tests read them: the numbers on one line, then the towns. */
+  val lines: List<String> get() = listOfNotNull(refs.joinToString("  ").takeIf { it.isNotBlank() }) + towns
+}
+
+/**
+ * The sign over the lanes at the route's point ([px], [py]), its offsets along the normal ([nx], [ny])
+ * of the road there; [fromMap] when the texts are the map's (OSM destination tags), false when the
+ * sign is made from the road taken (its number and name).
+ */
+internal class Gantry(val px: Double, val py: Double, val nx: Double, val ny: Double, val yLeft: Double, val yRight: Double,
+                      val panels: List<Panel>, val fromMap: Boolean = true) {
   fun at(o: Double, z: Double, p: Projector): FloatArray? = p.project(px + nx * o, py + ny * o, z)
 }
 
 private const val LANE_MOTORWAY = 3.5
 private const val LANE_MAIN = 3.4
 private const val LANE_LOCAL = 3.0
+
+/** The eye of a truck driver: its height over the road and how far before the node it is. */
+internal const val EYE_HEIGHT = 2.5
+internal const val EYE_BACK_JUNCTION = 40.0
+internal const val EYE_BACK_EXIT = 80.0
+internal const val HFOV_DEG = 60.0
+/** Never less than this vertically (a wide, low picture would see only a slice of the road). */
+internal const val MIN_VFOV_DEG = 34.0
+internal const val HORIZON_FRAC = 0.40
 
 private fun laneWidth(cls: String, link: Boolean): Double = when {
   link || cls == "motorway" || cls == "trunk" -> LANE_MOTORWAY
@@ -316,6 +367,51 @@ private fun dashes(x: DoubleArray, y: DoubleArray, o: Double, w: Double, on: Dou
   }
 }
 
+/** The angle of a painted arrow for the picture (degrees, left negative), as the lane strip draws it. */
+private fun paintAngle(arrow: String): Double = directionAngle(arrow).toDouble()
+
+/**
+ * An arrow painted on the road at [cx],[cy] (its foot), the road going along ([ux],[uy]), the
+ * arrow's turn [angleDeg] (left negative): the stem, the bend and the head as polygons on the
+ * ground, [length] metres long and [width] wide (road paint is stretched along the road so that
+ * it reads well from the cab).
+ */
+private fun paintedArrow(cx: Double, cy: Double, ux: Double, uy: Double, angleDeg: Double, length: Double, width: Double,
+                         /** How far the arrow may reach sideways from its foot (its lane's edge). */
+                         maxLateral: Double,
+                         color: Color, out: MutableList<Pair<List<DoubleArray>, Color>>) {
+  val nx = -uy; val ny = ux // left
+  fun at(v: Double, u: Double) = doubleArrayOf(cx + ux * v + nx * u, cy + uy * v + ny * u)
+  val straight = abs(angleDeg) < 5
+  val rad = Math.toRadians(angleDeg)
+  val stemW = width * 0.26
+  val bend = if (straight) length * 0.62 else length * 0.5
+  // the tip: straight on, or turned by the angle (u is to the left, so a left turn has u > 0);
+  // never over the neighbouring lane
+  var reach = length * 0.42
+  val lateral = abs(sin(rad)) * reach + width * 0.5 * abs(cos(rad))
+  var headW = width * 0.5
+  if (!straight && lateral > maxLateral) {
+    val f = (maxLateral / lateral).coerceAtLeast(0.3)
+    reach *= f; headW *= f.coerceAtLeast(0.6)
+  }
+  val tipV = if (straight) length * 0.7 else bend + cos(rad) * reach
+  val tipU = if (straight) 0.0 else -sin(rad) * reach
+  // the stem
+  out += listOf(at(0.0, stemW / 2), at(bend, stemW / 2), at(bend, -stemW / 2), at(0.0, -stemW / 2)) to color
+  if (!straight) {
+    // the bend: a bar from the top of the stem to the tip
+    val dv = tipV - bend; val du = tipU
+    val l = sqrt(dv * dv + du * du).coerceAtLeast(1e-6)
+    val pv = -du / l * stemW / 2; val pu = dv / l * stemW / 2
+    out += listOf(at(bend + pv, pu), at(tipV + pv, tipU + pu), at(tipV - pv, tipU - pu), at(bend - pv, -pu)) to color
+  }
+  // the head: a triangle in the direction of the tip
+  val hv = if (straight) 1.0 else cos(rad); val hu = if (straight) 0.0 else -sin(rad)
+  val headL = length * 0.3
+  out += listOf(at(tipV + hv * headL, tipU + hu * headL), at(tipV - hu * headW, tipU + hv * headW), at(tipV + hu * headW, tipU - hv * headW)) to color
+}
+
 /** Builds the junction's picture (off the main thread): roads, lanes, markings, signs, camera. */
 internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val a = s.route
@@ -328,7 +424,8 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val bearing = app.navmaster.truck.core.Geo.bearing(pIn, p0)
   val f = Frame(p0.lat, p0.lng, bearing)
   val exitLike = j.kind == LanePlan.Kind.EXIT || j.kind == LanePlan.Kind.FORK
-  val back = if (exitLike) 300.0 else 160.0
+  val camBack = if (exitLike) EYE_BACK_EXIT else EYE_BACK_JUNCTION
+  val back = camBack + 40.0
   val ahead = if (exitLike) 260.0 else 120.0
 
   // the route in the frame, every 2 m
@@ -373,6 +470,17 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val asphalt = ArrayList<Strip>()
   val markings = ArrayList<Strip>()
   val lit = ArrayList<Strip>()
+  val paint = ArrayList<Pair<List<DoubleArray>, Color>>()
+
+  // the normal (to the left) and the tangent of the route's line at point i
+  fun tangent(i: Int): DoubleArray {
+    val i0 = (i - 2).coerceAtLeast(0); val i1 = (i + 2).coerceAtMost(n)
+    val dx = rx[i1] - rx[i0]; val dy = ry[i1] - ry[i0]
+    val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
+    return doubleArrayOf(dx / l, dy / l)
+  }
+  fun normal(i: Int): DoubleArray { val t = tangent(i); return doubleArrayOf(-t[1], t[0]) }
+  fun indexAt(along: Double): Int = (0..n).minByOrNull { abs(routeAlong[it] - along) } ?: 0
 
   // the road arriving: the route's line before the node, its lanes and markings
   val beforeIdx = (0..n).filter { routeAlong[it] <= node + 0.01 }
@@ -394,6 +502,27 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
       val lx = sub(litFrom, rx); val ly = sub(litFrom, ry)
       val l0 = active.minOf { it.coerceIn(0, nLanes - 1) }; val l1 = active.maxOf { it.coerceIn(0, nLanes - 1) }
       lit += stripOf(lx, ly, ourLeft - l0 * laneW - 0.25, ourLeft - (l1 + 1) * laneW + 0.25, pal.lit)
+    }
+    // the arrows painted on the lanes (turn:lanes), twice before the node as on the road: the
+    // one of the route bright on the lanes to take, the others dull
+    if (j.lanes.size == nLanes && j.lanes.any { it.painted }) {
+      val spots = listOf(camBack - 12.0, camBack - 30.0, camBack - 52.0).filter { it > 6.0 }
+      for (d in spots) {
+        val k = indexAt(node - d)
+        val t = tangent(k); val nn = normal(k)
+        for (i in 0 until nLanes) {
+          val lane = j.lanes[i]
+          if (!lane.painted) continue
+          val arrows = lane.arrows.distinct().take(2)
+          val w = if (arrows.size == 1) laneW * 0.42 else laneW * 0.3
+          arrows.forEachIndexed { ai, ar ->
+            val off = laneY[i] + if (arrows.size == 1) 0.0 else (if (ai == 0) laneW * 0.2 else -laneW * 0.2)
+            val bright = lane.take && ar == lane.arrow
+            paintedArrow(rx[k] + nn[0] * off, ry[k] + nn[1] * off, t[0], t[1], paintAngle(ar), 6.0, w, laneW / 2 - 0.3 - abs(off - laneY[i]),
+                if (bright) pal.paint else pal.paintDim, paint)
+          }
+        }
+      }
     }
   }
   // the road taken: from the lanes it starts from to its own line (at exits and forks); a two-way
@@ -452,54 +581,34 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
     addRoad(r, xs, ys, false, 0.0, 0.0, asphalt, markings, pal, lht, main = false)
   }
 
-  // the guidance arrow on the lanes to take: from 70 m before the node to 45 m after it
-  var arrow: Strip? = null
-  var head: List<DoubleArray>? = null
-  val aIdx = (0..n).filter { routeAlong[it] in (node - 70)..(node + 45) }
-  if (aIdx.size >= 3 && active.isNotEmpty()) {
-    val ax = sub(aIdx, rx); val ay = sub(aIdx, ry); val ly = sub(aIdx, routeLaneY)
-    val shaftEnd = ax.size - 3
-    arrow = Strip(ax.copyOfRange(0, shaftEnd), ay.copyOfRange(0, shaftEnd), DoubleArray(shaftEnd) { ly[it] + 0.45 }, DoubleArray(shaftEnd) { ly[it] - 0.45 }, pal.arrow)
-    // the head: a triangle 6 m long, 2.6 m wide, along the line's direction
-    val i1 = ax.size - 1; val i0 = shaftEnd - 1
-    val dx = ax[i1] - ax[i0]; val dy = ay[i1] - ay[i0]; val len = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
-    val nx = -dy / len; val ny = dx / len
-    val bx = ax[i0] + nx * ly[i0]; val by = ay[i0] + ny * ly[i0]
-    val tx = bx + dx / len * 6.0; val ty = by + dy / len * 6.0
-    head = listOf(doubleArrayOf(bx + nx * 1.3, by + ny * 1.3), doubleArrayOf(tx, ty), doubleArrayOf(bx - nx * 1.3, by - ny * 1.3))
-  }
-
-  // the normal (to the left) of the route's line at point i
-  fun normal(i: Int): DoubleArray {
-    val i0 = (i - 2).coerceAtLeast(0); val i1 = (i + 2).coerceAtMost(n)
-    val dx = rx[i1] - rx[i0]; val dy = ry[i1] - ry[i0]
-    val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
-    return doubleArrayOf(-dy / l, dx / l)
-  }
-  // the camera: fixed, behind and high above the road arriving, looking down at the junction as
-  // the dedicated navigators do (the whole junction and the roads leaving it in the picture, the
-  // horizon near the top)
-  val camBack = if (exitLike) 150.0 else 70.0
-  val camH = if (exitLike) 32.0 else 26.0
-  // the gantry: over the road arriving, halfway between the camera and the node, when the map has the signs
-  val gi = (0..n).minByOrNull { abs(routeAlong[it] - (node - camBack * 0.5)) } ?: 0
-  val gantry = gantryOf(j, s.country, ourLeft, laneW, nLanes, active)?.let { g ->
-    val nn = normal(gi)
-    Gantry(rx[gi], ry[gi], nn[0], nn[1], g.yLeft, g.yRight, g.panels)
-  }
-
-  val ci = (0..n).minByOrNull { abs(routeAlong[it] - (node - camBack)) } ?: 0
-  // over the middle of our lanes, looking a little past the junction, towards the lanes to take
-  val camY = (ourLeft - nLanes * laneW / 2)
+  // the camera: the driver's eye on the vehicle's lane (else on the lanes to take), [camBack]
+  // metres before the node, looking the way the road goes there
+  val ci = indexAt(node - camBack)
+  val camLane = s.vehicleLane?.takeIf { it in laneY.indices }
+  val camY = camLane?.let { laneY[it] } ?: (if (active.isNotEmpty()) activeY else ourLeft - nLanes * laneW / 2)
   val cn = normal(ci)
-  val camera = doubleArrayOf(rx[ci] + cn[0] * camY, ry[ci] + cn[1] * camY, camH)
-  val ti = (0..n).minByOrNull { abs(routeAlong[it] - (node + if (exitLike) 70.0 else 15.0)) } ?: n
-  val tn = normal(ti)
-  val tY = camY * 0.5 + activeY * 0.3
-  // halfway between the route's point there and the straight line ahead: the other road stays in the picture
-  val target = doubleArrayOf((rx[ti] + tn[0] * tY + (if (exitLike) 70.0 else 15.0)) / 2, (ry[ti] + tn[1] * tY + tY) / 2, 0.0)
-  return Scene(asphalt, markings, lit, arrow, head, gantry, camera, target, if (exitLike) 44.0 else 52.0,
-      from, (to - from) / n, node, routeAlong[ci] + camH * 1.8, rx.copyOf(), ry.copyOf(), routeLaneY, laneY, laneW, pal)
+  val camera = doubleArrayOf(rx[ci] + cn[0] * camY, ry[ci] + cn[1] * camY, EYE_HEIGHT)
+  val forward = tangent(ci)
+
+  // the ribbon of the way through the junction: on the lanes to take, from just in front of the
+  // eye to past the node
+  val gIdx = (0..n).filter { routeAlong[it] >= routeAlong[ci] + 4.0 && routeAlong[it] <= node + (if (exitLike) 60.0 else 45.0) }
+  val guideX = DoubleArray(gIdx.size); val guideY = DoubleArray(gIdx.size)
+  val guideNode = gIdx.indexOfFirst { routeAlong[it] >= node }.coerceAtLeast(0)
+  for ((q, i) in gIdx.withIndex()) {
+    val nn = normal(i)
+    guideX[q] = rx[i] + nn[0] * routeLaneY[i]; guideY[q] = ry[i] + nn[1] * routeLaneY[i]
+  }
+
+  // the sign over the lanes, a little in front of the eye (its posts at the road's edges there)
+  val gi = indexAt(node - camBack + (if (exitLike) 30.0 else 16.0))
+  val gantry = signOf(j, s, ourLeft, laneW, nLanes, active, totalW)?.let { g ->
+    val nn = normal(gi)
+    Gantry(rx[gi], ry[gi], nn[0], nn[1], g.yLeft, g.yRight, g.panels, g.fromMap)
+  }
+
+  return Scene(asphalt, markings, lit, paint, guideX, guideY, guideNode, gantry, camera, forward, HFOV_DEG, HORIZON_FRAC,
+      from, (to - from) / n, node, routeAlong[ci] + 9.0, rx.copyOf(), ry.copyOf(), routeLaneY, laneY, laneW, pal, s.country)
 }
 
 private fun nearestRoute(x: Double, y: Double, rx: DoubleArray, ry: DoubleArray): Double {
@@ -568,21 +677,33 @@ private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, sh
   }
 }
 
-/** The gantry with the direction signs, when the map has them: one panel per destination over its lanes. */
-private fun gantryOf(j: LaneModel.Junction, country: String?, ourLeft: Double, laneW: Double, nLanes: Int, active: List<Int>): Gantry? {
+private fun isMotorwayRef(r: String): Boolean = r.uppercase().let { (it.startsWith("A") || it.startsWith("E")) && it.drop(1).firstOrNull()?.isDigit() == true }
+
+/** The arrow of the sign for the road taken: the exit's side at exits and forks, else the road's real direction. */
+private fun signArrow(j: LaneModel.Junction): Float {
   val exitLike = j.kind == LanePlan.Kind.EXIT || j.kind == LanePlan.Kind.FORK
-  if (!exitLike) return null
+  if (exitLike) return if (j.side > 0) 45f else if (j.side < 0) -45f else 0f
+  val a = j.taken.angle
+  return if (abs(a) < 12) 0f else a.coerceIn(-90.0, 90.0).toFloat()
+}
+
+/**
+ * The sign over the lanes: one panel per destination from the map's signs (destination:lanes, or
+ * the signs of the road taken and of the other main road) when it has them; otherwise a sign made
+ * from the road taken, its number and its name (at the entry of a motorway: the booth, with the
+ * motorway's number). Never without a sign.
+ */
+private fun signOf(j: LaneModel.Junction, s: JunctionScene, ourLeft: Double, laneW: Double, nLanes: Int, active: List<Int>, totalW: Double): Gantry? {
+  val country = s.country
   val panels = ArrayList<Panel>()
   fun laneLeft(i: Int) = ourLeft - i * laneW
   val motorwayCtx = j.approachClass == "motorway"
   fun colorsFor(sign: EdgeSign?, toMotorway: Boolean): Pair<Color, Color> =
       sign?.colour?.let { osmSignColors(it) } ?: signColors(country, toMotorway)
-  fun linesOf(sign: EdgeSign): List<String> {
-    val refs = sign.branches.take(3).joinToString("  ")
-    val towns = sign.towards.take(3)
-    return listOfNotNull(refs.takeIf { it.isNotBlank() }) + towns
-  }
-  val sideArrow = if (j.side > 0) 45f else if (j.side < 0) -45f else 0f
+  val sideArrow = signArrow(j)
+  val l0 = active.minOrNull() ?: 0
+  val l1 = active.maxOrNull() ?: (nLanes - 1)
+  var fromMap = true
   // signs over the lanes (destination:lanes): one panel per run of lanes with the same destination
   val ls = j.laneSigns
   if (ls != null && ls.size == nLanes) {
@@ -593,65 +714,89 @@ private fun gantryOf(j: LaneModel.Junction, country: String?, ourLeft: Double, l
       val d = ls[i]
       if (!d.isEmpty) {
         val taken = (i..k).any { it in active }
-        val toMotorway = d.refs.any { r -> r.uppercase().let { (it.startsWith("A") || it.startsWith("E")) && it.drop(1).firstOrNull()?.isDigit() == true } }
+        val toMotorway = d.refs.any { isMotorwayRef(it) }
         val (bg, fg) = d.colour?.let { osmSignColors(it) } ?: signColors(country, toMotorway)
-        panels += Panel(laneLeft(i) - 0.2, laneLeft(k + 1) + 0.2, listOfNotNull(d.refs.take(3).joinToString("  ").takeIf { it.isNotBlank() }) + d.towns.take(3),
+        panels += Panel(laneLeft(i) - 0.2, laneLeft(k + 1) + 0.2, d.refs.take(3), d.towns.take(3),
             if (taken) j.sign?.exitNumbers?.firstOrNull() else null, bg, fg, if (taken) sideArrow else 0f, taken)
       }
       i = k + 1
     }
-  } else {
+  }
+  if (panels.isEmpty()) {
     val takenSign = j.sign?.takeIf { !it.isEmpty }
     val otherSign = j.otherSign?.takeIf { !it.isEmpty }
-    if (takenSign == null && otherSign == null) return null
-    val l0 = active.minOrNull() ?: return null
-    val l1 = active.maxOrNull() ?: return null
     val others = (0 until nLanes).filter { it !in active }
     if (takenSign != null) {
-      val toMotorway = !j.taken.ramp && j.taken.roadClass == "motorway" ||
-          takenSign.branches.any { r -> r.uppercase().let { (it.startsWith("A") || it.startsWith("E")) && it.drop(1).firstOrNull()?.isDigit() == true } }
+      val toMotorway = !j.taken.ramp && j.taken.roadClass == "motorway" || takenSign.branches.any { isMotorwayRef(it) }
       val (bg, fg) = colorsFor(takenSign, toMotorway)
-      panels += Panel(laneLeft(l0) - 0.2, laneLeft(l1 + 1) + 0.2, linesOf(takenSign), takenSign.exitNumbers.firstOrNull(), bg, fg, sideArrow, true)
+      panels += Panel(laneLeft(l0) - 0.2, laneLeft(l1 + 1) + 0.2, takenSign.branches.take(3), takenSign.towards.take(3),
+          takenSign.exitNumbers.firstOrNull(), bg, fg, sideArrow, true)
     }
     if (otherSign != null && others.isNotEmpty()) {
       val (bg, fg) = colorsFor(otherSign, motorwayCtx)
-      panels += Panel(laneLeft(others.min()) - 0.2, laneLeft(others.max() + 1) + 0.2, linesOf(otherSign), null, bg, fg, 0f, false)
+      panels += Panel(laneLeft(others.min()) - 0.2, laneLeft(others.max() + 1) + 0.2, otherSign.branches.take(3), otherSign.towards.take(3), null, bg, fg, 0f, false)
     }
   }
-  if (panels.isEmpty()) return null
+  if (panels.isEmpty()) {
+    // no sign on the map: the road taken, as the graph knows it (number, name), with the turn;
+    // at the entry of a motorway the booth and the motorway's number. Nothing made up.
+    fromMap = false
+    val takenEdge = s.route.edgeAt((j.atM + 15).coerceAtMost(s.route.length))
+    val refs = (listOfNotNull(s.tollRef.takeIf { s.tollEntry }) + (takenEdge?.refs ?: emptyList())).distinct().take(2)
+    val name = takenEdge?.names?.firstOrNull { it !in refs && it.isNotBlank() && !isMotorwayRef(it) && !RefLike.matches(it.trim()) }
+    val towns = when {
+      s.tollEntry -> listOfNotNull("Casello", name)
+      name != null -> listOf(name)
+      refs.isNotEmpty() -> emptyList()
+      else -> listOf(if (j.side < 0) "A sinistra" else if (j.side > 0) "A destra" else "Dritto")
+    }
+    val motorway = s.tollEntry || (!j.taken.ramp && j.taken.roadClass == "motorway") || refs.any { isMotorwayRef(it) }
+    val (bg, fg) = signColors(country, motorway)
+    panels += Panel(laneLeft(l0) - 0.2, laneLeft(l1 + 1) + 0.2, refs, towns, null, bg, fg, sideArrow, true)
+  }
   // a real panel is wider than one lane: at least 6.5 m, side by side without overlapping
   val wide = panels.map { pn ->
     val w = pn.yLeft - pn.yRight
-    if (w >= 6.5) pn else { val c = (pn.yLeft + pn.yRight) / 2; Panel(c + 3.25, c - 3.25, pn.lines, pn.exit, pn.bg, pn.fg, pn.arrowDeg, pn.taken) }
+    if (w >= 6.5) pn else { val c = (pn.yLeft + pn.yRight) / 2; Panel(c + 3.25, c - 3.25, pn.refs, pn.towns, pn.exit, pn.bg, pn.fg, pn.arrowDeg, pn.taken) }
   }.sortedByDescending { it.yLeft }.toMutableList()
   for (i in 1 until wide.size) {
     val prev = wide[i - 1]; val cur = wide[i]
     if (cur.yLeft > prev.yRight - 0.3) {
       val shift = cur.yLeft - (prev.yRight - 0.3)
-      wide[i] = Panel(cur.yLeft - shift, cur.yRight - shift, cur.lines, cur.exit, cur.bg, cur.fg, cur.arrowDeg, cur.taken)
+      wide[i] = Panel(cur.yLeft - shift, cur.yRight - shift, cur.refs, cur.towns, cur.exit, cur.bg, cur.fg, cur.arrowDeg, cur.taken)
     }
   }
-  val left = maxOf(ourLeft + 1.2, wide.first().yLeft + 0.6)
-  val right = minOf(ourLeft - nLanes * laneW - 1.2, wide.last().yRight - 0.6)
-  return Gantry(0.0, 0.0, 0.0, 1.0, left, right, wide)
+  // the posts at the edges of the carriageway
+  val left = totalW / 2 + 1.0
+  val right = -totalW / 2 - 1.0
+  return Gantry(0.0, 0.0, 0.0, 1.0, left, right, wide, fromMap)
 }
+
+private val RefLike = Regex("^[A-Z]{1,3}[ -]?\\d{1,4}[a-z]?$")
 
 // ------------------------------------------------------------------------------------- projection
 
+/**
+ * The eye's projection: the line of sight is [Scene.forward] tilted down so that the horizon is at
+ * [Scene.horizonFrac] of the height, the focal length from the horizontal field of view (never
+ * narrower than [MIN_VFOV_DEG] vertically).
+ */
 internal class Projector(scene: Scene, val w: Float, val h: Float) {
   private val c = scene.camera
   private val fx: DoubleArray; private val rx: DoubleArray; private val ux: DoubleArray
-  private val focal: Double
+  val focal: Double
+  private val pitch: Double
   init {
-    val t = scene.target
-    var f = doubleArrayOf(t[0] - c[0], t[1] - c[1], t[2] - c[2])
-    val fl = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]); f = doubleArrayOf(f[0] / fl, f[1] / fl, f[2] / fl)
-    // right = f × up (y is to the left), up' = right × f
-    var r = doubleArrayOf(f[1] * 1.0 - f[2] * 0.0, f[2] * 0.0 - f[0] * 1.0, 0.0)
-    val rl = sqrt(r[0] * r[0] + r[1] * r[1]).coerceAtLeast(1e-9); r = doubleArrayOf(r[0] / rl, r[1] / rl, 0.0)
-    val u = doubleArrayOf(r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0])
-    fx = f; rx = r; ux = u
-    focal = (h / 2.0) / tan(Math.toRadians(scene.vfovDeg / 2))
+    val fh = (w / 2.0) / tan(Math.toRadians(scene.hfovDeg / 2))
+    val fv = (h / 2.0) / tan(Math.toRadians(MIN_VFOV_DEG / 2))
+    focal = min(fh, fv)
+    pitch = atan((0.5 - scene.horizonFrac) * h / focal)
+    val d = scene.forward
+    val cp = cos(pitch); val sp = sin(pitch)
+    fx = doubleArrayOf(d[0] * cp, d[1] * cp, -sp)
+    // right = forward × up (y is to the left), up' = right × forward
+    rx = doubleArrayOf(d[1], -d[0], 0.0)
+    ux = doubleArrayOf(rx[1] * fx[2] - rx[2] * fx[1], rx[2] * fx[0] - rx[0] * fx[2], rx[0] * fx[1] - rx[1] * fx[0])
   }
   /** Screen x, y and depth of a point, or null behind the camera. */
   fun project(x: Double, y: Double, z: Double): FloatArray? {
@@ -663,7 +808,7 @@ internal class Projector(scene: Scene, val w: Float, val h: Float) {
     return floatArrayOf((w / 2 + focal * xc / zc).toFloat(), (h / 2 - focal * yc / zc).toFloat(), zc.toFloat())
   }
   /** Where the horizon is (screen y). */
-  val horizon: Float get() = (h / 2 - focal * ux[0] / fx[0]).toFloat()
+  val horizon: Float get() = (h / 2 - focal * tan(pitch)).toFloat()
 }
 
 /** The quads of a strip, with their depth, for the painter (far ones first). */
@@ -699,9 +844,9 @@ internal fun renderStatic(scene: Scene, w: Int, h: Int, density: Density): Image
       val ground = ArrayList<Triple<Float, Path, Color>>()
       for (st in layer) { val q = ArrayList<Pair<Float, Path>>(); quads(st, p, q); for ((d, path) in q) ground += Triple(d, path, st.color) }
       ground.sortByDescending { it.first }
-      for ((d, path, c) in ground) drawPath(path, androidx.compose.ui.graphics.lerp(c, pal.asphaltFar, (d / 900f).coerceIn(0f, 0.7f)))
+      for ((d, path, c) in ground) drawPath(path, androidx.compose.ui.graphics.lerp(c, pal.asphaltFar, (d / 600f).coerceIn(0f, 0.7f)))
     }
-    // the lanes to take, the markings over them, then the guidance arrow
+    // the lanes to take, the markings over them, the arrows painted on the lanes, then the ribbon
     val lit = ArrayList<Pair<Float, Path>>()
     for (st in scene.lit) quads(st, p, lit, 700f)
     lit.sortByDescending { it.first }
@@ -710,77 +855,215 @@ internal fun renderStatic(scene: Scene, w: Int, h: Int, density: Density): Image
     for (st in scene.markings) quads(st, p, lines, 450f)
     lines.sortByDescending { it.first }
     for ((d, path) in lines) drawPath(path, pal.marking.copy(alpha = (1f - d / 500f).coerceIn(0.25f, 1f)))
-    scene.arrow?.let { a -> val l = ArrayList<Pair<Float, Path>>(); quads(a, p, l); for ((_, path) in l) drawPath(path, pal.arrow) }
-    scene.arrowHead?.let { hd ->
-      val pts = hd.mapNotNull { p.project(it[0], it[1], 0.02) }
-      if (pts.size == 3) drawPath(Path().apply { moveTo(pts[0][0], pts[0][1]); lineTo(pts[1][0], pts[1][1]); lineTo(pts[2][0], pts[2][1]); close() }, pal.arrow)
+    for ((poly, color) in scene.paint) {
+      val pts = poly.map { p.project(it[0], it[1], 0.02) ?: return@map null }
+      if (pts.any { it == null } || pts.size < 3) continue
+      drawPath(Path().apply { moveTo(pts[0]!![0], pts[0]!![1]); for (k in 1 until pts.size) lineTo(pts[k]!![0], pts[k]!![1]); close() }, color)
     }
-    scene.gantry?.let { drawGantry(it, p, pal) }
+    drawRibbon(scene, p, density)
+    scene.gantry?.let { drawSign(it, scene, p, density) }
   }
   return img
 }
 
-private fun DrawScope.drawGantry(g: Gantry, p: Projector, pal: Palette) {
-  // two posts and the beam
-  val postW = 0.35
-  for (yy in listOf(g.yLeft, g.yRight)) {
-    val b0 = g.at(yy + postW, 0.0, p); val b1 = g.at(yy - postW, 0.0, p)
-    val t0 = g.at(yy + postW, 7.6, p); val t1 = g.at(yy - postW, 7.6, p)
-    if (b0 != null && b1 != null && t0 != null && t1 != null) {
-      drawPath(Path().apply { moveTo(b0[0], b0[1]); lineTo(b1[0], b1[1]); lineTo(t1[0], t1[1]); lineTo(t0[0], t0[1]); close() }, pal.post)
-    }
+/**
+ * The ribbon of the way through the junction: on the ground, as wide as a lane in front of the
+ * eye, never thinner than a finger on the screen in the distance, with its head where the way goes.
+ */
+private fun DrawScope.drawRibbon(scene: Scene, p: Projector, density: Density) {
+  val n = scene.guideX.size
+  if (n < 3) return
+  val dp = density.density
+  val minW = 9f * dp; val maxW = 34f * dp
+  val pts = ArrayList<FloatArray>()
+  val ws = ArrayList<Float>()
+  for (i in 0 until n) {
+    val q = p.project(scene.guideX[i], scene.guideY[i], 0.05) ?: continue
+    // the ribbon stops at the edge of the picture (a sharp turn leaves it): its head stays in view
+    if (pts.size >= 3 && (q[0] < size.width * 0.04f || q[0] > size.width * 0.96f || q[1] < 0f)) break
+    // its width: 2.2 m across the way on the ground, as the eye sees it (thin across the picture
+    // on a road going sideways), within limits
+    val i0 = (i - 1).coerceAtLeast(0); val i1 = (i + 1).coerceAtMost(n - 1)
+    val dx = scene.guideX[i1] - scene.guideX[i0]; val dy = scene.guideY[i1] - scene.guideY[i0]
+    val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
+    val a = p.project(scene.guideX[i] - dy / l * 1.1, scene.guideY[i] + dx / l * 1.1, 0.05)
+    val b = p.project(scene.guideX[i] + dy / l * 1.1, scene.guideY[i] - dx / l * 1.1, 0.05)
+    val wg = if (a != null && b != null) sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])) else minW
+    pts += q
+    ws += wg.coerceIn(minW, maxW)
   }
-  val bl = g.at(g.yLeft, 7.6, p); val br = g.at(g.yRight, 7.6, p)
-  val bl2 = g.at(g.yLeft, 7.2, p); val br2 = g.at(g.yRight, 7.2, p)
-  if (bl != null && br != null && bl2 != null && br2 != null) {
-    drawPath(Path().apply { moveTo(bl[0], bl[1]); lineTo(br[0], br[1]); lineTo(br2[0], br2[1]); lineTo(bl2[0], bl2[1]); close() }, pal.post)
-  }
-  // the panels, with their text drawn on them
-  for (pn in g.panels) {
-    val tl = g.at(pn.yLeft, 7.4, p) ?: continue
-    val tr = g.at(pn.yRight, 7.4, p) ?: continue
-    val bR = g.at(pn.yRight, 4.9, p) ?: continue
-    val bL = g.at(pn.yLeft, 4.9, p) ?: continue
-    val bg = if (pn.taken) pn.bg else androidx.compose.ui.graphics.lerp(pn.bg, Color(0xFF6E7883), 0.35f)
-    drawPath(Path().apply { moveTo(tl[0], tl[1]); lineTo(tr[0], tr[1]); lineTo(bR[0], bR[1]); lineTo(bL[0], bL[1]); close() }, bg)
-    drawPath(Path().apply { moveTo(tl[0], tl[1]); lineTo(tr[0], tr[1]); lineTo(bR[0], bR[1]); lineTo(bL[0], bL[1]); close() }, pn.fg.copy(alpha = 0.9f),
-        style = androidx.compose.ui.graphics.drawscope.Stroke(width = ((tr[0] - tl[0]) * 0.012f).coerceIn(1f, 4f)))
-    val panelW = tr[0] - tl[0]
-    val panelH = bL[1] - tl[1]
-    if (panelW < 30 || panelH < 14) continue
-    val lines = pn.lines.take(4)
-    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-      color = pn.fg.toArgb(); typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-      textSize = (panelH / (lines.size.coerceAtLeast(1) + 0.9f)).coerceAtMost(panelW / 9f)
+  if (pts.size < 3) return
+  // at a bend the width changes at once (wide across the road in front, thin along a road going
+  // sideways): each point as narrow as its neighbours, so the joint makes no blob
+  val ws0 = ws.toFloatArray()
+  for (i in ws.indices) ws[i] = minOf(ws0[(i - 1).coerceAtLeast(0)], ws0[i], ws0[(i + 1).coerceAtMost(ws0.size - 1)])
+  val headAt = pts.size - 2
+  val pal = scene.palette
+  // the body: a quad per stretch and a disc at each joint (a bend stays clean), first the dark
+  // rim a little wider, then the white
+  fun body(extra: Float, color: Color) {
+    for (i in 0 until headAt) {
+      val a = pts[i]; val b = pts[i + 1]
+      val dx = b[0] - a[0]; val dy = b[1] - a[1]
+      val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-3f)
+      val nx = -dy / l; val ny = dx / l
+      val wa = ws[i] / 2 + extra; val wb = ws[i + 1] / 2 + extra
+      drawPath(Path().apply {
+        moveTo(a[0] + nx * wa, a[1] + ny * wa); lineTo(b[0] + nx * wb, b[1] + ny * wb)
+        lineTo(b[0] - nx * wb, b[1] - ny * wb); lineTo(a[0] - nx * wa, a[1] - ny * wa); close()
+      }, color)
     }
-    var y = tl[1] + paint.textSize * 1.05f
-    val arrowSpace = panelH * 0.55f
-    val textLeft = tl[0] + panelW * 0.05f + (if (pn.exit != null) paint.textSize * 2.2f else 0f)
+    for (i in 1 until headAt) drawCircle(color, ws[i] / 2 + extra, Offset(pts[i][0], pts[i][1]))
+  }
+  // the head: a triangle along the last stretch, bigger than the ribbon there
+  val a = pts[headAt]; val b = pts[pts.size - 1]
+  var dx = b[0] - a[0]; var dy = b[1] - a[1]
+  val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-3f)
+  dx /= l; dy /= l
+  val wEnd = ws[headAt]
+  val headL = max(wEnd * 2.2f, 24f * dp); val headW = max(wEnd * 1.5f, 15f * dp)
+  val head = Path().apply {
+    moveTo(a[0] + dx * headL, a[1] + dy * headL)
+    lineTo(a[0] - dy * headW, a[1] + dx * headW)
+    lineTo(a[0] + dy * headW, a[1] - dx * headW)
+    close()
+  }
+  val rim = 2.5f * dp
+  body(rim, pal.ribbonEdge)
+  drawPath(head, pal.ribbonEdge, style = androidx.compose.ui.graphics.drawscope.Stroke(width = rim * 2, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+  body(0f, pal.ribbon)
+  drawPath(head, pal.ribbon)
+}
+
+/** A panel laid out on the screen. */
+private class PanelBox(val pn: Panel, var x0: Float, var x1: Float, val minW: Float, val cx: Float)
+
+/**
+ * The sign: its panels at the top of the picture, each over the lanes it is for (as the eye sees
+ * them a little ahead), as wide as its text needs, the text never smaller than readable from the
+ * driver's seat; under them the beam and, down to the road's edges, the posts.
+ */
+private fun DrawScope.drawSign(g: Gantry, scene: Scene, p: Projector, density: Density) {
+  val dp = density.density
+  val pal = scene.palette
+  val w = size.width; val h = size.height
+  val margin = 10f * dp
+  val textMin = 18f * dp
+  var textPx = (h * 0.052f).coerceIn(textMin, 30f * dp)
+  val arrowSpace = { t: Float -> t * 2.0f }
+  val pad = { t: Float -> t * 0.55f }
+  fun paintOf(t: Float, color: Color) = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+    this.color = color.toArgb(); typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD); textSize = t
+  }
+  fun plateW(t: Float, ref: String) = paintOf(t * 0.92f, Color.White).measureText(ref.uppercase()) + t * 0.9f
+  fun minWidth(pn: Panel, t: Float): Float {
+    val tp = paintOf(t, Color.White)
+    val refs = if (pn.refs.isEmpty()) 0f else pn.refs.sumOf { plateW(t, it).toDouble() }.toFloat() + t * 0.3f * (pn.refs.size - 1)
+    val towns = pn.towns.maxOfOrNull { tp.measureText(it) } ?: 0f
+    return max(refs, towns) + pad(t) * 2 + arrowSpace(t) + (if (pn.exit != null) t * 2.3f else 0f)
+  }
+  // where the lanes of each panel are on the screen
+  val boxes = g.panels.map { pn ->
+    val xl = g.at(pn.yLeft, 0.0, p)?.get(0) ?: (w * 0.3f)
+    val xr = g.at(pn.yRight, 0.0, p)?.get(0) ?: (w * 0.7f)
+    PanelBox(pn, min(xl, xr), max(xl, xr), minWidth(pn, textPx), (xl + xr) / 2)
+  }.sortedBy { it.cx }
+  val avail = w - 2 * margin - (boxes.size - 1) * 6f * dp
+  val minSum = boxes.sumOf { it.minW.toDouble() }.toFloat()
+  // too much text for the width: smaller letters, down to the readable minimum
+  if (minSum > avail && textPx > textMin) textPx = max(textMin, textPx * avail / minSum)
+  // each panel at least its minimum width, centred on its lanes; then side by side without overlapping, inside the picture
+  val share = if (boxes.isEmpty()) 1f else (avail / boxes.sumOf { minWidth(it.pn, textPx).toDouble() }.toFloat()).coerceAtMost(1f)
+  for (b in boxes) {
+    val mw = minWidth(b.pn, textPx) * share
+    if (b.x1 - b.x0 < mw) { b.x0 = b.cx - mw / 2; b.x1 = b.cx + mw / 2 }
+    b.x0 = b.x0.coerceAtLeast(margin); b.x1 = b.x1.coerceAtMost(w - margin)
+    if (b.x1 - b.x0 < mw) { if (b.x0 <= margin + 0.5f) b.x1 = b.x0 + mw else b.x0 = b.x1 - mw }
+  }
+  for (i in 1 until boxes.size) {
+    val prev = boxes[i - 1]; val cur = boxes[i]
+    val gap = 6f * dp
+    if (cur.x0 < prev.x1 + gap) { val d = prev.x1 + gap - cur.x0; cur.x0 += d; cur.x1 += d }
+  }
+  for (i in boxes.indices.reversed()) {
+    val b = boxes[i]
+    if (b.x1 > w - margin) { val d = b.x1 - (w - margin); b.x0 -= d; b.x1 -= d }
+    if (i > 0) { val prev = boxes[i - 1]; val gap = 6f * dp; if (prev.x1 + gap > b.x0) { val d = prev.x1 + gap - b.x0; prev.x0 -= d; prev.x1 -= d } }
+  }
+  // the height: the lines at the text size, at most a third of the picture
+  val maxLines = boxes.maxOfOrNull { (if (it.pn.refs.isEmpty()) 0 else 1) + it.pn.towns.size }?.coerceAtLeast(1) ?: 1
+  val lineH = textPx * 1.22f
+  var lines = min(maxLines, 4)
+  var boxH = lineH * lines + pad(textPx) * 1.6f
+  while (boxH > h * 0.36f && lines > 1) { lines--; boxH = lineH * lines + pad(textPx) * 1.6f }
+  val top = margin
+  val bottom = top + boxH
+  // the beam under the panels and the posts down to the road's edges
+  if (boxes.isNotEmpty()) {
+    val beamL = boxes.first().x0 - 4f * dp; val beamR = boxes.last().x1 + 4f * dp
+    val pl = g.at(g.yLeft, 0.0, p); val pr = g.at(g.yRight, 0.0, p)
+    val postW = 4f * dp
+    if (pl != null) drawLine(pal.post, Offset(pl[0].coerceIn(beamL, beamR), bottom), Offset(pl[0], pl[1]), postW)
+    if (pr != null) drawLine(pal.post, Offset(pr[0].coerceIn(beamL, beamR), bottom), Offset(pr[0], pr[1]), postW)
+    drawRect(pal.beam, Offset(beamL, bottom), Size(beamR - beamL, 5f * dp))
+  }
+  for (b in boxes) {
+    val pn = b.pn
+    val x0 = b.x0; val x1 = b.x1
+    val bw = x1 - x0
+    val bg = if (pn.taken) pn.bg else androidx.compose.ui.graphics.lerp(pn.bg, Color(0xFF6E7883), 0.4f)
+    val fg = if (pn.taken) pn.fg else pn.fg.copy(alpha = 0.8f)
+    val r = androidx.compose.ui.geometry.CornerRadius(5f * dp)
+    drawRoundRect(Color(0x66000000), Offset(x0 + 2f * dp, top + 3f * dp), Size(bw, boxH), r)
+    drawRoundRect(bg, Offset(x0, top), Size(bw, boxH), r)
+    drawRoundRect(fg.copy(alpha = 0.9f), Offset(x0, top), Size(bw, boxH), r, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f * dp))
+    val tp = paintOf(textPx, fg)
+    var y = top + pad(textPx) * 0.8f + textPx
+    var textLeft = x0 + pad(textPx)
+    val textRight = x1 - arrowSpace(textPx) - pad(textPx) * 0.4f
     pn.exit?.let { ex ->
       // the exit number in its own box at the top left
-      val box = android.graphics.RectF(tl[0] + panelW * 0.04f, tl[1] + panelH * 0.08f, tl[0] + panelW * 0.04f + paint.textSize * 1.9f, tl[1] + panelH * 0.08f + paint.textSize * 1.25f)
-      val boxPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = pn.fg.toArgb(); style = android.graphics.Paint.Style.STROKE; strokeWidth = paint.textSize * 0.08f }
-      drawContext.canvas.nativeCanvas.drawRoundRect(box, paint.textSize * 0.2f, paint.textSize * 0.2f, boxPaint)
-      val small = android.graphics.Paint(paint).apply { textSize = paint.textSize * 0.8f; textAlign = android.graphics.Paint.Align.CENTER }
+      val box = android.graphics.RectF(textLeft, top + pad(textPx) * 0.6f, textLeft + textPx * 1.9f, top + pad(textPx) * 0.6f + textPx * 1.25f)
+      val boxPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = fg.toArgb(); style = android.graphics.Paint.Style.STROKE; strokeWidth = textPx * 0.08f }
+      drawContext.canvas.nativeCanvas.drawRoundRect(box, textPx * 0.2f, textPx * 0.2f, boxPaint)
+      val small = android.graphics.Paint(tp).apply { textSize = textPx * 0.8f; textAlign = android.graphics.Paint.Align.CENTER }
       drawContext.canvas.nativeCanvas.drawText(ex, box.centerX(), box.centerY() + small.textSize * 0.35f, small)
+      textLeft += textPx * 2.3f
     }
-    for (line in lines) {
-      var t = line
-      while (t.length > 3 && paint.measureText(t) > panelW - (textLeft - tl[0]) - arrowSpace - panelW * 0.04f) t = t.dropLast(2) + "…"
-      drawContext.canvas.nativeCanvas.drawText(t, textLeft, y, paint)
-      y += paint.textSize * 1.08f
-      if (y > bL[1]) break
+    var drawn = 0
+    if (pn.refs.isNotEmpty() && drawn < lines) {
+      // the road numbers as plates, coloured like the country paints them
+      var x = textLeft
+      for (ref in pn.refs) {
+        val pw = plateW(textPx, ref)
+        if (x + pw > textRight + 1f) break
+        val (pbg, pfg) = refPlateColors(ref, scene.country)
+        val plate = android.graphics.RectF(x, y - textPx * 0.98f, x + pw, y + textPx * 0.26f)
+        drawContext.canvas.nativeCanvas.drawRoundRect(plate, textPx * 0.18f, textPx * 0.18f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = (if (pn.taken) pbg else androidx.compose.ui.graphics.lerp(pbg, Color(0xFF6E7883), 0.4f)).toArgb() })
+        drawContext.canvas.nativeCanvas.drawRoundRect(plate, textPx * 0.18f, textPx * 0.18f, android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = pfg.toArgb(); style = android.graphics.Paint.Style.STROKE; strokeWidth = textPx * 0.07f })
+        val pt = android.graphics.Paint(tp).apply { color = pfg.toArgb(); textSize = textPx * 0.92f; textAlign = android.graphics.Paint.Align.CENTER }
+        drawContext.canvas.nativeCanvas.drawText(ref.uppercase(), plate.centerX(), y, pt)
+        x += pw + textPx * 0.3f
+      }
+      y += lineH; drawn++
+    }
+    for (town in pn.towns) {
+      if (drawn >= lines) break
+      var t = town
+      while (t.length > 3 && tp.measureText(t) > textRight - textLeft) t = t.dropLast(2) + "…"
+      drawContext.canvas.nativeCanvas.drawText(t, textLeft, y, tp)
+      y += lineH; drawn++
     }
     // the arrow of the panel: where its lanes go
-    val cx = tr[0] - arrowSpace * 0.55f
-    val cy = tl[1] + panelH * 0.5f
-    val s = arrowSpace * 0.42f
+    val cx = x1 - arrowSpace(textPx) * 0.5f - pad(textPx) * 0.3f
+    val cy = top + boxH * 0.5f
+    val s = textPx * 0.75f
     val ang = Math.toRadians(pn.arrowDeg.toDouble())
     val dxA = (sin(ang) * s).toFloat(); val dyA = (-cos(ang) * s).toFloat()
-    drawLine(pn.fg, Offset(cx - dxA, cy - dyA), Offset(cx + dxA, cy + dyA), strokeWidth = s * 0.28f)
+    drawLine(fg, Offset(cx - dxA, cy - dyA), Offset(cx + dxA, cy + dyA), strokeWidth = s * 0.3f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
     val hx = cx + dxA; val hy = cy + dyA
-    val px = -dyA * 0.55f; val py = dxA * 0.55f
-    drawPath(Path().apply { moveTo(hx + dxA * 0.45f, hy + dyA * 0.45f); lineTo(hx + px, hy + py); lineTo(hx - px, hy - py); close() }, pn.fg)
+    val px = -dyA * 0.6f; val py = dxA * 0.6f
+    drawPath(Path().apply { moveTo(hx + dxA * 0.55f, hy + dyA * 0.55f); lineTo(hx + px, hy + py); lineTo(hx - px, hy - py); close() }, fg)
   }
 }
 
@@ -847,22 +1130,22 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
           val f = (scene.distanceM / scene.rangeM).coerceIn(0.0, 1.0).toFloat()
           val bw = size.width * 0.022f
           val bx = size.width - bw * 2.2f
-          val top = size.height * 0.16f; val bot = size.height * 0.84f
+          val top = size.height * 0.42f; val bot = size.height * 0.84f
           drawRoundRect(Color(0x66000000), Offset(bx, top), Size(bw, bot - top), androidx.compose.ui.geometry.CornerRadius(bw / 2))
           drawRoundRect(if (scene.distanceM < 300) NmAmber else Color(0xFF2F7CF6), Offset(bx, bot - (bot - top) * f), Size(bw, (bot - top) * f),
               androidx.compose.ui.geometry.CornerRadius(bw / 2))
         }
       }
-      Text(Fmt.distanceText(scene.distanceM), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
-          modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).background(Color(0x99000000), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 3.dp))
-      Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(34.dp).clip(CircleShape).background(Color(0x99000000)).clickable { closed = true },
-          contentAlignment = Alignment.Center) { Text("✕", color = Color.White, fontSize = 16.sp) }
+      Text(Fmt.distanceText(scene.distanceM), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold,
+          modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).background(Color(0x99000000), RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 4.dp))
+      Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(36.dp).clip(CircleShape).background(Color(0x99000000)).clickable { closed = true },
+          contentAlignment = Alignment.Center) { Text("✕", color = Color.White, fontSize = 17.sp) }
     }
     // the lanes, the same strip as on the map
     val plan = scene.junction.plan
     if (plan.lanes.isNotEmpty()) {
-      BoxWithConstraints(Modifier.fillMaxWidth().height(50.dp).padding(horizontal = 12.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
-        val w = min(maxWidth.value, plan.lanes.size * 56f).dp
+      BoxWithConstraints(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 12.dp, vertical = 5.dp), contentAlignment = Alignment.Center) {
+        val w = min(maxWidth.value, plan.lanes.size * 60f).dp
         Canvas(Modifier.width(w).fillMaxHeight()) { drawLanes(plan, scene.vehicleLane) }
       }
     }
