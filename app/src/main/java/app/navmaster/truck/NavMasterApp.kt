@@ -43,6 +43,9 @@ import uniffi.ferrostar.stepAdvanceOr
 import uniffi.ferrostar.DeviationCalculationPolicy
 import uniffi.ferrostar.stepAdvanceDistanceToEndOfStep
 
+/** The state of the start screen: what is being prepared, how far (0–1), whether it is over. */
+data class Startup(val label: String, val fraction: Float, val done: Boolean)
+
 class NavMasterApp : Application() {
   override fun onCreate() {
     super.onCreate()
@@ -63,16 +66,27 @@ object AppGraph {
     TomTomGuard.init(application)
     HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)
-    // the border crossings of the downloaded countries, in the background a little after the start;
-    // then the graphs of the active vehicle's profile warmed (the first route cold cost twice: see NmEngine.warmUp)
+    // at once, behind the start screen (ui.StartupScreen): the graphs of the active vehicle's profile
+    // warmed (the first route cold cost twice: see NmEngine.warmUp); then, at low priority, the
+    // border crossings of the downloaded countries
     Thread {
-      runCatching { Thread.sleep(30_000); engine.prepareBorders() }
       runCatching {
         val v = profiles.garage.value.active
-        engine.warmUp(if (v.isHgv || v.isBus) "driving-hgv" else "driving-car")
-      }
-    }.apply { priority = Thread.MIN_PRIORITY; isDaemon = true; name = "valichi" }.start()
+        val countries = regions.installed.value.size.coerceAtLeast(1)
+        var index = -1; var last: String? = null
+        engine.warmUp(if (v.isHgv || v.isBus) "driving-hgv" else "driving-car") { r, f ->
+          if (r.id != last) { last = r.id; index++ }
+          startup.value = Startup("Preparo ${r.label}…", ((index + f) / countries).coerceIn(0f, 1f), false)
+        }
+      }.onFailure { android.util.Log.w("NavMasterRoute", "riscaldamento: $it") }
+      startup.value = Startup("Pronto", 1f, true)
+      Thread.currentThread().priority = Thread.MIN_PRIORITY
+      runCatching { engine.prepareBorders() }
+    }.apply { isDaemon = true; name = "valichi" }.start()
   }
+
+  /** What the start screen shows while the engine's graphs warm up (null before the start, done at the end). */
+  val startup = MutableStateFlow<Startup?>(null)
 
   val settings by lazy { SettingsStore(app) }
   val profiles by lazy { ProfileStore(app) }

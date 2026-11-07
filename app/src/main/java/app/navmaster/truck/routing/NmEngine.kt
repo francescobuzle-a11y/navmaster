@@ -192,16 +192,22 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
    * cold and took 28 s to Komjatice against 16 s warm. In the background, at low priority; the
    * graphs stay open (see [graphOf]).
    */
-  fun warmUp(profile: String, budget: Long = 512L shl 20) {
+  fun warmUp(profile: String, budget: Long = 512L shl 20, progress: ((region: InstalledRegion, fraction: Float) -> Unit)? = null) {
+    // first the graphs still on the shared storage into the internal one (see internalRoot)
+    for (r in regions.installed.value) migrate(r.dir) { reset() }
     for (r in regions.installed.value.filter { installed(it.dir) }) {
+      progress?.invoke(r, 0f)
       val o = graphOf(r) ?: continue
       try {
-        val line = lock.read { if (open[r.id] === o) o.graph.warm(profile, budget = budget) else null } ?: continue
+        val line = lock.read {
+          if (open[r.id] === o) o.graph.warm(profile, budget = budget) { done, total -> progress?.invoke(r, if (total > 0) done.toFloat() / total else 1f) } else null
+        } ?: continue
         o.used = SystemClock.elapsedRealtime()
         Log.i(TAG, "${r.id}: $line")
       } catch (e: Throwable) {
         Log.w(TAG, "${r.id}: riscaldamento fallito: $e")
       }
+      progress?.invoke(r, 1f)
     }
   }
 
