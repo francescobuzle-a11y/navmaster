@@ -310,12 +310,31 @@ def build_overture(db, w, region):
     path = f"s3://overturemaps-us-west-2/release/{rel}/theme=places/type=place/*"
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2'; SET enable_progress_bar=false;")
+    # the schema changes between releases (categories -> taxonomy, 2025-10): pick what this one has,
+    # as data/merge_overture.py does; "primary" is a keyword for DuckDB, so the struct fields are quoted
+    cols = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}', hive_partitioning=1) LIMIT 0").fetchall()}
+    print("overture columns:", ", ".join(sorted(cols)))
+    if "categories" in cols:
+        cat_expr = 'categories."primary"'
+    elif "taxonomy" in cols:
+        cat_expr = 'taxonomy."primary"'
+    elif "basic_category" in cols:
+        cat_expr = "basic_category"
+    else:
+        cat_expr = "NULL"
+    name_expr = 'names."primary"' if "names" in cols else "NULL"
+    brand_expr = 'brand.names."primary"' if "brand" in cols else "NULL"
+    city_expr = "addresses[1].locality" if "addresses" in cols else "NULL"
+    street_expr = "addresses[1].freeform" if "addresses" in cols else "NULL"
+    phone_expr = "phones[1]" if "phones" in cols else "NULL"
+    web_expr = "websites[1]" if "websites" in cols else "NULL"
+    conf_expr = "confidence" if "confidence" in cols else "1.0"
     q = f"""
-      SELECT id, names.primary AS name, categories.primary AS cat, bbox.xmin AS lon, bbox.ymin AS lat, confidence,
-             addresses[1].locality AS city, addresses[1].freeform AS street, phones[1] AS phone, websites[1] AS website,
-             brand.names.primary AS brand
+      SELECT id, {name_expr} AS name, {cat_expr} AS cat, bbox.xmin AS lon, bbox.ymin AS lat, {conf_expr} AS confidence,
+             {city_expr} AS city, {street_expr} AS street, {phone_expr} AS phone, {web_expr} AS website,
+             {brand_expr} AS brand
       FROM read_parquet('{path}', hive_partitioning=1)
-      WHERE bbox.xmin BETWEEN {we} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND confidence >= 0.5 AND names.primary IS NOT NULL
+      WHERE bbox.xmin BETWEEN {we} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND {conf_expr} >= 0.5 AND {name_expr} IS NOT NULL
     """
     added = 0
     for oid, name, cat, lon, lat, conf, city, street, phone, website, brand in con.execute(q).fetchall():

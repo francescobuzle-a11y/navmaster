@@ -133,6 +133,8 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
   var offline by remember { mutableStateOf<List<Found>>(emptyList()) }
   var online by remember { mutableStateOf<List<Found>>(emptyList()) }
   var busy by remember { mutableStateOf(false) }
+  // what was really searched when a word was corrected ("Esselunga mantva" -> "esselunga mantova")
+  var corrected by remember { mutableStateOf<String?>(null) }
   val focus = remember { FocusRequester() }
   val recents by AppGraph.recents.items.collectAsState()
   LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
@@ -148,26 +150,40 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
       val coord = Geocoder.parseCoordinates(q)
       if (coord != null) listOf(Found("Coordinate", "${coord.lat}, ${coord.lng}", coord, "📌"))
       else {
-        val addr = runCatching { AppGraph.addresses.free(Geocoder.fixQuery(q), near) }.getOrDefault(emptyList())
+        // a word that is in no name of the tablet corrected to the nearest one ("Cornelliani", "mantva")
+        val fixed = runCatching { AppGraph.places.corrected(Geocoder.fixQuery(q), AppGraph.addresses) }.getOrDefault(Geocoder.fixQuery(q))
+        corrected = fixed.takeIf { TextNorm.norm(it) != TextNorm.norm(Geocoder.fixQuery(q)) }
+        val addr = runCatching { AppGraph.addresses.free(fixed, near) }.getOrDefault(emptyList())
         // every named place of the country (companies, shops, workshops, hotels ... luoghi.sqlite)
-        val places = runCatching { AppGraph.places.search(q, near) }.getOrDefault(emptyList())
+        val places = runCatching { AppGraph.places.search(fixed, near, AppGraph.addresses) }.getOrDefault(emptyList())
         val pois = runCatching { AppGraph.poi.search(q) }.getOrDefault(emptyList()).map { p ->
           Found(p.title, (app.navmaster.truck.settings.PoiCategories.byId(p.cat)?.label ?: p.cat), p.coordinate,
               app.navmaster.truck.settings.PoiCategories.byId(p.cat)?.icon ?: "📍",
               near?.let { app.navmaster.truck.core.Geo.dist(it.lat, it.lng, p.lat, p.lon) })
         }.sortedBy { it.distanceM ?: 0.0 }.take(8).filter { x -> places.none { app.navmaster.truck.core.Geo.dist(it.coordinate, x.coordinate) < 60 } }
         // the town of that name first ("Verona": the city, not the Hotel Verona nor the station),
-        // then a place whose name IS what was typed, before the streets of the same name
-        val exact = TextNorm.norm(q)
-        val (towns, addrRest) = addr.partition { it.icon == "🏙" && TextNorm.norm(it.title) == exact }
-        val (first, rest) = places.partition { TextNorm.norm(it.title) == exact || TextNorm.norm(it.title).startsWith("$exact ") }
-        (towns + first + addrRest + rest + pois)
+        // then the places that answer every word typed (a company by its name, "Esselunga
+        // Mantova", the tyre shops for "gommista Brescia"), then the streets, then the places
+        // that answer only in part; with a house number typed the addresses first
+        // the town typed, alone or with its parent ("Lunetta Mantova": the district, then its parent and county are in the detail)
+        val qt = TextNorm.tokens(fixed)
+        val (towns, addrRest) = addr.partition { it.icon == "🏙" && TextNorm.tokens(it.title + " " + it.detail).take(qt.size) == qt }
+        val (strong, weak) = places.partition { it.match >= 50.0 }
+        val address = qt.any { TextNorm.isHouseNumber(it) } || qt.firstOrNull() in app.navmaster.truck.search.Matching.STREET_WORDS
+        (if (address) towns + addrRest + strong + weak + pois else towns + strong + addrRest + weak + pois)
       }
     }
-    // online results complete what is not on the tablet (other countries, shops, companies ...)
+    // online results complete what is not on the tablet (other countries, shops, companies ...):
+    // the tablet's geocoder and Photon first; HERE (the companies, a counted allowance) only once
+    // the typing has paused for a while, so a word typed letter by letter costs one request
     delay(400)
-    online = runCatching { Geocoder.search(q, near) }.getOrDefault(emptyList())
+    online = runCatching { Geocoder.search(q, near, withHere = false) }.getOrDefault(emptyList())
     busy = false
+    if (q.trim().length >= 4) {
+      delay(900)
+      val withHere = runCatching { Geocoder.search(q, near, withHere = true) }.getOrDefault(emptyList())
+      if (withHere.isNotEmpty()) online = withHere
+    }
   }
   field(q, { q = it }, "Via, città, azienda o coordinate", focus)
   Spacer(Modifier.height(8.dp))
@@ -177,9 +193,10 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
       for (r in recents) ResultRow("🕘", r.title, r.detail) { onPick(r.toFound()) }
     } else {
       if (busy && offline.isEmpty()) CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.padding(12.dp))
+      corrected?.let { Caption("Cercato «$it»") }
       if (offline.isNotEmpty()) SectionHeader("Sul tablet (senza rete)")
       for (f in offline) ResultRow(f.icon, f.title, f.detail, f.distanceM?.let { Fmt.distanceText(it) }) { onPick(f) }
-      val extra = online.filter { o -> offline.none { app.navmaster.truck.core.Geo.dist(it.coordinate, o.coordinate) < 60 } }
+      val extra = online.filter { o -> offline.none { app.navmaster.truck.search.Matching.samePlace(it.title, it.coordinate.lat, it.coordinate.lng, o.title, o.coordinate.lat, o.coordinate.lng) } }
       if (extra.isNotEmpty()) SectionHeader("Online")
       for (f in extra) ResultRow(f.icon, f.title, f.detail) { onPick(f) }
       if (!busy && offline.isEmpty() && extra.isEmpty()) Caption("Nessun risultato. Prova con meno parole o con la ricerca guidata.")

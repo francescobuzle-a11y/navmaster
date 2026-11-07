@@ -57,6 +57,13 @@ object Geo {
   /** Metres per degree of latitude on that sphere. */
   const val M_PER_DEG = 6_371_000.0 * Math.PI / 180.0
 
+  /** The box of [radiusM] metres around a point: south, west, north, east (degrees). */
+  fun box(lat: Double, lon: Double, radiusM: Double): DoubleArray {
+    val dLat = radiusM / M_PER_DEG
+    val dLon = radiusM / (M_PER_DEG * cos(Math.toRadians(lat)).coerceAtLeast(0.05))
+    return doubleArrayOf(lat - dLat, lon - dLon, lat + dLat, lon + dLon)
+  }
+
   /** Compass bearing from a to b in degrees (0 = north, clockwise). */
   fun bearing(a: GeographicCoordinate, b: GeographicCoordinate): Double {
     val k = cos(Math.toRadians(a.lat))

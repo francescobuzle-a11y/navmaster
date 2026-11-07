@@ -30,6 +30,8 @@ android {
     buildConfigField("int", "FLEET_SIZE", num("FLEET_SIZE", 20).toString())
     buildConfigField("int", "TOMTOM_MONTH_FREE", num("TOMTOM_MONTH_FREE", 200_000).toString())
     buildConfigField("int", "HERE_MONTH_FREE", num("HERE_MONTH_FREE", 5_000).toString())
+    // HERE Geocoding & Search (the companies of the free search): its own free allowance, 30,000 a month
+    buildConfigField("int", "HERE_SEARCH_MONTH_FREE", num("HERE_SEARCH_MONTH_FREE", 30_000).toString())
   }
 
   signingConfigs {

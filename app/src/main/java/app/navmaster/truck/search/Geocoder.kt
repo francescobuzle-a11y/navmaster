@@ -4,6 +4,7 @@ import android.util.Log
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -18,9 +19,12 @@ import uniffi.ferrostar.GeographicCoordinate
 
 
 /**
- * Address search. Coordinates typed by the driver ("44.05, 12.56") work offline; everything else
- * goes to Photon (OpenStreetMap geocoder, typo tolerant) when there is a connection. The words a
- * driver often glues together ("viaroma", "piazzagaribaldi") are split first, as in NavMaster.
+ * Online search. Coordinates typed by the driver ("44.05, 12.56") work offline; everything else
+ * goes, when there is a connection, to the geocoder of the tablet (Google's, on tablets with
+ * Google services: the house numbers), to Photon (OpenStreetMap geocoder, typo tolerant) and to
+ * HERE Search (the companies and places by their sign, see HereSearch), the answers put together
+ * without doubles. The words a driver often glues together ("viaroma", "piazzagaribaldi") are
+ * split first, as in NavMaster.
  */
 object Geocoder {
   private val client = OkHttpClient.Builder().callTimeout(8, TimeUnit.SECONDS).build()
@@ -42,21 +46,42 @@ object Geocoder {
     return if (lat in -90.0..90.0 && lon in -180.0..180.0) GeographicCoordinate(lat, lon) else null
   }
 
-  suspend fun search(query: String, near: GeographicCoordinate?): List<Found> =
+  suspend fun search(query: String, near: GeographicCoordinate?, withHere: Boolean = true): List<Found> =
       withContext(Dispatchers.IO) {
         parseCoordinates(query)?.let {
           return@withContext listOf(Found("Coordinate", String.format(java.util.Locale.ITALY, "%.5f, %.5f", it.lat, it.lng), it, "📌"))
         }
         val fixed = fixQuery(query)
-        // the geocoder of the tablet itself (Google's, on tablets with Google services): it knows
-        // the house numbers as Google Maps does; then Photon (OpenStreetMap)
-        val google = platform(fixed, near)
-        val first = photon(fixed, near)
-        val osm = if (first.isNotEmpty() || fixed.length < 5) first
-        // one more try without the last word (often a half-typed house number or town)
-        else photon(fixed.substringBeforeLast(' '), near)
-        (google + osm.filter { o -> google.none { app.navmaster.truck.core.Geo.dist(it.coordinate, o.coordinate) < 40 } }).take(10)
+        // the three at once: the geocoder of the tablet itself (Google's, on tablets with Google
+        // services: it knows the house numbers as Google Maps does), Photon (OpenStreetMap) and
+        // HERE (the companies)
+        val hereKey = app.navmaster.truck.live.ApiKeys.here(app.navmaster.truck.AppGraph.settings.settings.value)
+        val google = async { platform(fixed, near) }
+        val here = async { if (withHere) HereSearch.discover(fixed, near, hereKey) else emptyList() }
+        val osm = async {
+          val first = photon(fixed, near)
+          if (first.isNotEmpty() || fixed.length < 5) first
+          // one more try without the last word (often a half-typed house number or town)
+          else photon(fixed.substringBeforeLast(' '), near)
+        }
+        merge(listOf(google.await(), here.await(), osm.await()), query).take(12)
       }
+
+  /**
+   * The answers of the sources as one list without doubles: the ones whose name is what was
+   * typed first (a company by its sign), each source's order kept otherwise; the same place from
+   * two sources (same name within 150 m, or within 25 m) once, the first source's version.
+   */
+  fun merge(sources: List<List<Found>>, query: String): List<Found> {
+    val out = ArrayList<Found>()
+    for (list in sources) for (f in list) {
+      if (out.any { Matching.samePlace(it.title, it.coordinate.lat, it.coordinate.lng, f.title, f.coordinate.lat, f.coordinate.lng) }) continue
+      out += f
+    }
+    val toks = Matching.clean(TextNorm.tokens(query))
+    if (toks.isEmpty()) return out
+    return out.sortedByDescending { Matching.nameScore(it.title, null, toks) >= 80.0 }
+  }
 
   /**
    * Android's own geocoder: on tablets with Google services it is Google's address search (the

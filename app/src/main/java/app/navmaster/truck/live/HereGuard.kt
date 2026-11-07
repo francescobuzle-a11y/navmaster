@@ -52,13 +52,20 @@ data class HereUsage(
     /** Month's calls when today began (today's budget is reckoned from what was left then). */
     val monthAtDayStart: Int = 0,
     val pausedUntil: Long = 0,
+    /** HERE Geocoding & Search (the companies and places typed in the search): its own allowance. */
+    val daySearch: Int = 0,
+    val monthSearch: Int = 0,
+    val monthSearchAtDayStart: Int = 0,
 )
 
 /**
- * Keeps HERE (the incidents of HERE Traffic v7) inside this tablet's part of the free allowance
- * of the Base plan (HERE_MONTH_FREE, 5,000 traffic requests a month): HERE bills what goes over,
- * so a request over the limit is never sent (empty answer from here). HERE is the second source:
- * it is asked only when TomTom has used up its part (see NavViewModel.refreshLive).
+ * Keeps HERE inside this tablet's part of the free allowances of the Base plan: HERE bills what
+ * goes over, so a request over the limit is never sent (empty answer from here).
+ *  - HERE Traffic v7 (the incidents): HERE_MONTH_FREE, 5,000 requests a month. The second source:
+ *    asked only when TomTom has used up its part (see NavViewModel.refreshLive).
+ *  - HERE Geocoding & Search (the companies and places of the free search, search.hereapi.com):
+ *    HERE_SEARCH_MONTH_FREE, 30,000 a month, counted apart (Discover/Autosuggest/Geocode share
+ *    that one allowance).
  * A "429" pauses HERE until tomorrow, a refused key for an hour.
  */
 object HereGuard : Interceptor {
@@ -69,6 +76,13 @@ object HereGuard : Interceptor {
 
   val monthLimit: Int
     get() = Fleet.share(BuildConfig.HERE_MONTH_FREE)
+
+  /** This tablet's searches a month. */
+  val searchMonthLimit: Int
+    get() = Fleet.share(BuildConfig.HERE_SEARCH_MONTH_FREE)
+
+  /** The search services of HERE (discover., autosuggest., geocode., browse., lookup.search.hereapi.com). */
+  fun isSearch(host: String): Boolean = host.endsWith(".search.hereapi.com") || host == "search.hereapi.com"
 
   fun init(context: Context) {
     val f = File(context.filesDir, "here_usage.json")
@@ -81,8 +95,8 @@ object HereGuard : Interceptor {
     val today = LocalDate.now().toString()
     val month = today.take(7)
     var u = usage
-    if (u.month != month) u = u.copy(month = month, monthCalls = 0, monthAtDayStart = 0)
-    if (u.day != today) u = u.copy(day = today, dayCalls = 0, monthAtDayStart = u.monthCalls)
+    if (u.month != month) u = u.copy(month = month, monthCalls = 0, monthAtDayStart = 0, monthSearch = 0, monthSearchAtDayStart = 0)
+    if (u.day != today) u = u.copy(day = today, dayCalls = 0, monthAtDayStart = u.monthCalls, daySearch = 0, monthSearchAtDayStart = u.monthSearch)
     return u
   }
 
@@ -94,12 +108,22 @@ object HereGuard : Interceptor {
 
   private fun dayLimit(u: HereUsage): Int = Fleet.today(monthLimit - u.monthAtDayStart)
 
+  private fun searchDayLimit(u: HereUsage): Int = Fleet.today(searchMonthLimit - u.monthSearchAtDayStart)
+
   /** May [n] more requests be sent today? */
   @Synchronized
   fun canAsk(n: Int = 1): Boolean {
     val u = current()
     if (System.currentTimeMillis() < u.pausedUntil) return false
     return u.monthCalls + n <= monthLimit && u.dayCalls + n <= dayLimit(u)
+  }
+
+  /** May [n] more searches be sent today? */
+  @Synchronized
+  fun canSearch(n: Int = 1): Boolean {
+    val u = current()
+    if (System.currentTimeMillis() < u.pausedUntil) return false
+    return u.monthSearch + n <= searchMonthLimit && u.daySearch + n <= searchDayLimit(u)
   }
 
   @Synchronized
@@ -110,16 +134,25 @@ object HereGuard : Interceptor {
     return true
   }
 
+  @Synchronized
+  private fun takeSearch(): Boolean {
+    if (!canSearch()) return false
+    val u = current()
+    save(u.copy(daySearch = u.daySearch + 1, monthSearch = u.monthSearch + 1))
+    return true
+  }
+
   fun summary(): String {
     val u = current()
     val paused = System.currentTimeMillis() < u.pausedUntil
-    return "HERE oggi ${u.dayCalls} di ${dayLimit(u)} · mese ${u.monthCalls} di $monthLimit" + if (paused) " · in pausa" else ""
+    return "HERE traffico oggi ${u.dayCalls} di ${dayLimit(u)} · mese ${u.monthCalls} di $monthLimit · " +
+        "ricerche oggi ${u.daySearch} di ${searchDayLimit(u)} · mese ${u.monthSearch} di $searchMonthLimit" + if (paused) " · in pausa" else ""
   }
 
   override fun intercept(chain: Interceptor.Chain): Response {
     val req = chain.request()
     if (!req.url.host.endsWith("hereapi.com")) return chain.proceed(req)
-    if (!take()) {
+    if (!(if (isSearch(req.url.host)) takeSearch() else take())) {
       return Response.Builder().request(req).protocol(Protocol.HTTP_1_1).code(204).message("NavMaster: budget HERE")
           .body("".toResponseBody(null)).build()
     }

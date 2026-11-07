@@ -74,6 +74,8 @@ data class Found(
     val icon: String,
     val distanceM: Double? = null,
     val offline: Boolean = true,
+    /** How well the name answers what was typed (Matching.score; 0 when not reckoned): 50 and over, every word explained. */
+    val match: Double = 0.0,
 )
 
 /**
@@ -135,25 +137,73 @@ class AddressIndex(private val regions: RegionManager) {
     return out.distinctBy { it.num }.sortedWith(compareBy({ it.num.takeWhile { ch -> ch.isDigit() }.toIntOrNull() ?: Int.MAX_VALUE }, { it.num }))
   }
 
+  // ---- for the free search of the places (PlaceIndex) ------------------------------------
+
+  /** The towns (city, town, village, suburb, quarter, hamlet) whose search form starts with [text]: for "<name> <town>". */
+  fun townsStartingWith(text: String): List<Matching.Town> {
+    val fts = TextNorm.ftsQuery(text) ?: return emptyList()
+    val out = ArrayList<Matching.Town>()
+    for ((_, db) in dbs.all()) {
+      runCatching {
+        db.rawQuery("SELECT p.name, p.kind, p.lat, p.lon, p.pop FROM place_fts f JOIN places p ON p.id = f.docid " +
+            "WHERE f.norm MATCH ? AND p.rank <= 4 ORDER BY p.rank, p.pop DESC LIMIT 30", arrayOf(fts)).use { c ->
+          while (c.moveToNext()) {
+            if (TextNorm.norm(c.getString(0)).startsWith(text)) out += Matching.Town(c.getString(0), c.getString(1), c.getDouble(2), c.getDouble(3), c.getLong(4))
+          }
+        }
+      }
+    }
+    return out
+  }
+
+  /** Some town or street starts with this word. */
+  fun known(t: String): Boolean = dbs.all().any { (_, db) ->
+    runCatching {
+      db.rawQuery("SELECT 1 FROM place_fts WHERE norm MATCH ? LIMIT 1", arrayOf("$t*")).use { it.moveToFirst() } ||
+          db.rawQuery("SELECT 1 FROM street_fts WHERE norm MATCH ? LIMIT 1", arrayOf("$t*")).use { it.moveToFirst() }
+    }.getOrDefault(false)
+  }
+
+  /** The words of the towns and streets near [t] (same two first letters), for the corrections. */
+  fun termsNear(t: String): List<Pair<String, Int>> {
+    val out = ArrayList<Pair<String, Int>>()
+    for ((_, db) in dbs.all()) {
+      out += Terms.near(db, "place_fts", t)
+      out += Terms.near(db, "street_fts", t)
+    }
+    return out
+  }
+
   /** Free text: streets (with the number when typed), towns, across every installed country. */
   fun free(query: String, near: GeographicCoordinate?, limit: Int = 30): List<Found> {
     val toks = TextNorm.tokens(query)
     if (toks.isEmpty()) return emptyList()
     val number = toks.lastOrNull { TextNorm.isHouseNumber(it) }
-    val words = toks.filter { it != number }
+    // without the fillers ("via dei Mille" = "via Mille"), the house number apart
+    val words = Matching.clean(toks.filter { it != number })
     if (words.isEmpty()) return emptyList()
     val fts = words.joinToString(" ") { "$it*" }
     val out = mutableListOf<Found>()
     for ((region, db) in dbs.all()) {
-      // towns
-      db.rawQuery("SELECT p.name, p.kind, p.county, p.lat, p.lon, q.name FROM place_fts f JOIN places p ON p.id = f.docid " +
-          "LEFT JOIN places q ON q.id = p.parent WHERE f.norm MATCH ? ORDER BY p.rank, p.pop DESC LIMIT 15", arrayOf(fts)).use { c ->
-        while (c.moveToNext()) {
-          val lat = c.getDouble(3)
-          val lon = c.getDouble(4)
-          val detail = listOfNotNull(c.getString(5), c.getString(2), region.label).distinct().joinToString(" · ")
-          out += Found(c.getString(0), detail, GeographicCoordinate(lat, lon), "🏙", near?.let { Geo.dist(it.lat, it.lng, lat, lon) })
+      // towns: by name; then "<district> <town>" ("Lunetta Mantova"): the name without the last
+      // word(s), those words being the town the district belongs to, or its county
+      for (drop in 0..minOf(2, words.size - 1)) {
+        val head = words.dropLast(drop)
+        val tail = words.takeLast(drop).joinToString(" ")
+        var any = false
+        db.rawQuery("SELECT p.name, p.kind, p.county, p.lat, p.lon, q.name FROM place_fts f JOIN places p ON p.id = f.docid " +
+            "LEFT JOIN places q ON q.id = p.parent WHERE f.norm MATCH ? ORDER BY p.rank, p.pop DESC LIMIT 15",
+            arrayOf(head.joinToString(" ") { "$it*" })).use { c ->
+          while (c.moveToNext()) {
+            if (drop > 0 && !(TextNorm.norm(c.getString(5)).startsWith(tail) || TextNorm.norm(c.getString(2)).startsWith(tail))) continue
+            val lat = c.getDouble(3)
+            val lon = c.getDouble(4)
+            val detail = listOfNotNull(c.getString(5), c.getString(2), region.label).distinct().joinToString(" · ")
+            out += Found(c.getString(0), detail, GeographicCoordinate(lat, lon), "🏙", near?.let { Geo.dist(it.lat, it.lng, lat, lon) })
+            any = true
+          }
         }
+        if (any) break
       }
       // streets ("mihai eminescu brasov" matches street words and town words together)
       db.rawQuery("SELECT s.id, s.name, s.lat, s.lon, p.name, p.county FROM street_fts f JOIN streets s ON s.id = f.docid " +
