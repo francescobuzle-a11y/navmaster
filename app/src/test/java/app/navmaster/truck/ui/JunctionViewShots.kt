@@ -79,9 +79,9 @@ class JunctionViewShots {
           if (sign == null) problems += "$name: manca il cartello"
           else if (sign.fromMap != c.signFromMap) problems += "$name: cartello ${if (sign.fromMap) "della mappa" else "ricostruito"} invece di ${if (c.signFromMap) "della mappa" else "ricostruito"}"
           else if (!sign.fromMap && (sign.panels.none { "SP12" in it.refs } || sign.panels.none { "Via Roma" in it.towns })) problems += "$name: cartello ricostruito senza numero e nome della strada: ${sign.panels.map { it.lines }}"
-          if (scene.paint.isEmpty() && c.scene.junction.painted) problems += "$name: nessuna freccia dipinta sulle corsie"
+          if (scene.paint.size < 3) problems += "$name: ${scene.paint.size} punte di freccia sulle corsie da prendere"
           report.append("$name: ${scene.asphalt.size} strade, ${scene.markings.size} segni, ${scene.lit.size} corsie accese, " +
-              "cartello ${scene.gantry?.panels?.size ?: 0} pannelli (${if (scene.gantry?.fromMap == true) "mappa" else "ricostruito"}), ${scene.paint.size} frecce dipinte\n")
+              "cartello ${scene.gantry?.panels?.size ?: 0} pannelli (${if (scene.gantry?.fromMap == true) "mappa" else "ricostruito"}), ${scene.paint.size} punte di freccia\n")
         } catch (e: Throwable) {
           problems += "$name: errore ${e::class.simpleName}: ${e.message?.take(300)} ${e.stackTrace.take(4).joinToString(" < ")}"
         }

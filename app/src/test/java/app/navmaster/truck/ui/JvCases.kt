@@ -126,7 +126,7 @@ internal object JvCases {
         road(25, "residential", 0, null, line(-200.0 to 0.0, -200.0 to 300.0)),
         road(26, "residential", 0, null, line(-120.0 to 0.0, -120.0 to -250.0)),
     )
-    return Case("citta", JunctionScene(j, 80.0, 300.0, r, 320.0, 400.0, "IT", null), roads, 350.0, false)
+    return Case("citta", JunctionScene(j, 80.0, 300.0, r, 320.0, 400.0, "IT", null), roads, 382.0, false)
   }
 
   /** The three junctions. */
