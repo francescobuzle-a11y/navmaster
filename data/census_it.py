@@ -31,24 +31,30 @@ import re
 import unicodedata
 
 URL = "https://velox.mit.gov.it/dispositivi/data?draw=1&start=0&length=-1"
+# the ministry's site does not answer GitHub's servers (abroad): a copy of the list, refreshed from
+# Italy with data/aggiorna_censimento.sh, is read when the site is silent
+MIRROR = "https://github.com/francescobuzle-a11y/navmaster/releases/download/censimento-autovelox/dispositivi.json"
 
 ABSENT = "non nel censimento del ministero"
 OFF = "spento secondo il censimento del ministero"
 TUTOR = "Tutor (censimento del ministero)"
 
 
-def fetch(timeout=120):
-    """The rows of the list (dicts), or None when it cannot be read."""
+def fetch(timeout=40):
+    """The rows of the list (dicts), from the ministry or its copy, or None when neither can be read."""
     import urllib.request
-    req = urllib.request.Request(URL, headers={"User-Agent": "NavMaster data build (github.com/francescobuzle-a11y/navmaster)",
-                                               "X-Requested-With": "XMLHttpRequest"})
-    try:
-        data = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
-        rows = data.get("data") or []
-        return rows if len(rows) > 100 else None
-    except Exception as ex:
-        print(f"census it: not downloaded ({ex})")
-        return None
+    for url in (URL, MIRROR):
+        req = urllib.request.Request(url, headers={"User-Agent": "NavMaster data build (github.com/francescobuzle-a11y/navmaster)",
+                                                   "X-Requested-With": "XMLHttpRequest"})
+        try:
+            data = json.loads(urllib.request.urlopen(req, timeout=timeout if url == URL else 120).read())
+            rows = data.get("data") or []
+            if len(rows) > 100:
+                print(f"census it: {len(rows)} devices from {'the ministry' if url == URL else 'the copy'}")
+                return rows
+        except Exception as ex:
+            print(f"census it: {url.split('/')[2]} not read ({ex})")
+    return None
 
 
 def norm(s):
