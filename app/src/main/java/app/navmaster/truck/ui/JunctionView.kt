@@ -198,7 +198,18 @@ fun junctionSceneOf(
   // little before or after the turn): the sign of the booth, with the motorway's number
   val booth = a.tollBooths.firstOrNull { it.alongM >= at - 300 && it.alongM <= at + 800 }
   val tollEntry = booth != null && a.boothRole(booth) == "entrata"
-  val tollRef = if (tollEntry) a.edges.firstOrNull { it.roadClass == "motorway" && it.startM >= at - 50 && it.startM <= at + 4000 }?.refs?.firstOrNull() else null
+  // the motorway's number: from the motorway's own stretches (the first ones may carry no name),
+  // else the signs of the slip road (destination:ref), else the map's ref of the motorway's way
+  val tollRef = if (!tollEntry) null else run {
+    val mw = a.edges.filter { it.roadClass == "motorway" && !it.isRamp && it.startM >= at - 50 && it.startM <= at + 4000 }
+    mw.firstNotNullOfOrNull { e -> e.refs.firstOrNull { isMotorwayRef(it) } }
+        ?: a.edges.filter { it.startM >= at - 50 && it.startM <= at + 4000 }.firstNotNullOfOrNull { e -> e.sign?.branches?.firstOrNull { isMotorwayRef(it) } }
+        ?: mw.firstOrNull()?.let { e ->
+          val q = a.pointAt((e.startM + 20).coerceAtMost(a.length))
+          runCatching { jvRoadsNear(q.lat, q.lng, 40.0) }.getOrDefault(emptyList())
+              .firstOrNull { it.osm == e.wayId }?.ref?.split(';')?.map { it.trim() }?.firstOrNull { isMotorwayRef(it) }
+        }
+  }
   return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, vehicleLane, tollEntry, tollRef)
 }
 
