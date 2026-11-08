@@ -261,7 +261,17 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
         gb = RoutingGraph.load(graphDir(b.dir) ?: continue, true)
         val ca = CountryGraph(a.id, DirectionsService(ga, DirectionsLimits(), ENGINE_VERSION))
         val cbg = CountryGraph(b.id, DirectionsService(gb, DirectionsLimits(), ENGINE_VERSION))
-        transfersBetween(ca, cbg)
+        val list = transfersBetween(ca, cbg)
+        // the crossings on the roads of both countries into the system's file cache (the location
+        // index and the geometry around each one): the first trip across this border snaps all of
+        // them on both sides, and after the start those pages came from the flash (tablet,
+        // Canneto → Dolná Komjatice: ~1500 page reads, ~0.7 s of the first route)
+        val started = SystemClock.elapsedRealtime()
+        for (t in list) {
+          runCatching { ga.index.findClosest(t.lat, t.lon) }
+          runCatching { gb.index.findClosest(t.lat, t.lon) }
+        }
+        if (list.isNotEmpty()) Log.i(TAG, "valichi ${a.id}-${b.id}: ${list.size} passaggi agganciati in ${SystemClock.elapsedRealtime() - started} ms")
       } catch (e: Throwable) {
         Log.w(TAG, "valichi ${a.id}-${b.id}: $e")
       } finally {
