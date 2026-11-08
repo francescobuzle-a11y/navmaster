@@ -55,7 +55,11 @@ object CameraFiles {
       client.newCall(Request.Builder().url("${app.navmaster.truck.data.RegionManager.RELEASES}/$INDEX").build()).execute().use { r ->
         if (r.isSuccessful) parseIndex(r.body.string()) else null
       }
-    }.onFailure { Log.w(TAG, "camera files: $it") }.getOrNull() ?: return
+    }.onFailure { Log.w(TAG, "camera files: $it") }.getOrNull() ?: run {
+      // GitHub silent (no network, a slow day): again in an hour, not tomorrow
+      lastAt = now - 23 * 3600_000L
+      return
+    }
     for (e in index) {
       if (e.country !in countries) continue
       val target = File(dir(), "${e.country}-${e.stamp}.sqlite")

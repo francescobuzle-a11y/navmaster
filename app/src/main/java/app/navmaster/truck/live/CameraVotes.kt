@@ -103,7 +103,8 @@ object CameraVotes {
     }
     if (now - lastReleaseAt > 12 * 3600_000L) {
       lastReleaseAt = now
-      readRelease()?.let { add(it) }
+      // GitHub silent (no network, a slow day): again in an hour, not in 12
+      readRelease()?.let { add(it) } ?: run { lastReleaseAt = now - 11 * 3600_000L }
     }
   }
 
