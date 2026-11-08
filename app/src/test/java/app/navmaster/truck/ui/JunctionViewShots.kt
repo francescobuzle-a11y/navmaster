@@ -49,6 +49,46 @@ import java.io.FileOutputStream
 class JunctionViewShots {
   @get:Rule val compose = createEmptyComposeRule()
 
+  /**
+   * Thin lines across the lit lane (the seams between the pieces of a strip): along a line on the
+   * lane to take, beside the arrow heads, from 12 m in front of the eye to 15 m before the node,
+   * a pixel much lighter or darker than the pixels a few steps before and after it. Null when none.
+   */
+  private fun seams(scene: Scene, img: ImageBitmap, w: Int, h: Int): String? {
+    val bmp = img.asAndroidBitmap()
+    val p = Projector(scene, w.toFloat(), h.toFloat())
+    val lum = ArrayList<Pair<Int, Double>>() // screen y, luminance
+    var lastY = -1
+    val n = scene.routeX.size - 1
+    val camAlong = scene.visibleFromM - 9.0
+    var m = camAlong + 12.0
+    while (m < scene.nodeM - 15.0) {
+      val fi = (m - scene.routeFrom) / scene.routeStep
+      val k = fi.toInt().coerceIn(0, n - 1); val t = fi - k
+      val x = scene.routeX[k] + (scene.routeX[k + 1] - scene.routeX[k]) * t
+      val y = scene.routeY[k] + (scene.routeY[k + 1] - scene.routeY[k]) * t
+      val dx = scene.routeX[k + 1] - scene.routeX[k]; val dy = scene.routeY[k + 1] - scene.routeY[k]
+      val l = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
+      val off = scene.routeLaneY[k] + 0.38 * scene.laneW
+      val q = p.project(x - dy / l * off, y + dx / l * off, 0.0)
+      if (q != null) {
+        val px = q[0].toInt(); val py = q[1].toInt()
+        if (px in 0 until w && py in 0 until h && py != lastY) {
+          val c = bmp.getPixel(px, py)
+          lum += py to (0.3 * ((c shr 16) and 255) + 0.59 * ((c shr 8) and 255) + 0.11 * (c and 255))
+          lastY = py
+        }
+      }
+      m += 0.05
+    }
+    var bad = 0
+    for (i in 3 until lum.size - 3) {
+      val ref = (lum[i - 3].second + lum[i + 3].second) / 2
+      if (kotlin.math.abs(lum[i].second - ref) > 6) bad++
+    }
+    return if (bad > 0) "$bad righe trasversali sulla corsia accesa (su ${lum.size} pixel)" else null
+  }
+
   private fun save(img: ImageBitmap, name: String, out: File) {
     FileOutputStream(File(out, "$name.png")).use { img.asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
   }
@@ -73,6 +113,7 @@ class JunctionViewShots {
             drawVehicle(scene, c.vehAlong, c.scene.vehicleLane)
           }
           save(img, name, out)
+          seams(scene, stat, wh.first, wh.second)?.let { problems += "$name: $it" }
           if (scene.asphalt.isEmpty()) problems += "$name: nessuna strada"
           if (scene.lit.isEmpty()) problems += "$name: nessuna corsia evidenziata"
           val sign = scene.gantry

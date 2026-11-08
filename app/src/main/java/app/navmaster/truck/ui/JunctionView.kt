@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Canvas as ComposeCanvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
@@ -445,7 +446,8 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val routeShift = DoubleArray(n + 1)
   for (i in 0..n) {
     val d = routeAlong[i] - node
-    routeShift[i] = if (d <= 0 || !exitLike) 0.0 else activeY * (1 - smooth(d / taper))
+    // from the node itself (its point included) the road taken starts where its lanes are
+    routeShift[i] = if (d < -0.5 || !exitLike) 0.0 else activeY * (1 - smooth(d.coerceAtLeast(0.0) / taper))
     routeLaneY[i] = if (d <= 0) activeY else routeShift[i]
   }
 
@@ -466,20 +468,23 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
 
   // the road arriving: the route's line before the node, its lanes and markings
   val beforeIdx = (0..n).filter { routeAlong[it] <= node + 0.01 }
+  // the carriageway and the lit lanes reach a little past the node, under the road taken: the two
+  // shapes overlap instead of meeting edge to edge (an edge shows as a thin line)
+  val beforeOv = (0..n).filter { routeAlong[it] <= node + 2.01 }
   val takenIdx = (0..n).filter { routeAlong[it] >= node - 0.01 }
   fun sub(idx: List<Int>, arr: DoubleArray) = DoubleArray(idx.size) { arr[idx[it]] }
   if (beforeIdx.size >= 2) {
     val bx = sub(beforeIdx, rx); val by = sub(beforeIdx, ry)
     val carriageLeft = totalW / 2
     val carriageRight = -totalW / 2
-    asphalt += stripOf(bx, by, carriageLeft + 0.8, carriageRight - 0.8, pal.asphalt)
+    asphalt += stripOf(sub(beforeOv, rx), sub(beforeOv, ry), carriageLeft + 0.8, carriageRight - 0.8, pal.asphalt)
     // edge lines, lane lines (dashed), the centre line of a two-way road
     markings += stripOf(bx, by, carriageRight + 0.45, carriageRight + 0.15, pal.marking)
     markings += stripOf(bx, by, carriageLeft - 0.15, carriageLeft - 0.45, pal.marking)
     for (k in 1 until nLanes) dashes(bx, by, ourLeft - k * laneW, 0.3, if (exitLike) 4.5 else 3.0, if (exitLike) 9.0 else 6.0, pal.marking, markings)
     if (!approachOneway) dashes(bx, by, if (lht) ourLeft - nLanes * laneW else ourLeft, 0.3, 3.0, 6.0, pal.marking, markings)
     // the lanes to take, lit from 250 m before the node
-    val litFrom = beforeIdx.filter { routeAlong[it] >= node - 250 }
+    val litFrom = beforeOv.filter { routeAlong[it] >= node - 250 }
     if (litFrom.size >= 2 && active.isNotEmpty()) {
       val lx = sub(litFrom, rx); val ly = sub(litFrom, ry)
       val l0 = active.minOf { it.coerceIn(0, nLanes - 1) }; val l1 = active.maxOf { it.coerceIn(0, nLanes - 1) }
@@ -770,20 +775,44 @@ internal class Projector(scene: Scene, val w: Float, val h: Float) {
   val horizon: Float get() = (h / 2 - focal * tan(pitch)).toFloat()
 }
 
-/** The quads of a strip, with their depth, for the painter (far ones first). */
-private fun quads(st: Strip, p: Projector, out: MutableList<Pair<Float, Path>>, maxDepth: Float = 900f) {
-  for (i in 0 until st.x.size - 1) {
-    val dx = st.x[i + 1] - st.x[i]; val dy = st.y[i + 1] - st.y[i]
+/**
+ * A strip as whole shapes on the screen, with their mean depth: its left edge forward and its right
+ * edge back in one path, cut where it goes behind the eye or beyond [maxDepth]. One shape per
+ * stretch, not a piece every two metres: the joints between pieces showed as thin lines across
+ * the road.
+ */
+private fun stripPaths(st: Strip, p: Projector, out: MutableList<Pair<Float, Path>>, maxDepth: Float = 900f) {
+  val n = st.x.size
+  if (n < 2) return
+  val l = arrayOfNulls<FloatArray>(n); val r = arrayOfNulls<FloatArray>(n)
+  for (i in 0 until n) {
+    // the normal at a point from its neighbours: the edges of two stretches meet without a gap
+    val i0 = (i - 1).coerceAtLeast(0); val i1 = (i + 1).coerceAtMost(n - 1)
+    val dx = st.x[i1] - st.x[i0]; val dy = st.y[i1] - st.y[i0]
     val len = sqrt(dx * dx + dy * dy)
     if (len < 1e-6) continue
     val nx = -dy / len; val ny = dx / len
-    val a = p.project(st.x[i] + nx * st.left[i], st.y[i] + ny * st.left[i], st.z) ?: continue
-    val b = p.project(st.x[i + 1] + nx * st.left[i + 1], st.y[i + 1] + ny * st.left[i + 1], st.z) ?: continue
-    val c = p.project(st.x[i + 1] + nx * st.right[i + 1], st.y[i + 1] + ny * st.right[i + 1], st.z) ?: continue
-    val d = p.project(st.x[i] + nx * st.right[i], st.y[i] + ny * st.right[i], st.z) ?: continue
-    val depth = (a[2] + b[2] + c[2] + d[2]) / 4
-    if (depth > maxDepth) continue
-    out += depth to Path().apply { moveTo(a[0], a[1]); lineTo(b[0], b[1]); lineTo(c[0], c[1]); lineTo(d[0], d[1]); close() }
+    val a = p.project(st.x[i] + nx * st.left[i], st.y[i] + ny * st.left[i], st.z)
+    val b = p.project(st.x[i] + nx * st.right[i], st.y[i] + ny * st.right[i], st.z)
+    if (a == null || b == null || (a[2] + b[2]) / 2 > maxDepth) continue
+    l[i] = a; r[i] = b
+  }
+  var i = 0
+  while (i < n) {
+    if (l[i] == null) { i++; continue }
+    var k = i
+    while (k + 1 < n && l[k + 1] != null) k++
+    if (k > i) {
+      val path = Path()
+      path.moveTo(l[i]!![0], l[i]!![1])
+      for (q in i + 1..k) path.lineTo(l[q]!![0], l[q]!![1])
+      for (q in k downTo i) path.lineTo(r[q]!![0], r[q]!![1])
+      path.close()
+      var d = 0f
+      for (q in i..k) d += l[q]!![2] + r[q]!![2]
+      out += d / (2 * (k - i + 1)) to path
+    }
+    i = k + 1
   }
 }
 
@@ -798,22 +827,32 @@ internal fun renderStatic(scene: Scene, w: Int, h: Int, density: Density): Image
     val pal = scene.palette
     drawRect(Brush.verticalGradient(listOf(pal.skyTop, pal.skyLow), 0f, hy.coerceAtLeast(1f)), Offset.Zero, Size(size.width, hy))
     drawRect(Brush.verticalGradient(listOf(pal.groundFar, pal.groundNear), hy, size.height), Offset(0f, hy), Size(size.width, size.height - hy))
+    // the fading into the distance as a smooth gradient down the picture: the colour at the
+    // screen height of the ground [d] metres ahead (a colour per piece made steps)
+    val cam = scene.camera; val fw = scene.forward
+    fun yAt(d: Double): Float = p.project(cam[0] + fw[0] * d, cam[1] + fw[1] * d, 0.0)?.get(1) ?: size.height
+    val depths = listOf(900.0, 600.0, 420.0, 300.0, 200.0, 140.0, 100.0, 70.0, 50.0, 35.0, 25.0, 18.0, 13.0, 9.0, 6.0, 4.0, 2.5)
+    fun fade(color: (Double) -> Color): Brush {
+      val top = hy; val bottom = size.height
+      val stops = depths.map { d -> ((yAt(d) - top) / (bottom - top).coerceAtLeast(1f)).coerceIn(0f, 1f) to color(d) }
+          .distinctBy { it.first }.sortedBy { it.first }
+      return if (stops.size < 2) SolidColor(color(30.0)) else Brush.verticalGradient(*stops.toTypedArray(), startY = top, endY = bottom)
+    }
+    fun drawStrips(strips: List<Strip>, maxDepth: Float, brush: Brush) {
+      val shapes = ArrayList<Pair<Float, Path>>()
+      for (st in strips) stripPaths(st, p, shapes, maxDepth)
+      shapes.sortByDescending { it.first }
+      for ((_, path) in shapes) drawPath(path, brush)
+    }
     // the roads, the far ones first, fading into the distance
     for (layer in listOf(scene.asphalt.filter { it.color == pal.side }, scene.asphalt.filter { it.color != pal.side })) {
-      val ground = ArrayList<Triple<Float, Path, Color>>()
-      for (st in layer) { val q = ArrayList<Pair<Float, Path>>(); quads(st, p, q); for ((d, path) in q) ground += Triple(d, path, st.color) }
-      ground.sortByDescending { it.first }
-      for ((d, path, c) in ground) drawPath(path, androidx.compose.ui.graphics.lerp(c, pal.asphaltFar, (d / 600f).coerceIn(0f, 0.7f)))
+      val c = layer.firstOrNull()?.color ?: continue
+      drawStrips(layer, 900f, fade { d -> androidx.compose.ui.graphics.lerp(c, pal.asphaltFar, (d / 600.0).toFloat().coerceIn(0f, 0.7f)) })
     }
-    // the lanes to take, the markings over them, then the arrow heads in the lanes to take
-    val lit = ArrayList<Pair<Float, Path>>()
-    for (st in scene.lit) quads(st, p, lit, 700f)
-    lit.sortByDescending { it.first }
-    for ((_, path) in lit) drawPath(path, pal.lit.copy(alpha = 0.85f))
-    val lines = ArrayList<Pair<Float, Path>>()
-    for (st in scene.markings) quads(st, p, lines, 450f)
-    lines.sortByDescending { it.first }
-    for ((d, path) in lines) drawPath(path, pal.marking.copy(alpha = (1f - d / 500f).coerceIn(0.25f, 1f)))
+    // the lanes to take (opaque: two lit stretches meeting do not make a darker band), the
+    // markings over them, then the arrow heads in the lanes to take
+    drawStrips(scene.lit, 700f, fade { d -> androidx.compose.ui.graphics.lerp(pal.lit, pal.asphaltFar, (d / 900.0).toFloat().coerceIn(0f, 0.45f)) })
+    drawStrips(scene.markings, 450f, fade { d -> pal.marking.copy(alpha = (1f - d.toFloat() / 500f).coerceIn(0.25f, 1f)) })
     for ((poly, color) in scene.paint) {
       val pts = poly.map { p.project(it[0], it[1], 0.02) ?: return@map null }
       if (pts.any { it == null } || pts.size < 3) continue
