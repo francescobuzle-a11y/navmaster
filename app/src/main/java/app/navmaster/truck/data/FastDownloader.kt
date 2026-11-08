@@ -45,7 +45,9 @@ class FastDownloader(
 
   private val client =
       OkHttpClient.Builder()
-          .connectTimeout(20, TimeUnit.SECONDS)
+          // github.com through the front-ends that answer (see GithubDns); a dead address: the next after 8 s
+          .dns(GithubDns)
+          .connectTimeout(8, TimeUnit.SECONDS)
           .readTimeout(30, TimeUnit.SECONDS)
           .retryOnConnectionFailure(true)
           .build()

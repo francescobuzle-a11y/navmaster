@@ -323,7 +323,8 @@ class RegionManager(private val context: Context, private val catalog: CatalogSt
     put(DownloadState.Running(0, 0, "Lettura dell'elenco file"))
     val base = "$RELEASES/dati-$id"
     val manifestText =
-        OkHttpClient().newCall(Request.Builder().url("$base/manifest.json").build()).execute().use {
+        OkHttpClient.Builder().dns(GithubDns).connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS).build()
+            .newCall(Request.Builder().url("$base/manifest.json").build()).execute().use {
           if (!it.isSuccessful) throw IllegalStateException("Pacchetto non ancora disponibile (${it.code})")
           it.body.string()
         }

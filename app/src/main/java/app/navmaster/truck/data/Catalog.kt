@@ -62,7 +62,7 @@ data class Catalog(
 class CatalogStore(private val context: Context) {
   private val file = File(context.filesDir, "catalog.json")
   private val json = Json { ignoreUnknownKeys = true }
-  private val client = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
+  private val client = OkHttpClient.Builder().dns(GithubDns).connectTimeout(8, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
   private val _catalog = MutableStateFlow(load())
   val catalog: StateFlow<Catalog?> = _catalog.asStateFlow()
 
