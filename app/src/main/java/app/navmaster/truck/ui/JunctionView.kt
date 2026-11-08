@@ -195,13 +195,32 @@ fun junctionSceneOf(
   if (!exitLike && !(j.painted && j.lanes.size >= 3 && j.active.size < j.lanes.size)) return null
   val range = if (exitLike) max(motorwayRangeM, speedMs * minSeconds) else roadRangeM
   if (distanceM > range) return null
+  // the vehicle's lane counts only when the lanes here are the junction's (the same rule as the
+  // lane strip: as many, or one exit lane more on the right)
+  val hereLanes = a.edgeAt(traveled)?.lanes ?: 0
+  val nJ = j.lanes.count { !it.merge }
+  val laneHere = vehicleLane?.takeIf { nJ > 0 && (nJ == hereLanes || (nJ == hereLanes + 1 && j.side > 0)) }
+  val (tollEntry, tollRef) = synchronized(tollCache) {
+    tollCache.getOrPut("${System.identityHashCode(a)}:${Math.round(at / 25.0)}") { tollOf(a, at) }
+  }
+  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, laneHere, tollEntry, tollRef)
+}
+
+/** The booth of the last junctions asked for (asked at every fix: the route's roads are not scanned each time). */
+private val tollCache = object : LinkedHashMap<String, Pair<Boolean, String?>>(8, 0.75f, true) {
+  override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Boolean, String?>>?) = size > 6
+}
+
+/** Whether the road taken at [at] leads to the entry booth of a motorway, and the motorway's number. */
+private fun tollOf(a: RouteAnalysis, at: Double): Pair<Boolean, String?> {
   // the entry booth of a motorway just past the junction (the booth's node is on the link, a
   // little before or after the turn): the sign of the booth, with the motorway's number
   val booth = a.tollBooths.firstOrNull { it.alongM >= at - 300 && it.alongM <= at + 800 }
   val tollEntry = booth != null && a.boothRole(booth) == "entrata"
+  if (!tollEntry) return false to null
   // the motorway's number: from the motorway's own stretches (the first ones may carry no name),
   // else the signs of the slip road (destination:ref), else the map's ref of the motorway's way
-  val tollRef = if (!tollEntry) null else run {
+  val tollRef = run {
     val mw = a.edges.filter { it.roadClass == "motorway" && !it.isRamp && it.startM >= at - 50 && it.startM <= at + 4000 }
     mw.firstNotNullOfOrNull { e -> e.refs.firstOrNull { isMotorwayRef(it) } }
         ?: a.edges.filter { it.startM >= at - 50 && it.startM <= at + 4000 }.firstNotNullOfOrNull { e -> e.sign?.branches?.firstOrNull { isMotorwayRef(it) } }
@@ -211,7 +230,7 @@ fun junctionSceneOf(
               .firstOrNull { it.osm == e.wayId }?.ref?.split(';')?.map { it.trim() }?.firstOrNull { isMotorwayRef(it) }
         }
   }
-  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, vehicleLane, tollEntry, tollRef)
+  return true to tollRef
 }
 
 // ---------------------------------------------------------------------------------- the picture
@@ -427,7 +446,8 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val nLanes = when {
     j.lanes.isNotEmpty() -> j.lanes.size
     approachOneway -> edgeLanes ?: approachRoad?.lanes ?: defaultLanes(j.approachClass, true, j.approachRamp)
-    else -> ((approachRoad?.lanes ?: edgeLanes ?: 2) / 2).coerceAtLeast(1)
+    // a two-way road: the route's own stretch counts our direction's lanes; the map's lanes are both ways
+    else -> edgeLanes ?: ((approachRoad?.lanes ?: 2) / 2).coerceAtLeast(1)
   }
   // our direction: the whole carriageway on a one-way road, the right half (left where traffic keeps left) of a two-way one
   val oppLanes = if (approachOneway) 0 else ((approachRoad?.lanes ?: (2 * nLanes)) - nLanes).coerceAtLeast(1)
@@ -438,7 +458,11 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val active = j.active.ifEmpty { if (j.side > 0) listOf(nLanes - 1) else if (j.side < 0) listOf(0) else emptyList() }
   val activeY = if (active.isEmpty()) 0.0 else active.map { laneY[it.coerceIn(0, nLanes - 1)] }.average()
   val otherIdx = (0 until nLanes).filter { it !in active }
-  val otherY = if (otherIdx.isEmpty()) activeY else otherIdx.map { laneY[it] }.average()
+  // the other branch: its lanes after the junction from its side of the road (a lane with arrows
+  // to both branches is lit, yet the other branch starts from it too)
+  val otherSide = if (j.otherLanes > otherIdx.size && j.otherLanes < nLanes)
+    (if (j.side > 0) (0 until j.otherLanes) else (nLanes - j.otherLanes until nLanes)).toList() else otherIdx
+  val otherY = if (otherSide.isEmpty()) activeY else otherSide.map { laneY[it] }.average()
 
   // after the junction (at exits and forks) each branch stays on its lanes until its own line has
   // moved away from them by itself, then follows its own line: the gore opens as on the road
@@ -487,12 +511,6 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
     val carriageLeft = totalW / 2
     val carriageRight = -totalW / 2
     asphalt += stripOf(sub(beforeOv, rx), sub(beforeOv, ry), carriageLeft + 0.8, carriageRight - 0.8, pal.asphalt)
-    // at a junction in town the crossing itself: a square of asphalt over the node, so that the
-    // road arriving and the road taken meet without a notch of ground at the corner
-    if (!exitLike) {
-      val half = max(totalW, 2 * laneW) / 2 + 0.8
-      asphalt += Strip(doubleArrayOf(-half, half), doubleArrayOf(0.0, 0.0), doubleArrayOf(half, half), doubleArrayOf(-half, -half), pal.asphalt)
-    }
     // edge lines, lane lines (dashed), the centre line of a two-way road
     markings += stripOf(bx, by, carriageRight + 0.45, carriageRight + 0.15, pal.marking)
     markings += stripOf(bx, by, carriageLeft - 0.15, carriageLeft - 0.45, pal.marking)
@@ -523,31 +541,48 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
     asphalt += Strip(tx, ty, DoubleArray(tx.size) { shift[it] + takenW / 2 + 0.8 }, DoubleArray(tx.size) { shift[it] - takenW / 2 - 0.8 }, pal.asphalt)
     markings += Strip(tx, ty, DoubleArray(tx.size) { shift[it] + takenW / 2 - 0.15 }, DoubleArray(tx.size) { shift[it] + takenW / 2 - 0.45 }, pal.marking)
     markings += Strip(tx, ty, DoubleArray(tx.size) { shift[it] - takenW / 2 + 0.45 }, DoubleArray(tx.size) { shift[it] - takenW / 2 + 0.15 }, pal.marking)
+    // the lane lines on the road's line as drawn (moved onto its lanes), like its edges and its lit lanes
+    val sx = DoubleArray(tx.size); val sy = DoubleArray(tx.size)
+    for (q in tx.indices) {
+      val q0 = (q - 1).coerceAtLeast(0); val q1 = (q + 1).coerceAtMost(tx.size - 1)
+      val ddx = tx[q1] - tx[q0]; val ddy = ty[q1] - ty[q0]
+      val dl = sqrt(ddx * ddx + ddy * ddy).coerceAtLeast(1e-6)
+      sx[q] = tx[q] - ddy / dl * shift[q]; sy[q] = ty[q] + ddx / dl * shift[q]
+    }
     if (takenOneway) {
-      for (k in 1 until takenLanes) dashes(tx, ty, takenW / 2 - k * takenLw, 0.3, 4.5, 9.0, pal.marking, markings)
+      for (k in 1 until takenLanes) dashes(sx, sy, takenW / 2 - k * takenLw, 0.3, 4.5, 9.0, pal.marking, markings)
       lit += Strip(tx, ty, DoubleArray(tx.size) { shift[it] + takenW / 2 - 0.25 }, DoubleArray(tx.size) { shift[it] - takenW / 2 + 0.25 }, pal.lit)
     } else {
-      dashes(tx, ty, 0.0, 0.3, 3.0, 6.0, pal.marking, markings)
+      dashes(sx, sy, 0.0, 0.3, 3.0, 6.0, pal.marking, markings)
       val l = if (lht) takenW / 2 - 0.25 else -0.25
       val r = if (lht) 0.25 else -takenW / 2 + 0.25
       lit += Strip(tx, ty, DoubleArray(tx.size) { shift[it] + l }, DoubleArray(tx.size) { shift[it] + r }, pal.lit)
     }
   }
 
-  if (!exitLike && !takenOneway) for (i in 0..n) if (routeAlong[i] > node) routeLaneY[i] = if (lht) takenW / 4 else -takenW / 4
+  if (!takenOneway) for (i in 0..n) if (routeAlong[i] > node) routeLaneY[i] = routeShift[i] + if (lht) takenW / 4 else -takenW / 4
 
   // the other roads of the graph around the junction (the other main road from the lanes it starts from)
   val routeWays = a.edges.filter { it.endM > node - back - 20 && it.startM < node + ahead + 20 }.map { it.wayId }.toSet()
   val roads = runCatching { jvRoadsNear(p0.lat, p0.lng, 420.0) }.getOrDefault(emptyList())
   val otherWay = j.other?.wayId ?: 0L
   val otherW = (if (j.otherLanes > 0) j.otherLanes else otherIdx.size.coerceAtLeast(1)) * laneW
+  // where the route's own carriageway is near the node: the lines of a crossing road stop there
+  // (on the road its edge line is broken where another road comes in; drawn across, it cut the
+  // lit lane)
+  val corridor = (0..n).filter { abs(routeAlong[it] - node) <= 80.0 }
+  val cx = corridor.map { rx[it] }; val cy = corridor.map { ry[it] }
+  val corridorHalf = max(totalW, takenW) / 2 + 0.8
+  val onRoute: (Double, Double) -> Boolean = { px, py -> cx.size >= 2 && distanceToLine(px, py, cx, cy) < corridorHalf }
   // (the roads around that are not the junction's made the picture busy: only the junction's own)
+  val rxl = rx.toList(); val ryl = ry.toList()
   for (r in roads) {
-    if (r.pts.size < 2 || r.tunnel || r.osm in routeWays) continue
+    if (r.pts.size < 2 || r.tunnel) continue
     val local = r.pts.map { f.local(it.lat, it.lng) }
     val xs = local.map { it[0] }; val ys = local.map { it[1] }
     if (exitLike) {
       // at exits and forks the other branch: only after the node, starting where its lanes are
+      // (its way may also be the road arriving, when OSM did not split it at the gore)
       if (r.osm != otherWay || otherWay == 0L) continue
       val keep = xs.indices.map { xs[it] >= -1.0 }
       for ((px, py) in splitRuns(xs, ys, keep)) addRoad(r, px, py, true, otherY, taper, asphalt, markings, pal, lht, forcedWidth = otherW, main = true,
@@ -556,7 +591,11 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
       // at a junction in town every road of the crossing (passing within 20 m of the node), on
       // its own line and with its own lanes, as it is
       if (distanceToLine(0.0, 0.0, xs, ys) > 20.0) continue
-      addRoad(r, xs, ys, false, 0.0, 0.0, asphalt, markings, pal, lht, main = true)
+      if (r.osm in routeWays) {
+        // a way the route also drives on (a cross road mapped as one way): its part off the route
+        val keep = xs.indices.map { distanceToLine(xs[it], ys[it], rxl, ryl) > 2.5 }
+        for ((px, py) in splitRuns(xs, ys, keep)) addRoad(r, px, py, false, 0.0, 0.0, asphalt, markings, pal, lht, main = true, clear = onRoute)
+      } else addRoad(r, xs, ys, false, 0.0, 0.0, asphalt, markings, pal, lht, main = true, clear = onRoute)
     }
   }
 
@@ -585,17 +624,24 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   }
   val litCount = active.size.coerceAtLeast(1)
   val headOffsets = (0 until litCount).map { k -> (k - (litCount - 1) / 2.0) * -laneW }
+  // after the node: as many as the road taken has lanes our way, at its lane width
+  val afterCount = if (takenOneway) min(litCount, takenLanes) else min(litCount, (takenLanes / 2).coerceAtLeast(1))
+  val afterOffsets = (0 until afterCount).map { k -> (k - (afterCount - 1) / 2.0) * -takenLw }
   if (active.isNotEmpty() || exitLike) {
     var next = routeAlong[ci] + 10.0
     for ((q, i) in gIdx.withIndex()) {
       // within 130 m of the eye (farther they were only specks near the horizon)
       if (routeAlong[i] - routeAlong[ci] > 130.0) break
       if (routeAlong[i] < next || q == 0) continue
-      val dx = guideX[q] - guideX[q - 1]; val dy = guideY[q] - guideY[q - 1]
-      val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
+      // none in the corner of a turn in town (the way bends there)
+      if (!exitLike && routeAlong[i] > node - 4 && routeAlong[i] < node + 10) continue
+      // along the road itself (the difference of two points of the way bent at the node)
+      val t = tangent(i)
+      val dx = t[0]; val dy = t[1]
       // one head in the middle of each lane to take (the way's line runs between them when two
       // or more are lit: a head there sat on the lane line)
-      for (o in headOffsets) arrowHead(guideX[q] - dy / l * o, guideY[q] + dx / l * o, dx / l, dy / l, 2.6, laneW * 0.62, pal.paint, paint)
+      for (o in if (routeAlong[i] > node) afterOffsets else headOffsets)
+        arrowHead(guideX[q] - dy * o, guideY[q] + dx * o, dx, dy, 2.6, laneW * 0.62, pal.paint, paint)
       // wider apart in the distance, where perspective packs them together
       next = routeAlong[i] + 14.0 + 0.2 * (routeAlong[i] - routeAlong[ci])
     }
@@ -659,7 +705,9 @@ internal fun keepOnLanes(x: Double, y: Double, lanesY: Double, dir: Int, k: Doub
 private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, shifted: Boolean, shiftY: Double, taper: Double,
                     asphalt: MutableList<Strip>, markings: MutableList<Strip>, pal: Palette, lht: Boolean, forcedWidth: Double? = null,
                     /** A road of the junction (the other branch): as dark as the route's, with its markings. */
-                    main: Boolean = false, keepDir: Int = 0) {
+                    main: Boolean = false, keepDir: Int = 0,
+                    /** Points where the road's lines are not painted (across the route's carriageway). */
+                    clear: ((Double, Double) -> Boolean)? = null) {
   val cls = r.roadClass.let { if (it == "service_other") (if (r.hw.startsWith("service")) "service" else "minor") else it }
   if (cls in setOf("track", "path", "footway", "cycleway", "steps")) return
   val (x, y) = resample(xs0, ys0, 4.0)
@@ -680,10 +728,38 @@ private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, sh
   asphalt += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 + margin }, DoubleArray(x.size) { shift[it] - w / 2 - margin }, if (main) pal.asphalt else pal.side)
   // the roads around: only their surface (their lines made the picture busy)
   if (!main) return
+  // the lines only on the stretches clear of the route's carriageway
+  val roadMarkings = ArrayList<Strip>()
   if (cls in setOf("motorway", "trunk", "primary") || r.isLink) {
-    markings += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 - 0.15 }, DoubleArray(x.size) { shift[it] + w / 2 - 0.45 }, pal.marking)
-    markings += Strip(x, y, DoubleArray(x.size) { shift[it] - w / 2 + 0.45 }, DoubleArray(x.size) { shift[it] - w / 2 + 0.15 }, pal.marking)
+    roadMarkings += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 - 0.15 }, DoubleArray(x.size) { shift[it] + w / 2 - 0.45 }, pal.marking)
+    roadMarkings += Strip(x, y, DoubleArray(x.size) { shift[it] - w / 2 + 0.45 }, DoubleArray(x.size) { shift[it] - w / 2 + 0.15 }, pal.marking)
   }
+  addLines(r, x, y, w, lw, oneway, shifted, shiftY, lht, pal, roadMarkings, ::shiftAt)
+  for (st in roadMarkings) {
+    if (clear == null) { markings += st; continue }
+    // each line's own points (offset from the road's centre) tested: a line just beside the
+    // route's edge stays
+    val keep = BooleanArray(st.x.size) { i ->
+      val i0 = (i - 1).coerceAtLeast(0); val i1 = (i + 1).coerceAtMost(st.x.size - 1)
+      val dx = st.x[i1] - st.x[i0]; val dy = st.y[i1] - st.y[i0]
+      val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
+      val o = (st.left[i] + st.right[i]) / 2
+      !clear(st.x[i] - dy / l * o, st.y[i] + dx / l * o)
+    }
+    var a = 0
+    while (a < st.x.size) {
+      if (!keep[a]) { a++; continue }
+      var b = a
+      while (b + 1 < st.x.size && keep[b + 1]) b++
+      if (b > a) markings += Strip(st.x.copyOfRange(a, b + 1), st.y.copyOfRange(a, b + 1), st.left.copyOfRange(a, b + 1), st.right.copyOfRange(a, b + 1), st.color)
+      a = b + 1
+    }
+  }
+}
+
+/** The lane lines of a road (dashed; the centre of a two-way road), following its shift. */
+private fun addLines(r: RoadsIndex.Road, x: DoubleArray, y: DoubleArray, w: Double, lw: Double, oneway: Boolean, shifted: Boolean, shiftY: Double,
+                     lht: Boolean, pal: Palette, markings: MutableList<Strip>, shiftAt: (Double, Double) -> Double) {
   val n = (w / lw).toInt().coerceAtLeast(1)
   if (n >= 2 && !shifted) {
     for (k in 1 until n) {
@@ -1069,13 +1145,13 @@ private fun DrawScope.drawSign(g: Gantry, scene: Scene, p: Projector, density: D
 }
 
 /** The vehicle's mark on the picture at [alongM] metres of the route, in [lane] (null: the lanes to take). */
-internal fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?) {
+internal fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?, projector: Projector? = null) {
   if (alongM < scene.visibleFromM) return
   val total = scene.routeX.size - 1
   if (total < 1) return
   val fi = (alongM - scene.routeFrom) / scene.routeStep
   if (fi < 0 || fi >= total) return
-  val p = Projector(scene, size.width, size.height)
+  val p = projector ?: Projector(scene, size.width, size.height)
   val k = fi.toInt().coerceIn(0, total - 1)
   val t = fi - k
   val x = scene.routeX[k] + (scene.routeX[k + 1] - scene.routeX[k]) * t
@@ -1104,9 +1180,9 @@ internal fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?) {
   val mid = floatArrayOf(c0[0] - dxs * lenS * 0.2f, c0[1] - dys * lenS * 0.2f)
   val shape = Path().apply { moveTo(tip[0], tip[1]); lineTo(bl[0], bl[1]); lineTo(mid[0], mid[1]); lineTo(br[0], br[1]); close() }
   // dark on the blue lane, with a white rim: unlike the white arrow heads of the lane
-  drawPath(shape, Color(0x66000000), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 7f))
+  drawPath(shape, Color(0x66000000), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.5f * density))
   drawPath(shape, Color(0xFF0B2A5C))
-  drawPath(shape, Color.White, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
+  drawPath(shape, Color.White, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f * density))
 }
 
 /**
@@ -1115,7 +1191,9 @@ internal fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?) {
  */
 @Composable
 fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modifier, fill: Boolean = false,
-                 height: Dp = 260.dp, vehAlong: State<Double>? = null) {
+                 height: Dp = 260.dp, vehAlong: State<Double>? = null,
+                 /** Closing kept by the caller (which then shows the lane strip again); null: kept here. */
+                 onClose: (() -> Unit)? = null) {
   // the same junction keeps its picture while the point wobbles by a few metres
   val key = remember(scene.route.key, (scene.maneuverAtM / 60.0).roundToLong()) { Any() }
   var closed by remember(key) { mutableStateOf(false) }
@@ -1126,17 +1204,22 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
       val wPx = with(density) { maxWidth.roundToPx() }.coerceAtLeast(1)
       val hPx = with(density) { maxHeight.roundToPx() }.coerceAtLeast(1)
       val built by produceState<Pair<Scene, ImageBitmap>?>(null, key, night, wPx, hPx) {
+        // a new junction or size: no old picture under the new distance and lanes meanwhile
+        value = null
         value = withContext(Dispatchers.Default) {
           runCatching { buildScene(scene, night)?.let { sc -> sc to renderStatic(sc, wPx, hPx, density) } }
               .onFailure { android.util.Log.w("NmJunction", "vista svincolo", it) }.getOrNull()
         }
       }
       val pic = built
+      // the projection of the picture, made once (not at every frame of the vehicle's mark)
+      val proj = remember(pic) { arrayOfNulls<Projector>(1) }
       if (pic != null) {
         Canvas(Modifier.fillMaxSize().testTag("jv-picture")) {
           drawImage(pic.second)
           val along = vehAlong?.value?.takeIf { it >= 0 } ?: scene.traveledM
-          drawVehicle(pic.first, along, scene.vehicleLane)
+          val pj = proj[0]?.takeIf { it.w == size.width && it.h == size.height } ?: Projector(pic.first, size.width, size.height).also { proj[0] = it }
+          drawVehicle(pic.first, along, scene.vehicleLane, pj)
           // the distance: a bar on the right that empties as the junction comes
           val f = (scene.distanceM / scene.rangeM).coerceIn(0.0, 1.0).toFloat()
           val bw = size.width * 0.022f
@@ -1149,7 +1232,7 @@ fun JunctionView(scene: JunctionScene, night: Boolean, modifier: Modifier = Modi
       }
       Text(Fmt.distanceText(scene.distanceM), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold,
           modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).background(Color(0x99000000), RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 4.dp))
-      Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(36.dp).clip(CircleShape).background(Color(0x99000000)).clickable { closed = true },
+      Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(36.dp).clip(CircleShape).background(Color(0x99000000)).clickable { if (onClose != null) onClose() else closed = true },
           contentAlignment = Alignment.Center) { Text("✕", color = Color.White, fontSize = 17.sp) }
     }
     // the lanes, the same strip as on the map

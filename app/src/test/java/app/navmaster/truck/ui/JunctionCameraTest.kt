@@ -31,6 +31,28 @@ class JunctionCameraTest {
       if (cam[0] > -wanted + 6) problems += "${c.name}: occhio non prima del nodo (x ${"%.0f".format(cam[0])})"
       if (scene.forward[0] < 0.9) problems += "${c.name}: sguardo non nel senso di marcia ${scene.forward.toList()}"
       if (scene.gantry == null) problems += "${c.name}: nessun cartello"
+      // every arrow head points along the road it lies on (in a turn it pointed half way between
+      // the road arriving and the road taken)
+      for ((poly, _) in scene.paint) {
+        val tip = poly[0]; val inner = poly[2]
+        val hx = tip[0] - inner[0]; val hy = tip[1] - inner[1]
+        val hl = sqrt(hx * hx + hy * hy)
+        // the way through the junction where the head is (the nearest point of it: near a corner
+        // the nearest point of the route's centre line can be on the other road)
+        var best = Double.MAX_VALUE; var bi = 0
+        for (i in scene.guideX.indices) {
+          val d = (scene.guideX[i] - inner[0]).let { it * it } + (scene.guideY[i] - inner[1]).let { it * it }
+          if (d < best) { best = d; bi = i }
+        }
+        val i0 = (bi - 1).coerceAtLeast(0); val i1 = (bi + 1).coerceAtMost(scene.guideX.size - 1)
+        val tx = scene.guideX[i1] - scene.guideX[i0]; val ty = scene.guideY[i1] - scene.guideY[i0]
+        val tl = sqrt(tx * tx + ty * ty)
+        val cos = (hx * tx + hy * ty) / (hl * tl).coerceAtLeast(1e-9)
+        if (cos < kotlin.math.cos(Math.toRadians(25.0))) {
+          problems += "${c.name}: punta di freccia storta di ${"%.0f".format(Math.toDegrees(kotlin.math.acos(cos.coerceIn(-1.0, 1.0))))}° rispetto alla strada (punta a ${"%.1f".format(inner[0])},${"%.1f".format(inner[1])}, strada ${"%.1f".format(scene.guideX[bi])},${"%.1f".format(scene.guideY[bi])}, verso ${"%.2f".format(hx / hl)},${"%.2f".format(hy / hl)})"
+          break
+        }
+      }
       // at exits and forks the road taken leaves its lanes only outwards: its drawn middle never
       // comes back towards the other branch (the old fixed taper made a kink there)
       if (exitLike) {

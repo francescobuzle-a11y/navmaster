@@ -850,10 +850,14 @@ private fun NavigatingOverlay(
     vm.laneTracker.lane(hereLanes, false, countryIso?.uppercase() in LEFT_HAND) else null
   val measured by vm.speedMs.collectAsState()
   // junction view and lane guidance only at motorway junctions and complicated multi-lane ones
-  val scene = junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso, vehicleLane,
+  val scene = if (!settings.junctionView) null else junctionSceneOf(ui.visualInstruction, ui.progress?.distanceToNextManeuver, analysis, traveled, countryIso, vehicleLane,
       settings.junctionViewMotorwayM.toDouble(), settings.junctionViewRoadM.toDouble(), settings.junctionViewSeconds.toDouble(),
       (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured ?: 0.0))
-  val jv = if (settings.junctionView) scene else null
+  // the junction view closed with ✕ stays closed for that junction (and the lane strip comes back
+  // in its place: the closing used to live inside the view, which left the screen without lanes)
+  var jvClosed by remember { mutableStateOf<Pair<Any, Long>?>(null) }
+  val jvKey = scene?.let { it.route.key to Math.round(it.maneuverAtM / 60.0) }
+  val jv = scene?.takeIf { jvKey != jvClosed }
   // the roundabout of the next manoeuvre as it is in the graph (worked out once per roundabout, off the main thread)
   val nextType = ui.visualInstruction?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
   val ringAt = if (analysis != null && (nextType.contains("ROUNDABOUT") || nextType.contains("ROTARY")))
@@ -944,7 +948,8 @@ private fun NavigatingOverlay(
       LaneStrip(laneGuide, (if (landscape) Modifier.widthIn(max = 640.dp) else Modifier).fillMaxWidth().padding(top = 6.dp),
           vehicleLane = stripLane)
     }
-    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 6.dp), height = jvHeight, vehAlong = smoothAlong)
+    if (jv != null && !landscape) JunctionView(jv, night, Modifier.fillMaxWidth().padding(top = 6.dp), height = jvHeight, vehAlong = smoothAlong,
+        onClose = { jvClosed = jvKey })
     FlowRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       if (nextLimit != null && nextLimitDist != null && nextLimitDist < (if (nextLimit.blocking) 10_000.0 else 5_000.0)) {
         RestrictionBanner(nextLimit, nextLimitDist, vehicleValue(nextLimit, vehicle))
@@ -1110,7 +1115,8 @@ private fun NavigatingOverlay(
   if (jv != null && landscape) {
     // as on the reference device: a tall panel on the right, from the top down to the bottom bar,
     // the manoeuvre, the lanes and the map on the left
-    JunctionView(jv, night, Modifier.weight(0.72f).fillMaxHeight().padding(start = 10.dp, bottom = 8.dp), fill = true, vehAlong = smoothAlong)
+    JunctionView(jv, night, Modifier.weight(0.72f).fillMaxHeight().padding(start = 10.dp, bottom = 8.dp), fill = true, vehAlong = smoothAlong,
+        onClose = { jvClosed = jvKey })
   }
   }
     val drivenS = vm.nav.collectAsState().value.drivenS
