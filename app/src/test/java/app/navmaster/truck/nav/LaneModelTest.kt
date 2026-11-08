@@ -64,15 +64,17 @@ class LaneModelTest {
     assertEquals("usa la corsia di destra", LanePlan.say(left, LanePlan.Kind.FORK))
   }
 
-  private fun edge(start: Double, end: Double, cls: String, use: String, lanes: Int, way: Long, sign: app.navmaster.truck.routing.EdgeSign? = null) =
-      EdgeInfo(start, end, cls, use, false, "paved", lanes, way, null, "IT", false, false, null, null, sign = sign)
+  private fun edge(start: Double, end: Double, cls: String, use: String, lanes: Int, way: Long, sign: app.navmaster.truck.routing.EdgeSign? = null,
+                   laneSigns: app.navmaster.truck.routing.EdgeLaneSigns? = null) =
+      EdgeInfo(start, end, cls, use, false, "paved", lanes, way, null, "IT", false, false, null, null, sign = sign, laneSigns = laneSigns)
 
   private fun step(pts: List<GeographicCoordinate>, type: ManeuverType, mod: ManeuverModifier?) =
       RouteStep(pts, 100.0, 10.0, null, emptyList(), "", listOf(VisualInstruction(VisualInstructionContent("", type, mod, null, emptyList(), emptyList()), null, null, 100.0)),
           emptyList(), emptyList(), emptyList(), DrivingSide.RIGHT, null)
 
   /** A motorway of 2 lanes east, an exit on the right onto a slip road with no lanes on the map, the motorway going on with 2. */
-  private fun exitRoute(rampSign: app.navmaster.truck.routing.EdgeSign?): RouteAnalysis {
+  private fun exitRoute(rampSign: app.navmaster.truck.routing.EdgeSign?, approachLanes: Int = 2,
+                        laneSigns: app.navmaster.truck.routing.EdgeLaneSigns? = null): RouteAnalysis {
     val ramp = JvCases.drive(0.0, 0.0, 40.0 to 8.0, 220.0 to 105.0)
     val pts = JvCases.line(-900.0 to 0.0, 0.0 to 0.0, *ramp.toTypedArray())
     val i0 = 1
@@ -80,7 +82,7 @@ class LaneModelTest {
         listOf(step(pts.subList(0, i0 + 1), ManeuverType.DEPART, null), step(pts.subList(i0, pts.size), ManeuverType.OFF_RAMP, ManeuverModifier.SLIGHT_RIGHT),
             step(listOf(pts.last()), ManeuverType.ARRIVE, null)))
     val len = app.navmaster.truck.core.Geo.cumulative(pts).last()
-    val a = RouteAnalysis(route, listOf(edge(0.0, 900.0, "motorway", "", 2, 1), edge(900.0, len, "motorway", "ramp", 0, 2, rampSign)))
+    val a = RouteAnalysis(route, listOf(edge(0.0, 900.0, "motorway", "", approachLanes, 1, laneSigns = laneSigns), edge(900.0, len, "motorway", "ramp", 0, 2, rampSign)))
     a.junctionShapes = listOf(JunctionShape(900.0, 90.0, 100.0, 0, listOf(Branch(90.0, "motorway", 2, "", 3))))
     return a
   }
@@ -102,10 +104,17 @@ class LaneModelTest {
     assertTrue(g.noSign)
     assertTrue(!g.noLanes)
     assertEquals("Uscita", g.kind)
+    assertEquals("strada › strada", g.road)
     assertTrue(g.editUrl, g.editUrl.startsWith("https://www.openstreetmap.org/edit?editor=id&way=2#map=19/"))
     // with the sign on the slip road: complete, off the list
     val signed = exitRoute(app.navmaster.truck.routing.EdgeSign(listOf("12"), listOf("SS9"), listOf("Lodi"), emptyList()))
     assertNull(MapGaps.scan(signed, false, "2026-11-08").single().second)
     assertTrue(MapGaps.gpx(listOf(g)).contains("<wpt lat="))
+    // signs over the lanes only for the lanes going on (3 = 1 + 2, the right one to the exit, its sign empty): still no sign for the road taken
+    val otherOnly = exitRoute(null, 3, app.navmaster.truck.routing.EdgeLaneSigns("Area servizio|Area servizio|", "", ""))
+    val j3 = LaneModel.at(otherOnly, 900.0)!!
+    assertEquals("--T", takes(j3.lanes))
+    assertTrue(j3.laneSigns != null)
+    assertTrue(MapGaps.scan(otherOnly, false, "2026-11-08").single().second!!.noSign)
   }
 }

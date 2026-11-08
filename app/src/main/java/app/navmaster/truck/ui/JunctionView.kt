@@ -372,6 +372,8 @@ internal fun signOf(s: JunctionScene): Sign {
       s.tollEntry -> listOfNotNull("Casello", name)
       name != null -> listOf(name)
       refs.isNotEmpty() -> emptyList()
+      // a motorway exit with no name or number on the map: an exit, as its signs say
+      j.kind == LanePlan.Kind.EXIT -> listOf("Uscita")
       else -> listOf(if (j.side < 0) "A sinistra" else if (j.side > 0) "A destra" else "Dritto")
     }
     val motorway = s.tollEntry || (!j.taken.ramp && j.taken.roadClass == "motorway") || refs.any { isMotorwayRef(it) }

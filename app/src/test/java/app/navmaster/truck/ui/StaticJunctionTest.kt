@@ -68,6 +68,10 @@ class StaticJunctionTest {
       if (taken.isEmpty()) problems += "solo il cartello dell'altro ramo: manca il pannello della strada presa"
       else if ("A21" !in taken.first().refs || "Casello" !in taken.first().towns) problems += "pannello della strada presa al casello: ${taken.first().lines}"
       if (sign.panels.none { !it.taken && "A4" in it.refs }) problems += "il pannello della mappa per l'altro ramo è sparito"
+      // the same exit with no sign at all and a slip road with no name: an exit, as its signs say
+      val bare = c.scene.copy(junction = j.copy(sign = null, otherSign = null, roads = j.roads.map { it.copy(sign = null) }))
+      val p0 = signOf(bare).panels.singleOrNull { it.taken }
+      if (p0 == null || p0.towns != listOf("Uscita")) problems += "uscita senza cartello né nome: ${p0?.lines}"
     }
     // the slip road drawn as the route goes on: hard curve, loop, curving back, or straight away
     val curves = mapOf("uscita" to Curve.STRAIGHT, "bivio" to Curve.STRAIGHT, "decelerazione" to Curve.TIGHT, "ricciolo" to Curve.LOOP,

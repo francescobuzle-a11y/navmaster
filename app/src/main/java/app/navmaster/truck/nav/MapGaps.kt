@@ -87,19 +87,25 @@ object MapGaps {
       val j = LaneModel.at(a, m, lht) ?: continue
       if (j.kind != LanePlan.Kind.EXIT && j.kind != LanePlan.Kind.FORK) continue
       val pos = a.pointAt(j.atM)
-      // the sign of the road taken: on its first way, over the lanes, or on a later piece of it
-      // before the route's next choice (as the junction view finds it)
+      // the sign of the road taken: on its first way, over the lanes to take (a sign over the other
+      // lanes only is not the road taken's), or on a later piece of it before the route's next
+      // choice (as the junction view finds it)
       val next = ms.getOrNull(i + 1)?.first ?: Double.MAX_VALUE
       val until = j.atM + minOf(300.0, next - j.atM - 5)
-      val hasSign = j.sign?.isEmpty == false || j.laneSigns != null ||
+      val overTaken = j.laneSigns?.let { ls -> ls.size == j.lanes.size && j.active.any { ls[it].towns.isNotEmpty() || ls[it].refs.isNotEmpty() } } == true
+      val hasSign = j.sign?.isEmpty == false || overTaken ||
           a.edges.any { it.startM > j.atM - 5 && it.startM <= until && it.sign?.isEmpty == false }
       val noLanes = j.lanes.isEmpty()
       val key = keyOf(pos.lat, pos.lng)
       if (hasSign && !noLanes) { out += key to null; continue }
       val approach = a.edgeAt((j.atM - 3).coerceAtLeast(0.0))
       val taken = a.edgeAt((j.atM + 15).coerceAtMost(a.length))
-      fun nameOf(e: app.navmaster.truck.routing.EdgeInfo?) = e?.refs?.firstOrNull() ?: e?.name?.takeIf { it.isNotBlank() } ?: (if (e?.isRamp == true) "rampa" else "strada")
-      out += key to Gap(pos.lat, pos.lng, if (j.kind == LanePlan.Kind.EXIT) "Uscita" else "Bivio", nameOf(approach) + " › " + nameOf(taken),
+      // the roads as the driver knows them: the last numbered or named one before the junction and
+      // the first one after it, within 3 km (the slip roads have neither)
+      fun label(e: app.navmaster.truck.routing.EdgeInfo) = e.refs.firstOrNull() ?: e.name?.takeIf { it.isNotBlank() }
+      val before = a.edges.lastOrNull { it.endM <= j.atM + 1 && it.endM > j.atM - 3000 && label(it) != null }?.let { label(it) } ?: "strada"
+      val after = a.edges.firstOrNull { it.startM >= j.atM - 1 && it.startM < j.atM + 3000 && label(it) != null }?.let { label(it) } ?: "strada"
+      out += key to Gap(pos.lat, pos.lng, if (j.kind == LanePlan.Kind.EXIT) "Uscita" else "Bivio", "$before › $after",
           !hasSign, noLanes, approach?.wayId ?: 0, taken?.wayId ?: 0, today, today)
     }
     return out
