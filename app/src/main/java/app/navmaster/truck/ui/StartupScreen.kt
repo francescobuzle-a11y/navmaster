@@ -14,6 +14,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,6 +47,13 @@ fun StartupScreen() {
   val s = state ?: return
   if (s.done || skipped) return
   LaunchedEffect(Unit) { delay(MAX_S * 1000L); skipped = true }
+  // On the tablet a frame got lost at the start (with the map's own surface coming up): the
+  // composition took the screen away but the window was not drawn again until a touch, so
+  // «Preparo Slovacchia…» stayed on. The window is invalidated from its root while the bar moves
+  // and once more when the screen goes (the root was drawn: its invalidation always reaches a frame).
+  val view = LocalView.current
+  LaunchedEffect(Unit) { while (true) { delay(300); view.rootView.invalidate() } }
+  DisposableEffect(Unit) { onDispose { view.rootView.let { r -> r.invalidate(); r.post { r.invalidate() }; r.postDelayed({ r.invalidate() }, 500) } } }
   Box(
       Modifier.fillMaxSize().background(Nm.Bg),
       contentAlignment = Alignment.Center) {

@@ -73,10 +73,14 @@ object AppGraph {
       runCatching {
         val v = profiles.garage.value.active
         val countries = regions.installed.value.size.coerceAtLeast(1)
-        var index = -1; var last: String? = null
+        var index = -1; var last: String? = null; var shown = -1
         engine.warmUp(if (v.isHgv || v.isBus) "driving-hgv" else "driving-car") { r, f ->
-          if (r.id != last) { last = r.id; index++ }
-          startup.value = Startup("Preparo ${r.label}…", ((index + f) / countries).coerceIn(0f, 1f), false)
+          val next = r.id != last
+          if (next) { last = r.id; index++ }
+          // one update per percent and per country (the warm-up reports every megabyte: hundreds of frames for nothing)
+          val fraction = ((index + f) / countries).coerceIn(0f, 1f)
+          val pct = (fraction * 100).toInt()
+          if (next || pct != shown) { shown = pct; startup.value = Startup("Preparo ${r.label}…", fraction, false) }
         }
       }.onFailure { android.util.Log.w("NavMasterRoute", "riscaldamento: $it") }
       startup.value = Startup("Pronto", 1f, true)
