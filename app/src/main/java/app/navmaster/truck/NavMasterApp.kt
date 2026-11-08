@@ -6,6 +6,7 @@ import android.app.Application
 import app.navmaster.truck.data.CatalogStore
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.limits.LimitsIndex
+import app.navmaster.truck.live.CameraFiles
 import app.navmaster.truck.live.ApiKeys
 import app.navmaster.truck.live.HereGuard
 import app.navmaster.truck.live.TomTomGuard
@@ -93,6 +94,8 @@ object AppGraph {
       }.onFailure { android.util.Log.w("NavMasterRoute", "riscaldamento: $it") }
       startup.value = Startup("Pronto", 1f, true)
       Thread.currentThread().priority = Thread.MIN_PRIORITY
+      // the weekly files of the checked speed cameras of the countries on the tablet (once a day)
+      runCatching { CameraFiles.refreshIfDue(regions.withData().map { it.id }) }
       runCatching { engine.prepareBorders() }
     }.apply { isDaemon = true; name = "valichi" }.start()
   }

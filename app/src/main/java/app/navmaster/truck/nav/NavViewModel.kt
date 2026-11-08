@@ -1261,6 +1261,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val a = _nav.value.analysis ?: return
     // the other drivers' answers about the speed cameras (every 30 minutes, the gathered file twice a day)
     if (s.speedCameras && (s.cameraQuestions || s.liveReports)) runCatching { CameraVotes.refreshIfDue(s.reportsServer) }
+    if (s.speedCameras) runCatching { app.navmaster.truck.live.CameraFiles.refreshIfDue(AppGraph.regions.withData().map { it.id }) }
     if (!s.liveReports && !s.liveTraffic) {
       _nav.update { it.copy(live = emptyList(), liveInfo = null) }
       return

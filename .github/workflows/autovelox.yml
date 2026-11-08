@@ -1,0 +1,92 @@
+# The speed cameras and Tutor sections of each country in a small file of their own
+# (autovelox-<country>.sqlite, a few MB), checked as in limiti.sqlite (data/build_limits.py:
+# bare points, enforcement relations, the official lists of France and Spain, Italy's national
+# census) and published every week on the release "autovelox" with indice.json: the tablets
+# download them by themselves (app: live/CameraFiles.kt), without the big country packages
+# (which no longer carry limiti.sqlite).
+name: Autovelox
+
+on:
+  schedule:
+    - cron: "30 3 * * 1"   # every Monday
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "Paesi separati da virgola (gli id di data/countries.json)"
+        default: "italy,austria,slovakia,slovenia,switzerland,germany,france,spain"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autovelox
+  cancel-in-progress: false
+
+env:
+  GEOFABRIK: https://download.geofabrik.de/europe
+  DEFAULT_REGIONS: "italy,austria,slovakia,slovenia,switzerland,germany,france,spain"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.m.outputs.regions }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: data
+      - id: m
+        run: |
+          python3 - "${{ github.event.inputs.region || env.DEFAULT_REGIONS }}" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          known = {c["id"] for c in json.load(open("data/countries.json"))}
+          sel = [x.strip() for x in sys.argv[1].lower().split(",") if x.strip() in known]
+          print("regions=" + json.dumps(sel))
+          PY
+          gh release view autovelox >/dev/null 2>&1 || gh release create autovelox --latest=false --title "Autovelox" \
+            --notes "Autovelox fissi e Tutor di ogni Paese, controllati (punti nudi, relazioni, elenchi ufficiali di Francia e Spagna, censimento del ministero in Italia). Dati © OpenStreetMap contributors (ODbL); elenchi ufficiali: data.gouv.fr (Licence Ouverte), DGT (CC BY 4.0), velox.mit.gov.it."
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        region: ${{ fromJson(needs.plan.outputs.regions) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: data
+      - name: Estratto e autovelox
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          curl -fsSL -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
+          osmium tags-filter region.osm.pbf n/highway=speed_camera n/enforcement=maxspeed -o cams.osm.pbf --overwrite
+          osmium export cams.osm.pbf -f geojsonseq --add-unique-id=type_id \
+            --format-option print_record_separator=false -o cams.geojsonseq --overwrite
+          mkdir -p out
+          python3 data/build_limits.py cams.geojsonseq "out/autovelox-${{ matrix.region }}.sqlite" "${{ matrix.region }}" --cameras-only
+          ls -la out
+          gh release upload autovelox "out/autovelox-${{ matrix.region }}.sqlite" --clobber
+
+  index:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Indice dei file
+        run: |
+          gh release view autovelox --json assets -q '{files: [.assets[] | select(.name | endswith(".sqlite")) | {name, size, updated: .updatedAt}]}' > indice.json
+          cat indice.json
+          gh release upload autovelox indice.json --clobber

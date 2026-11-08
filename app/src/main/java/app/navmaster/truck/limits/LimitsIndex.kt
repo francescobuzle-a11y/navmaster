@@ -117,8 +117,12 @@ data class RouteLimit(
  * block: the route stays on the motorway).
  */
 class LimitsIndex(regions: RegionManager) {
-  /** limiti.sqlite of every country on the tablet: the checked speed cameras and the Tutor sections. */
-  private val dbs = RegionDbs(regions) { it.limits }
+  /**
+   * The checked speed cameras and Tutor sections of every country on the tablet: the weekly file
+   * of the cameras (CameraFiles: the country packages no longer carry limiti.sqlite), else the
+   * limiti.sqlite of a light package.
+   */
+  private val dbs = RegionDbs(regions) { r -> app.navmaster.truck.live.CameraFiles.fileFor(r.id) ?: r.limits }
 
   /**
    * The limits signed on the roads of the route [a], in route order, for this vehicle: only what

@@ -5,7 +5,7 @@ low bridges and banned roads ahead on the route without any connection.
 
 Input: GeoJSON sequence produced by
     osmium export -f geojsonseq --add-unique-id=type_id <limits.osm.pbf>
-Usage: build_limits.py <in.geojsonseq> <out.sqlite> <region-name>
+Usage: build_limits.py <in.geojsonseq> <out.sqlite> <region-name> [--cameras-only]
 
 Every limit gets a check ("ver"), what the app tells the driver about how sure it is:
   "doppio"    two tags of the object agree (maxheight and maxheight:physical, the value and its
@@ -705,9 +705,14 @@ def census(dst, region):
 
 
 if __name__ == "__main__":
+    # --cameras-only: the small file of the speed cameras and Tutor sections alone (autovelox-<country>.sqlite,
+    # .github/workflows/autovelox.yml), from an extract of the cameras: no signs, no roads
+    cameras_only = "--cameras-only" in sys.argv[4:]
     main()
-    signs(sys.argv[2])
+    if not cameras_only:
+        signs(sys.argv[2])
     sections(sys.argv[2])
     camera_check(sys.argv[2])
     census(sys.argv[2], sys.argv[3])
-    roads(sys.argv[2])
+    if not cameras_only:
+        roads(sys.argv[2])
