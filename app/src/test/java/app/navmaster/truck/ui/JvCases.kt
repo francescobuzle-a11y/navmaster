@@ -129,6 +129,33 @@ internal object JvCases {
     return Case("citta", JunctionScene(j, 80.0, 300.0, r, 320.0, 400.0, "IT", null), roads, 382.0, false)
   }
 
-  /** The three junctions. */
-  fun all(): List<Case> = listOf(exitCase(), forkCase(), townCase())
+  /**
+   * In town, a slight right turn (30°): a primary road with three lanes our way ("left|through|
+   * slight_right"), onto the two-way SP12 "Via Roma"; no direction sign on the map.
+   */
+  fun slightCase(): Case {
+    val a30 = Math.toRadians(30.0)
+    val out = (1..12).map { k -> (k * 25.0 * kotlin.math.cos(a30)) to (-k * 25.0 * kotlin.math.sin(a30)) }
+    val pts = line(-400.0 to 0.0, 0.0 to 0.0, *out.toTypedArray())
+    val r0 = route(pts, emptyList())
+    val r = route(pts, listOf(edge(0.0, 400.0, "primary", "", 3, 41),
+        edge(400.0, r0.length, "secondary", "", 1, 42).copy(name = "Via Roma", names = listOf("SP12", "Via Roma"))))
+    val j = LaneModel.Junction(
+        400.0, LanePlan.Kind.JUNCTION, 1,
+        listOf(LanePlan.Lane("left", false), LanePlan.Lane("straight", false), LanePlan.Lane("slight right", true)),
+        true,
+        listOf(LaneModel.Road(30.0, true, 2, "secondary", false, null, 42), LaneModel.Road(0.0, false, 2, "primary", false, null, 43),
+            LaneModel.Road(-90.0, false, 1, "residential", false, null, 44)),
+        null, null, null, 2, 2, 41, "primary", false)
+    val roads = listOf(
+        road(41, "primary", 0, 5, line(-600.0 to 0.0, 0.0 to 0.0), lanesF = 3, lanesB = 2),
+        road(42, "secondary", 0, 2, line(0.0 to 0.0, *out.toTypedArray())),
+        road(43, "primary", 0, 4, line(0.0 to 0.0, 500.0 to 0.0)),
+        road(44, "residential", 0, null, line(0.0 to 0.0, 0.0 to 300.0)),
+    )
+    return Case("svolta_leggera", JunctionScene(j, 90.0, 300.0, r, 310.0, 400.0, "IT", null), roads, 375.0, false)
+  }
+
+  /** The junctions. */
+  fun all(): List<Case> = listOf(exitCase(), forkCase(), townCase(), slightCase())
 }
