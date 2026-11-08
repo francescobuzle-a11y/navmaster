@@ -4,14 +4,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** github.com first through the front-ends that answered during the incident, then the system's addresses; other hosts untouched. */
+/** github.com: the addresses that answer first, then all the others (system and GitHub's extra ones), no duplicates; other hosts untouched. */
 class GithubDnsTest {
   @Test
-  fun githubFirstThroughThePreferredFrontEnds() {
+  fun githubAddressesAnsweringFirst() {
     val a = GithubDns.lookup("github.com").map { it.hostAddress }
-    assertEquals("140.82.112.3", a.first())
     assertTrue(a.size >= 6)
     assertEquals(a.size, a.toSet().size)
+    assertTrue("140.82.112.3" in a)
     val other = GithubDns.lookup("example.com").map { it.hostAddress }
     assertTrue(other.none { it.startsWith("140.82.11") })
   }
