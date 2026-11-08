@@ -31,6 +31,26 @@ class JunctionCameraTest {
       if (cam[0] > -wanted + 6) problems += "${c.name}: occhio non prima del nodo (x ${"%.0f".format(cam[0])})"
       if (scene.forward[0] < 0.9) problems += "${c.name}: sguardo non nel senso di marcia ${scene.forward.toList()}"
       if (scene.gantry == null) problems += "${c.name}: nessun cartello"
+      // at exits and forks the road taken leaves its lanes only outwards: its drawn middle never
+      // comes back towards the other branch (the old fixed taper made a kink there)
+      if (exitLike) {
+        val side = c.scene.junction.side
+        var prev = Double.NaN
+        var m = scene.nodeM
+        while (m < scene.nodeM + 200) {
+          val fi = (m - scene.routeFrom) / scene.routeStep
+          val n = scene.routeX.size - 1
+          val k = fi.toInt().coerceIn(0, n - 1)
+          val k0 = (k - 1).coerceAtLeast(0); val k1 = (k + 2).coerceAtMost(n)
+          val dx = scene.routeX[k1] - scene.routeX[k0]; val dy = scene.routeY[k1] - scene.routeY[k0]
+          val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
+          val y = scene.routeY[k] + dx / l * scene.routeLaneY[k]
+          if (!prev.isNaN() && (if (side > 0) y > prev + 0.05 else y < prev - 0.05))
+            problems += "${c.name}: la strada presa torna verso l'altro ramo a ${"%.0f".format(m - scene.nodeM)} m dal nodo (${"%.2f".format(prev)} → ${"%.2f".format(y)})"
+          prev = y
+          m += scene.routeStep
+        }
+      }
       if (scene.guideX.size < 5) problems += "${c.name}: via attraverso l'incrocio di ${scene.guideX.size} punti"
       if (scene.paint.size < 3) problems += "${c.name}: ${scene.paint.size} punte di freccia sulle corsie da prendere"
       for ((sizeName, wh) in sizes) {

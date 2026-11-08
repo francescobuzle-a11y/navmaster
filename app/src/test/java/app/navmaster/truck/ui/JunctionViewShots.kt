@@ -50,11 +50,12 @@ class JunctionViewShots {
   @get:Rule val compose = createEmptyComposeRule()
 
   /**
-   * Thin lines across the lit lane (the seams between the pieces of a strip): along a line on the
-   * lane to take, beside the arrow heads, from 12 m in front of the eye to 15 m before the node,
+   * Thin lines across the lit lane (the seams between the pieces of a strip): along a line just
+   * inside the edge of the lit lanes (clear of the arrow heads and of the lane lines), from 12 m in
+   * front of the eye to 15 m before the node,
    * a pixel much lighter or darker than the pixels a few steps before and after it. Null when none.
    */
-  private fun seams(scene: Scene, img: ImageBitmap, w: Int, h: Int): String? {
+  private fun seams(scene: Scene, img: ImageBitmap, w: Int, h: Int, litCount: Int): String? {
     val bmp = img.asAndroidBitmap()
     val p = Projector(scene, w.toFloat(), h.toFloat())
     val lum = ArrayList<Pair<Int, Double>>() // screen y, luminance
@@ -69,7 +70,7 @@ class JunctionViewShots {
       val y = scene.routeY[k] + (scene.routeY[k + 1] - scene.routeY[k]) * t
       val dx = scene.routeX[k + 1] - scene.routeX[k]; val dy = scene.routeY[k + 1] - scene.routeY[k]
       val l = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
-      val off = scene.routeLaneY[k] + 0.38 * scene.laneW
+      val off = scene.routeLaneY[k] + litCount * scene.laneW / 2 - 0.45
       val q = p.project(x - dy / l * off, y + dx / l * off, 0.0)
       if (q != null) {
         val px = q[0].toInt(); val py = q[1].toInt()
@@ -113,7 +114,7 @@ class JunctionViewShots {
             drawVehicle(scene, c.vehAlong, c.scene.vehicleLane)
           }
           save(img, name, out)
-          seams(scene, stat, wh.first, wh.second)?.let { problems += "$name: $it" }
+          seams(scene, stat, wh.first, wh.second, c.scene.junction.active.size.coerceAtLeast(1))?.let { problems += "$name: $it" }
           if (scene.asphalt.isEmpty()) problems += "$name: nessuna strada"
           if (scene.lit.isEmpty()) problems += "$name: nessuna corsia evidenziata"
           val sign = scene.gantry

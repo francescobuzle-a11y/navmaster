@@ -440,14 +440,21 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val otherIdx = (0 until nLanes).filter { it !in active }
   val otherY = if (otherIdx.isEmpty()) activeY else otherIdx.map { laneY[it] }.average()
 
-  // after the junction the road taken starts where its lanes are, then follows its own line
+  // after the junction (at exits and forks) each branch stays on its lanes until its own line has
+  // moved away from them by itself, then follows its own line: the gore opens as on the road
+  // (a fixed taper made the slip road first move back towards the motorway, then away: a kink)
   val taper = if (exitLike) 110.0 else 25.0
+  val takenDir = when {
+    active.isEmpty() || otherIdx.isEmpty() -> if (j.side > 0) -1 else 1
+    activeY < otherY -> -1
+    else -> 1
+  }
   val routeLaneY = DoubleArray(n + 1)
   val routeShift = DoubleArray(n + 1)
   for (i in 0..n) {
     val d = routeAlong[i] - node
     // from the node itself (its point included) the road taken starts where its lanes are
-    routeShift[i] = if (d < -0.5 || !exitLike) 0.0 else activeY * (1 - smooth(d.coerceAtLeast(0.0) / taper))
+    routeShift[i] = if (d < -0.5 || !exitLike) 0.0 else keepOnLanes(d, ry[i], activeY, takenDir)
     routeLaneY[i] = if (d <= 0) activeY else routeShift[i]
   }
 
@@ -470,7 +477,9 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val beforeIdx = (0..n).filter { routeAlong[it] <= node + 0.01 }
   // the carriageway and the lit lanes reach a little past the node, under the road taken: the two
   // shapes overlap instead of meeting edge to edge (an edge shows as a thin line)
-  val beforeOv = (0..n).filter { routeAlong[it] <= node + 2.01 }
+  // (only at exits and forks, where the route goes on nearly straight: at a turn the overlap
+  // would bend round the corner)
+  val beforeOv = if (exitLike) (0..n).filter { routeAlong[it] <= node + 2.01 } else beforeIdx
   val takenIdx = (0..n).filter { routeAlong[it] >= node - 0.01 }
   fun sub(idx: List<Int>, arr: DoubleArray) = DoubleArray(idx.size) { arr[idx[it]] }
   if (beforeIdx.size >= 2) {
@@ -478,6 +487,12 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
     val carriageLeft = totalW / 2
     val carriageRight = -totalW / 2
     asphalt += stripOf(sub(beforeOv, rx), sub(beforeOv, ry), carriageLeft + 0.8, carriageRight - 0.8, pal.asphalt)
+    // at a junction in town the crossing itself: a square of asphalt over the node, so that the
+    // road arriving and the road taken meet without a notch of ground at the corner
+    if (!exitLike) {
+      val half = max(totalW, 2 * laneW) / 2 + 0.8
+      asphalt += Strip(doubleArrayOf(-half, half), doubleArrayOf(0.0, 0.0), doubleArrayOf(half, half), doubleArrayOf(-half, -half), pal.asphalt)
+    }
     // edge lines, lane lines (dashed), the centre line of a two-way road
     markings += stripOf(bx, by, carriageRight + 0.45, carriageRight + 0.15, pal.marking)
     markings += stripOf(bx, by, carriageLeft - 0.15, carriageLeft - 0.45, pal.marking)
@@ -526,16 +541,23 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
   val roads = runCatching { jvRoadsNear(p0.lat, p0.lng, 420.0) }.getOrDefault(emptyList())
   val otherWay = j.other?.wayId ?: 0L
   val otherW = (if (j.otherLanes > 0) j.otherLanes else otherIdx.size.coerceAtLeast(1)) * laneW
-  // (the roads around that are not the junction's made the picture busy: only the other branch)
+  // (the roads around that are not the junction's made the picture busy: only the junction's own)
   for (r in roads) {
-    if (r.pts.size < 2 || r.tunnel) continue
-    val isOther = r.osm == otherWay && otherWay != 0L
-    if (!isOther || r.osm in routeWays) continue
+    if (r.pts.size < 2 || r.tunnel || r.osm in routeWays) continue
     val local = r.pts.map { f.local(it.lat, it.lng) }
     val xs = local.map { it[0] }; val ys = local.map { it[1] }
-    // only after the node, starting where its lanes are
-    val keep = xs.indices.map { xs[it] >= -1.0 }
-    for ((px, py) in splitRuns(xs, ys, keep)) addRoad(r, px, py, true, otherY, taper, asphalt, markings, pal, lht, forcedWidth = otherW, main = true)
+    if (exitLike) {
+      // at exits and forks the other branch: only after the node, starting where its lanes are
+      if (r.osm != otherWay || otherWay == 0L) continue
+      val keep = xs.indices.map { xs[it] >= -1.0 }
+      for ((px, py) in splitRuns(xs, ys, keep)) addRoad(r, px, py, true, otherY, taper, asphalt, markings, pal, lht, forcedWidth = otherW, main = true,
+          keepDir = -takenDir)
+    } else {
+      // at a junction in town every road of the crossing (passing within 20 m of the node), on
+      // its own line and with its own lanes, as it is
+      if (distanceToLine(0.0, 0.0, xs, ys) > 20.0) continue
+      addRoad(r, xs, ys, false, 0.0, 0.0, asphalt, markings, pal, lht, main = true)
+    }
   }
 
   // the camera: over the middle of our lanes, [camBack] metres before the node and [camH] above
@@ -561,14 +583,21 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
     val nn = normal(i)
     guideX[q] = rx[i] + nn[0] * routeLaneY[i]; guideY[q] = ry[i] + nn[1] * routeLaneY[i]
   }
+  val litCount = active.size.coerceAtLeast(1)
+  val headOffsets = (0 until litCount).map { k -> (k - (litCount - 1) / 2.0) * -laneW }
   if (active.isNotEmpty() || exitLike) {
     var next = routeAlong[ci] + 10.0
     for ((q, i) in gIdx.withIndex()) {
+      // within 130 m of the eye (farther they were only specks near the horizon)
+      if (routeAlong[i] - routeAlong[ci] > 130.0) break
       if (routeAlong[i] < next || q == 0) continue
       val dx = guideX[q] - guideX[q - 1]; val dy = guideY[q] - guideY[q - 1]
       val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
-      arrowHead(guideX[q], guideY[q], dx / l, dy / l, 2.6, laneW * 0.62, pal.paint, paint)
-      next = routeAlong[i] + 14.0
+      // one head in the middle of each lane to take (the way's line runs between them when two
+      // or more are lit: a head there sat on the lane line)
+      for (o in headOffsets) arrowHead(guideX[q] - dy / l * o, guideY[q] + dx / l * o, dx / l, dy / l, 2.6, laneW * 0.62, pal.paint, paint)
+      // wider apart in the distance, where perspective packs them together
+      next = routeAlong[i] + 14.0 + 0.2 * (routeAlong[i] - routeAlong[ci])
     }
   }
 
@@ -583,6 +612,19 @@ internal fun buildScene(s: JunctionScene, night: Boolean): Scene? {
       from, (to - from) / n, node, routeAlong[ci] + 9.0, rx.copyOf(), ry.copyOf(), routeLaneY, laneY, laneW, pal, s.country)
 }
 
+/** The distance from a point to a polyline (metres). */
+private fun distanceToLine(px: Double, py: Double, xs: List<Double>, ys: List<Double>): Double {
+  var best = Double.MAX_VALUE
+  for (i in 0 until xs.size - 1) {
+    val dx = xs[i + 1] - xs[i]; val dy = ys[i + 1] - ys[i]
+    val l2 = dx * dx + dy * dy
+    val t = if (l2 > 0) (((px - xs[i]) * dx + (py - ys[i]) * dy) / l2).coerceIn(0.0, 1.0) else 0.0
+    val qx = xs[i] + dx * t - px; val qy = ys[i] + dy * t - py
+    best = min(best, sqrt(qx * qx + qy * qy))
+  }
+  return best
+}
+
 private fun splitRuns(xs: List<Double>, ys: List<Double>, keep: List<Boolean>): List<Pair<List<Double>, List<Double>>> {
   val out = ArrayList<Pair<List<Double>, List<Double>>>()
   var cx = ArrayList<Double>(); var cy = ArrayList<Double>()
@@ -593,11 +635,31 @@ private fun splitRuns(xs: List<Double>, ys: List<Double>, keep: List<Boolean>): 
   return out
 }
 
-/** A road of the graph: its carriageway, edge lines and lane lines; [shiftY] at the node going to 0 over [taper] metres. */
+/**
+ * How far to move a branch leaving the junction from its own line (its frame y [y], left
+ * positive, [x] metres past the node) so that it stays on its lanes at [lanesY] until its own
+ * line has moved away beyond them on its side ([dir] 1: the branch goes off to the left, −1 to
+ * the right), then follows its own line (with a smooth bend, k metres); gone by 400 m.
+ */
+internal fun keepOnLanes(x: Double, y: Double, lanesY: Double, dir: Int, k: Double = 2.0): Double {
+  val u = dir * (y - lanesY)
+  val g = when {
+    u <= 0 -> 0.0
+    u >= k -> u - k / 2
+    else -> u * u / (2 * k)
+  }
+  return (lanesY + dir * g - y) * (1 - smooth(x.coerceAtLeast(0.0) / 400.0))
+}
+
+/**
+ * A road of the graph: its carriageway, edge lines and lane lines; [shiftY] at the node, then
+ * kept on its lanes until its own line moves away ([keepDir], see keepOnLanes), or (in town)
+ * going to 0 over [taper] metres.
+ */
 private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, shifted: Boolean, shiftY: Double, taper: Double,
                     asphalt: MutableList<Strip>, markings: MutableList<Strip>, pal: Palette, lht: Boolean, forcedWidth: Double? = null,
                     /** A road of the junction (the other branch): as dark as the route's, with its markings. */
-                    main: Boolean = false) {
+                    main: Boolean = false, keepDir: Int = 0) {
   val cls = r.roadClass.let { if (it == "service_other") (if (r.hw.startsWith("service")) "service" else "minor") else it }
   if (cls in setOf("track", "path", "footway", "cycleway", "steps")) return
   val (x, y) = resample(xs0, ys0, 4.0)
@@ -607,13 +669,20 @@ private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, sh
   val lanes = (if (oneway) (r.lanes ?: (if (r.oneway > 0) r.lanesF else r.lanesB)) else (r.lanes ?: ((r.lanesF ?: 0) + (r.lanesB ?: 0)).takeIf { it > 0 }))
       ?.takeIf { it > 0 } ?: defaultLanes(cls, oneway, r.isLink)
   val w = forcedWidth ?: (lanes * lw)
-  val shift = DoubleArray(x.size) { i -> if (!shifted) 0.0 else shiftY * (1 - smooth(x[i].coerceAtLeast(0.0) / taper.coerceAtLeast(1.0))) }
-  asphalt += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 + 0.6 }, DoubleArray(x.size) { shift[it] - w / 2 - 0.6 }, if (main) pal.asphalt else pal.side)
+  fun shiftAt(xx: Double, yy: Double): Double = when {
+    !shifted -> 0.0
+    keepDir != 0 -> keepOnLanes(xx, yy, shiftY, keepDir)
+    else -> shiftY * (1 - smooth(xx.coerceAtLeast(0.0) / taper.coerceAtLeast(1.0)))
+  }
+  val shift = DoubleArray(x.size) { i -> shiftAt(x[i], y[i]) }
+  // the same margins and line widths as the road arriving (a branch drawn thinner looked pasted on)
+  val margin = if (main) 0.8 else 0.6
+  asphalt += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 + margin }, DoubleArray(x.size) { shift[it] - w / 2 - margin }, if (main) pal.asphalt else pal.side)
   // the roads around: only their surface (their lines made the picture busy)
   if (!main) return
   if (cls in setOf("motorway", "trunk", "primary") || r.isLink) {
-    markings += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 - 0.15 }, DoubleArray(x.size) { shift[it] + w / 2 - 0.35 }, pal.marking)
-    markings += Strip(x, y, DoubleArray(x.size) { shift[it] - w / 2 + 0.35 }, DoubleArray(x.size) { shift[it] - w / 2 + 0.15 }, pal.marking)
+    markings += Strip(x, y, DoubleArray(x.size) { shift[it] + w / 2 - 0.15 }, DoubleArray(x.size) { shift[it] + w / 2 - 0.45 }, pal.marking)
+    markings += Strip(x, y, DoubleArray(x.size) { shift[it] - w / 2 + 0.45 }, DoubleArray(x.size) { shift[it] - w / 2 + 0.15 }, pal.marking)
   }
   val n = (w / lw).toInt().coerceAtLeast(1)
   if (n >= 2 && !shifted) {
@@ -621,16 +690,16 @@ private fun addRoad(r: RoadsIndex.Road, xs0: List<Double>, ys0: List<Double>, sh
       val o = w / 2 - k * lw
       // the centre of a two-way road
       val centre = !oneway && k == (if (lht) (r.lanesF ?: n / 2) else (r.lanesB ?: n / 2))
-      dashes(x, y, o, 0.15, if (centre) 3.0 else 4.5, if (centre) 4.5 else 7.5, pal.marking, markings)
+      dashes(x, y, o, 0.3, if (centre) 3.0 else 4.5, if (centre) 6.0 else 9.0, pal.marking, markings)
     }
   } else if (n >= 2) {
     for (k in 1 until n) {
       val o = w / 2 - k * lw
       val strips = ArrayList<Strip>()
-      dashes(x, y, o, 0.15, 4.5, 7.5, pal.marking, strips)
+      dashes(x, y, o, 0.3, 4.5, 9.0, pal.marking, strips)
       // the lane lines follow the shift of their road
       for (st in strips) {
-        val sh = DoubleArray(st.x.size) { i -> shiftY * (1 - smooth(st.x[i].coerceAtLeast(0.0) / taper.coerceAtLeast(1.0))) }
+        val sh = DoubleArray(st.x.size) { i -> shiftAt(st.x[i], st.y[i]) }
         markings += Strip(st.x, st.y, DoubleArray(st.x.size) { st.left[it] + sh[it] }, DoubleArray(st.x.size) { st.right[it] + sh[it] }, pal.marking)
       }
     }
@@ -928,13 +997,15 @@ private fun DrawScope.drawSign(g: Gantry, scene: Scene, p: Projector, density: D
   while (boxH > h * 0.36f && lines > 1) { lines--; boxH = lineH * lines + pad(textPx) * 1.6f }
   val top = margin
   val bottom = top + boxH
-  // the beam under the panels and the posts down to the road's edges
+  // the beam under the panels and the posts standing upright at the road's edges (a post from
+  // the beam slanting down to the edge looked broken); the beam reaches both posts
   if (boxes.isNotEmpty()) {
-    val beamL = boxes.first().x0 - 4f * dp; val beamR = boxes.last().x1 + 4f * dp
-    val pl = g.at(g.yLeft, 0.0, p); val pr = g.at(g.yRight, 0.0, p)
     val postW = 4f * dp
-    if (pl != null) drawLine(pal.post, Offset(pl[0].coerceIn(beamL, beamR), bottom), Offset(pl[0], pl[1]), postW)
-    if (pr != null) drawLine(pal.post, Offset(pr[0].coerceIn(beamL, beamR), bottom), Offset(pr[0], pr[1]), postW)
+    val posts = listOfNotNull(g.at(g.yLeft, 0.0, p), g.at(g.yRight, 0.0, p))
+        .filter { it[0] in 2f..(w - 2f) && it[1] > bottom }
+    val beamL = (posts.map { it[0] - postW } + (boxes.first().x0 - 4f * dp)).min().coerceAtLeast(0f)
+    val beamR = (posts.map { it[0] + postW } + (boxes.last().x1 + 4f * dp)).max().coerceAtMost(w)
+    for (q in posts) drawLine(pal.post, Offset(q[0], bottom), Offset(q[0], q[1]), postW)
     drawRect(pal.beam, Offset(beamL, bottom), Size(beamR - beamL, 5f * dp))
   }
   for (b in boxes) {
