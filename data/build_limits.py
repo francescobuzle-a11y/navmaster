@@ -19,8 +19,11 @@ The official lists used for the speed cameras (fetched on GitHub, only for their
   France: «Liste des radars fixes en France», Ministère de l'Intérieur, data.gouv.fr (Licence
           Ouverte 2.0, about 3,300 radars, updated 30/12/2025): to confirm and to add;
   Spain: radares fijos y de tramo, DGT NAP (DATEX II, CC BY 4.0), to confirm and to add.
-Italy publishes the list of the approved devices (velox.mit.gov.it) without their positions:
-there the cameras stay "osm".
+  Italy: the national census of the devices (velox.mit.gov.it, data/census_it.py): it gives towns,
+         roads and kilometres, not coordinates, so it confirms ("doppio") or puts aside ("dubbio",
+         name «non nel censimento del ministero» / «spento secondo il censimento del ministero»)
+         the cameras of OpenStreetMap town by town and road by road, and places the motorway
+         Tutor between their junctions.
 A speed camera of OpenStreetMap is "doppio" also when it is the device of an enforcement relation
 (type=enforcement, members from/to/device), and "dubbio" when it is a bare point (no speed, no
 direction, no name, no description, no relation) on a motorway or trunk road: those are often old
@@ -689,9 +692,22 @@ def roads(dst):
                 os.remove(f)
 
 
+def census(dst, region):
+    """Italy (and the test area, which is in Italy): the national census of the speed cameras
+    (data/census_it.py), after the sections and the camera check it builds on."""
+    if region not in ("italy", "test"):
+        return
+    try:
+        import census_it
+        census_it.run(dst)
+    except Exception as ex:
+        print(f"census it: skipped ({ex})")
+
+
 if __name__ == "__main__":
     main()
     signs(sys.argv[2])
     sections(sys.argv[2])
     camera_check(sys.argv[2])
+    census(sys.argv[2], sys.argv[3])
     roads(sys.argv[2])
