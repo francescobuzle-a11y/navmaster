@@ -199,30 +199,39 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     for (r in regions.installed.value) migrate(r.dir) { reset() }
     val list = regions.installed.value.filter { installed(it.dir) }.sortedBy { if (it.id == first) 0 else 1 }
     if (list.isEmpty()) return
+    // the plan, by use: the core files of every country, then the graph files from the country [first]
+    class Item(val region: InstalledRegion, val part: Int, val bytes: Long)
+    val plan = ArrayList<Item>()
     var left = budget
-    val steps = list.size * 2
-    var step = 0
     for (part in listOf(RoutingGraph.WARM_CORE, RoutingGraph.WARM_GRAPH)) for (r in list) {
-      val base = step++.toFloat() / steps
-      progress?.invoke(r, base)
-      if (left <= 0) continue
+      if (left <= 0) break
+      val o = graphOf(r) ?: continue
+      val b = runCatching { lock.read { if (open[r.id] === o) o.graph.warmBytes(profile, budget = left, parts = part) else 0L } }.getOrDefault(0L)
+      if (b > 0) { plan += Item(r, part, b); left -= b }
+    }
+    val total = plan.sumOf { it.bytes }.coerceAtLeast(1)
+    // read the other way round: the most useful last, the freshest in the cache. Read first, the
+    // levels of Italy were out of the cache again at the first route (11.6 s instead of 7.4)
+    var done = 0L
+    for (item in plan.asReversed()) {
+      val r = item.region
+      progress?.invoke(r, done.toFloat() / total)
       val o = graphOf(r) ?: continue
       try {
-        var used = 0L
+        val base = done
         val line = lock.read {
-          if (open[r.id] === o) o.graph.warm(profile, budget = left, parts = part) { done, total ->
-            used = done
-            progress?.invoke(r, base + (if (total > 0) done.toFloat() / total else 1f) / steps)
+          if (open[r.id] === o) o.graph.warm(profile, budget = item.bytes, parts = item.part, reverse = true) { d, _ ->
+            progress?.invoke(r, (base + d).toFloat() / total)
           } else null
         } ?: continue
-        left -= used
         o.used = SystemClock.elapsedRealtime()
         Log.i(TAG, "${r.id}: $line")
       } catch (e: Throwable) {
         Log.w(TAG, "${r.id}: riscaldamento fallito: $e")
       }
+      done += item.bytes
     }
-    list.lastOrNull()?.let { progress?.invoke(it, 1f) }
+    list.firstOrNull()?.let { progress?.invoke(it, 1f) }
   }
 
   fun prepareBorders() {
