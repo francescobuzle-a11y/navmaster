@@ -72,9 +72,11 @@ object AppGraph {
     Thread {
       runCatching {
         val v = profiles.garage.value.active
-        // the budget from the memory free now: a part of it, so the map and the other apps keep theirs
+        // the budget from the memory free now (it counts the file cache, which the system can take
+        // back): three quarters, so the map and the other apps keep some; on the tablet (3.8 GB,
+        // 1.5 GB free) 6/10 left out the edges of Italy by 62 MB, and the first route cost 9.2 s instead of 4.6 s
         val mem = android.app.ActivityManager.MemoryInfo().also { (app.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it) }
-        val budget = (mem.availMem * 6 / 10).coerceIn(256L shl 20, 1536L shl 20)
+        val budget = (mem.availMem * 3 / 4).coerceIn(256L shl 20, 1536L shl 20)
         // the country where the vehicle is (last known position), warmed whole first
         val here = runCatching { kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeoutOrNull(1500) { smartLocation.lastLocation() } } }.getOrNull()
         val first = here?.let { regions.regionAt(it.latitude, it.longitude)?.id }
