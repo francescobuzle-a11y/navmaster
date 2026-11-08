@@ -22,7 +22,7 @@ object OrsGuide {
   private val json = Json { ignoreUnknownKeys = true }
 
   /** The OSRM answer for Ferrostar, and the roads of the route for RouteAnalysis (null without roads). */
-  class Output(val osrm: String, val attributes: String?, val roads: Int)
+  class Output(val osrm: String, val attributes: String?, val roads: Int, val timings: String = "")
 
   /** The OSRM answer of route [index] of the engine's GeoJSON [text]; null when it has no instructions. */
   fun osrm(text: String, index: Int = 0): String? = build(text, index)?.osrm
@@ -37,7 +37,9 @@ object OrsGuide {
    * through is not said at all (before, both were announced as the destination).
    */
   fun build(text: String, index: Int = 0, heavy: Boolean = false, countryOf: ((Double, Double) -> String?)? = null, kinds: List<String>? = null): Output? {
+    val t0 = System.nanoTime()
     val root = json.parseToJsonElement(text).jsonObject
+    val tParsed = System.nanoTime()
     val f = root["features"]?.jsonArray?.getOrNull(index)?.jsonObject ?: return null
     val coords = f["geometry"]?.jsonObject?.get("coordinates")?.jsonArray ?: return null
     if (coords.size < 2) return null
@@ -81,9 +83,10 @@ object OrsGuide {
         if (i > lp0) { dd.append(','); du.append(','); sp.append(','); mx.append(',') }
         val d = cum[i + 1] - cum[i]
         val t = lt * d / legLen
-        dd.append(String.format(Locale.ROOT, "%.1f", d))
-        du.append(String.format(Locale.ROOT, "%.3f", t))
-        sp.append(String.format(Locale.ROOT, "%.1f", if (t > 0) d / t else 0.0))
+        // the numbers written by hand: String.format costs microseconds on the tablet and here there are three per point (950 km: tens of thousands)
+        fixed(dd, d, 1)
+        fixed(du, t, 3)
+        fixed(sp, if (t > 0) d / t else 0.0, 1)
         val lim = on.getOrNull(i)?.limit(heavy)
         if (lim != null && lim > 0) mx.append("{\"speed\":").append(Math.round(lim)).append(",\"unit\":\"km/h\"}")
         else mx.append("{\"unknown\":true}")
@@ -115,8 +118,11 @@ object OrsGuide {
       b.append("{\"name\":\"\",\"distance\":0,\"location\":[").append(num6(pts[i].lng)).append(',').append(num6(pts[i].lat)).append("]}")
     }
     b.append("]}")
+    val tSteps = System.nanoTime()
     val attributes = if (roads.isEmpty()) null else attributes(pts, cum, roads, points, countryOf)
-    return Output(b.toString(), attributes, roads.size)
+    val tEnd = System.nanoTime()
+    val ms = { a: Long, z: Long -> (z - a) / 1_000_000 }
+    return Output(b.toString(), attributes, roads.size, "lettura ${ms(t0, tParsed)} ms, passi ${ms(tParsed, tSteps)} ms, strade ${ms(tSteps, tEnd)} ms, $n punti")
   }
 
   /**
@@ -223,7 +229,7 @@ object OrsGuide {
           else -> "paved"
         })
         edges.append(",\"lane_count\":").append(r.lanes ?: 0)
-            .append(",\"length\":").append(String.format(Locale.ROOT, "%.4f", (cum[c] - cum[a]) / 1000))
+            .append(",\"length\":").also { fixed(it, (cum[c] - cum[a]) / 1000, 4) }
             .append(",\"begin_shape_index\":").append(a).append(",\"end_shape_index\":").append(c)
             .append(",\"tunnel\":").append(r.tunnel).append(",\"bridge\":").append(r.bridge)
             .append(",\"roundabout\":").append(r.roundabout)
@@ -458,8 +464,27 @@ object OrsGuide {
     }
   }
 
-  private fun num(d: Double): String = String.format(Locale.ROOT, "%.1f", d)
-  private fun num6(d: Double): String = String.format(Locale.ROOT, "%.6f", d)
+  private fun num(d: Double): String = StringBuilder(12).also { fixed(it, d, 1) }.toString()
+  private fun num6(d: Double): String = StringBuilder(14).also { fixed(it, d, 6) }.toString()
+
+  private val POW10 = longArrayOf(1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000)
+
+  /**
+   * [v] with [dec] decimals, as `String.format(Locale.ROOT, "%.<dec>f", v)` writes it (rounded half
+   * up), without the formatter. Out of range (or not a number) the formatter all the same.
+   */
+  internal fun fixed(sb: StringBuilder, v: Double, dec: Int) {
+    if (v.isNaN() || v.isInfinite() || kotlin.math.abs(v) >= 1e12 || dec !in 0..7) { sb.append(String.format(Locale.ROOT, "%.${dec}f", v)); return }
+    val scale = POW10[dec]
+    val x = Math.round(kotlin.math.abs(v) * scale)
+    if (v < 0) sb.append('-')
+    sb.append(x / scale)
+    if (dec == 0) return
+    sb.append('.')
+    val frac = (x % scale).toString()
+    for (i in frac.length until dec) sb.append('0')
+    sb.append(frac)
+  }
 
   private fun q(b: StringBuilder, s: String) {
     b.append(JsonPrimitive(s).toString())

@@ -118,11 +118,14 @@ class OfflineRouteProvider(
         for (i in found.indices) {
           val guided = runCatching { OrsGuide.build(answer, i, spec.hgv, countryOf, stops.kinds) }
               .onFailure { Log.w(TAG, "guidance not written: $it | ${it.stackTrace.take(6).joinToString(" < ")}", it) }.getOrNull() ?: break
+          val tParse = System.currentTimeMillis()
           val route = runCatching { parser.parseResponse(guided.osrm.encodeToByteArray()).firstOrNull() }
               .onFailure { Log.w(TAG, "guidance not readable: $it") }.getOrNull() ?: break
+          val tRemember = System.currentTimeMillis()
           remember(route, guided.attributes)
-          Log.i(TAG, String.format(java.util.Locale.US, "route %d/%d guided in %d ms: %.1f km, %d steps, %d roads",
-              i + 1, found.size, System.currentTimeMillis() - started, route.distance / 1000, route.steps.size, guided.roads))
+          Log.i(TAG, String.format(java.util.Locale.US, "route %d/%d guided in %d ms: %.1f km, %d steps, %d roads (guida: %s; Ferrostar %d ms, analisi %d ms)",
+              i + 1, found.size, System.currentTimeMillis() - started, route.distance / 1000, route.steps.size, guided.roads, guided.timings,
+              tRemember - tParse, System.currentTimeMillis() - tRemember))
           out += route
         }
         if (out.isEmpty()) throw IllegalStateException("Nessun percorso: la guida del percorso non è stata calcolata.")

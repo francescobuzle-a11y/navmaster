@@ -84,7 +84,7 @@ jobs:
       # answers): pure Kotlin, a minute, no emulator; a broken rule stops the APK
       - name: Prove della ricerca
         run: |
-          gradle :app:testDebugUnitTest --tests 'app.navmaster.truck.search.*' --tests 'app.navmaster.truck.live.*' --no-daemon -q || {
+          gradle :app:testDebugUnitTest --tests 'app.navmaster.truck.search.*' --tests 'app.navmaster.truck.live.*' --tests 'app.navmaster.truck.routing.OrsGuideNumbersTest' --no-daemon -q || {
             for f in app/build/test-results/testDebugUnitTest/*.xml; do grep -q "<failure" "$f" && { echo "== $f"; grep -A6 "<failure" "$f" | head -20; }; done; exit 1; }
 
       - name: Pubblica APK (release app-${{ github.run_number }})
