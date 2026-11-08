@@ -1848,7 +1848,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       val cam = extras.limits.firstOrNull { l ->
         l.kind == "speed_camera" && l.cameraWhat == null && traveled - l.alongM in 60.0..400.0 && "cam:${l.alongM.toLong()}" !in asked
       }
-      if (cam != null) {
+      // another camera just ahead (the other one of a pair, 260 m on at Canneto): the question
+      // waits for the last one, so the answer is about the camera just passed
+      val nextClose = extras.limits.any { l -> l.kind == "speed_camera" && l.alongM - traveled in -20.0..500.0 }
+      if (cam != null && !nextClose) {
         asked += "cam:${cam.alongM.toLong()}"
         val country = a?.edgeAt(cam.alongM)?.country
         val allowed = settings.enforcementEverywhere || country?.uppercase() !in LiveRules.ENFORCEMENT_BANNED
