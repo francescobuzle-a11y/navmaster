@@ -63,7 +63,7 @@ fun KeysPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   val scope = rememberCoroutineScope()
   Caption("Il traffico e la ricerca delle aziende usano i TUOI account gratuiti TomTom e HERE: creali una volta, " +
       "copia qui le due chiavi e l'app non va mai oltre il 90% delle loro quote gratuite, così non paghi niente. " +
-      "Le chiavi restano solo su questo tablet. «Verifica» fa una richiesta al servizio e dice se la chiave funziona.", size = 13, lines = 6)
+      "Le chiavi restano solo su questo tablet. «Verifica e salva» prova la chiave sul servizio e, se funziona, la salva.", size = 13, lines = 6)
   Spacer(Modifier.height(8.dp))
   KeyRow(KeyCheck.Service.TOMTOM, s.tomtomKey, BuildConfig.TOMTOM_KEY.isNotBlank(), scope) { v -> set { it.copy(tomtomKey = v) } }
   KeyRow(KeyCheck.Service.HERE, s.hereKey, BuildConfig.HERE_KEY.isNotBlank(), scope) { v -> set { it.copy(hereKey = v) } }
@@ -133,16 +133,20 @@ private fun KeyRow(service: KeyCheck.Service, value: String, builtIn: Boolean, s
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
     )
     Row {
-      BigButton(if (busy) "Verifico…" else "Verifica", Modifier.weight(1f), enabled = !busy && text.isNotBlank()) {
+      // one button: the key is tried on its service and, when it works, saved at once (drivers
+      // pressed «Verifica», saw the tick and closed the page without saving)
+      BigButton(if (busy) "Verifico…" else "Verifica e salva", Modifier.weight(1f), enabled = !busy && text.isNotBlank()) {
         busy = true
         scope.launch {
           val r = withContext(Dispatchers.IO) { KeyCheck.check(service, text) }
-          result = r
+          if (r.ok && text.trim() != value) onChange(text.trim())
+          result = if (r.ok) r.copy(text = r.text + " · salvata") else r
           busy = false
         }
       }
       Spacer(Modifier.width(8.dp))
-      BigButton("Salva", Modifier.weight(1f), style = BtnStyle.SECONDARY, enabled = text.trim() != value) { onChange(text.trim()) }
+      // a key that cannot be tried now (no network): saved as it is
+      BigButton("Salva senza verificare", Modifier.weight(1f), style = BtnStyle.GHOST, enabled = text.trim() != value) { onChange(text.trim()) }
       if (value.isNotBlank()) {
         Spacer(Modifier.width(8.dp))
         BigButton("Togli", style = BtnStyle.GHOST) { text = ""; onChange("") }

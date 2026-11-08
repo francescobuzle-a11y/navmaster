@@ -22,11 +22,11 @@ object KeyCheck {
     TOMTOM("TomTom (traffico)", "my.tomtom.com", "https://my.tomtom.com",
         "1. Apri my.tomtom.com e crea l'account: è gratis, senza carta di credito.\n" +
             "2. Vai in «Keys» › «API & SDK Keys» e copia la chiave (deve avere la Traffic API).\n" +
-            "3. Incollala qui sotto (tieni premuto nel campo › Incolla), poi «Verifica» e «Salva»."),
+            "3. Incollala qui sotto (tieni premuto nel campo › Incolla) e premi «Verifica e salva»."),
     HERE("HERE (traffico e ricerca aziende)", "platform.here.com", "https://platform.here.com/portal/sign-up",
         "1. Apri platform.here.com e crea l'account: scegli il piano «Limited», gratis e senza carta di credito.\n" +
             "2. Vai in «Access Manager» › «Apps», crea un'app, poi «API Keys» › «Create API key» e copia la chiave.\n" +
-            "3. Incollala qui sotto (tieni premuto nel campo › Incolla), poi «Verifica» e «Salva»."),
+            "3. Incollala qui sotto (tieni premuto nel campo › Incolla) e premi «Verifica e salva»."),
     ORS("openrouteservice", "openrouteservice.org"),
     TRAFIKVERKET("Trafikverket (Svezia)", "api.trafikinfo.trafikverket.se"),
     MAPILLARY("Mapillary", "mapillary.com/developer"),
