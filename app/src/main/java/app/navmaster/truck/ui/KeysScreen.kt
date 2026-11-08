@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -38,9 +39,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The keys of the online services, typed on the tablet by the owner only: the page opens with the
- * owner's password (kept here as its SHA-256, never in clear), and every key can be tried on its
- * service at once («Verifica»). A key typed here replaces the one built into the app, when any.
+ * The keys of the online services. TomTom and HERE are the driver's own free accounts: every driver
+ * types his keys here, with the steps and a button that opens the page of the account, no password
+ * needed. The other keys (openrouteservice, Trafikverket, Mapillary) stay the owner's: they open
+ * with the owner's password (kept here as its SHA-256, never in clear). Every key can be tried on
+ * its service at once («Verifica»). A key typed here replaces the one built into the app, when any.
  */
 object KeysGate {
   /** SHA-256 of the owner's password. */
@@ -57,16 +60,20 @@ object KeysGate {
 
 @Composable
 fun KeysPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
+  val scope = rememberCoroutineScope()
+  Caption("Il traffico e la ricerca delle aziende usano i TUOI account gratuiti TomTom e HERE: creali una volta, " +
+      "copia qui le due chiavi e l'app non va mai oltre il 90% delle loro quote gratuite, così non paghi niente. " +
+      "Le chiavi restano solo su questo tablet. «Verifica» fa una richiesta al servizio e dice se la chiave funziona.", size = 13, lines = 6)
+  Spacer(Modifier.height(8.dp))
+  KeyRow(KeyCheck.Service.TOMTOM, s.tomtomKey, BuildConfig.TOMTOM_KEY.isNotBlank(), scope) { v -> set { it.copy(tomtomKey = v) } }
+  KeyRow(KeyCheck.Service.HERE, s.hereKey, BuildConfig.HERE_KEY.isNotBlank(), scope) { v -> set { it.copy(hereKey = v) } }
+  Spacer(Modifier.height(16.dp))
+  // the owner's services
   if (!KeysGate.unlocked) {
     PasswordCard()
     return
   }
-  val scope = rememberCoroutineScope()
-  Caption("Le chiavi restano solo su questo tablet. Una chiave scritta qui vale al posto di quella compilata nell'app. " +
-      "«Verifica» fa una richiesta al servizio (conta nella quota) e dice se la chiave funziona.", size = 13, lines = 4)
-  Spacer(Modifier.height(8.dp))
-  KeyRow(KeyCheck.Service.TOMTOM, s.tomtomKey, BuildConfig.TOMTOM_KEY.isNotBlank(), scope) { v -> set { it.copy(tomtomKey = v) } }
-  KeyRow(KeyCheck.Service.HERE, s.hereKey, BuildConfig.HERE_KEY.isNotBlank(), scope) { v -> set { it.copy(hereKey = v) } }
+  Title("Altri servizi (proprietario)", size = 18)
   KeyRow(KeyCheck.Service.ORS, s.orsKey, BuildConfig.ORS_KEY.isNotBlank(), scope) { v -> set { it.copy(orsKey = v) } }
   KeyRow(KeyCheck.Service.TRAFIKVERKET, s.trafikverketKey, BuildConfig.TRAFIKVERKET_KEY.isNotBlank(), scope) { v -> set { it.copy(trafikverketKey = v) } }
   KeyRow(KeyCheck.Service.MAPILLARY, s.mapillaryToken, BuildConfig.MAPILLARY_TOKEN.isNotBlank(), scope) { v -> set { it.copy(mapillaryToken = v) } }
@@ -79,8 +86,8 @@ private fun PasswordCard() {
   var pw by remember { mutableStateOf("") }
   var wrong by remember { mutableStateOf(false) }
   Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Nm.Raised).border(1.dp, Nm.Line, RoundedCornerShape(18.dp)).padding(14.dp)) {
-    Title("🔐 Riservato al proprietario", size = 18)
-    Caption("Le chiavi dei servizi online (TomTom, HERE, openrouteservice, Trafikverket, Mapillary) si vedono e si cambiano solo " +
+    Title("🔐 Altri servizi (proprietario)", size = 18)
+    Caption("Le chiavi di openrouteservice, Trafikverket e Mapillary si vedono e si cambiano solo " +
         "con la password del proprietario.", Modifier.padding(top = 4.dp), size = 13, lines = 3)
     OutlinedTextField(
         pw, { pw = it; wrong = false }, label = { Text("Password") }, singleLine = true,
@@ -111,6 +118,15 @@ private fun KeyRow(service: KeyCheck.Service, value: String, builtIn: Boolean, s
       }, size = 12, lines = 1)
     }
     Caption("Account gratuito su ${service.where}", size = 12, lines = 1)
+    service.steps?.let { steps ->
+      Caption(steps, Modifier.padding(top = 6.dp), color = Nm.Text, size = 13, lines = 8)
+    }
+    service.signUp?.let { url ->
+      val uri = LocalUriHandler.current
+      BigButton("Apri ${service.where}", Modifier.fillMaxWidth().padding(top = 6.dp), style = BtnStyle.SECONDARY) {
+        runCatching { uri.openUri(url) }
+      }
+    }
     OutlinedTextField(
         text, { text = it; result = null }, label = { Text("Chiave") }, singleLine = true,
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),

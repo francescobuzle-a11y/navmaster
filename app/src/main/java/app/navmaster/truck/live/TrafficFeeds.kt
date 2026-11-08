@@ -27,9 +27,9 @@ data class GeoBox(val w: Double, val s: Double, val e: Double, val n: Double) {
 /**
  * Official traffic information, from free sources:
  * - Autobahn GmbH (Germany): open data, no key, every motorway (warnings, queues, closures);
- * - TomTom Traffic and HERE Traffic: all of Europe, one free account of each for the whole fleet
- *   (keys built into the app); TomTom first, HERE when TomTom's part of the day is used up, each
- *   one kept inside this tablet's part of its free allowance (TomTomGuard, HereGuard, Fleet).
+ * - TomTom Traffic and HERE Traffic: all of Europe, the driver's own free accounts (keys typed on
+ *   the tablet); TomTom first, HERE when TomTom's part of the day is used up, each one kept inside
+ *   90% of its free allowance (TomTomGuard, HereGuard, Quota).
  * No Waze data, ever.
  */
 object TrafficFeeds {

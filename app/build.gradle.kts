@@ -24,14 +24,15 @@ android {
     for (k in listOf("TOMTOM_KEY", "HERE_KEY", "TRAFIKVERKET_KEY", "MAPILLARY_TOKEN", "ORS_KEY")) {
       buildConfigField("String", k, "\"" + (System.getenv(k) ?: "").replace("\"", "") + "\"")
     }
-    // the fleet sharing one free TomTom account and one free HERE account (repository variables,
-    // see live/HereGuard.kt Fleet): vehicles, and the free monthly traffic requests of each account
+    // the free allowances of the driver's own TomTom and HERE accounts (repository variables when
+    // the plans change, see live/HereGuard.kt Quota): each tablet uses 90% of them
     fun num(k: String, d: Int) = System.getenv(k)?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: d
-    buildConfigField("int", "FLEET_SIZE", num("FLEET_SIZE", 20).toString())
     buildConfigField("int", "TOMTOM_MONTH_FREE", num("TOMTOM_MONTH_FREE", 200_000).toString())
     buildConfigField("int", "HERE_MONTH_FREE", num("HERE_MONTH_FREE", 5_000).toString())
     // HERE Geocoding & Search (the companies of the free search): its own free allowance, 30,000 a month
     buildConfigField("int", "HERE_SEARCH_MONTH_FREE", num("HERE_SEARCH_MONTH_FREE", 30_000).toString())
+    // HERE's free plan without a credit card («Limited»): 1,000 requests a day, all services together
+    buildConfigField("int", "HERE_DAY_FREE", num("HERE_DAY_FREE", 1_000).toString())
   }
 
   signingConfigs {

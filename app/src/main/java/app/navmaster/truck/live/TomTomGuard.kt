@@ -33,14 +33,14 @@ data class TomTomUsage(
 }
 
 /**
- * Keeps TomTom always inside this tablet's part of the free allowance of the fleet's one account
- * (TOMTOM_MONTH_FREE, 200,000 traffic tiles a month, × 90% / FLEET_SIZE, see Fleet). Every request to api.tomtom.com - the traffic
+ * Keeps TomTom always inside the free allowance of this tablet's own account
+ * (TOMTOM_MONTH_FREE, 200,000 traffic tiles a month, 90% of it used, see Quota). Every request to api.tomtom.com - the traffic
  * incidents the app reads along the route and the traffic colours the map draws - passes through
  * here (also the map's own ones: MapLibre gets this same guard on its HTTP client):
  *
  * - only tiles are used (incidents as vector tiles, traffic flow as map tiles): they are counted in
  *   the large tile allowance, never in the small one of the other requests;
- * - hard limits per month (this tablet's part) and per day (what is left spread over the days
+ * - hard limits per month (90% of the account's allowance) and per day (what is left spread over the days
  *   left), the colours on the map at most a quarter of the day: the incidents on the route first;
  * - when the day's part is used up HERE takes over (NavViewModel.refreshLive), till tomorrow;
  * - a "429 too many requests" pauses TomTom until the next day, the other sources go on;
@@ -49,15 +49,15 @@ data class TomTomUsage(
  */
 object TomTomGuard : Interceptor {
   private const val TAG = "NavMasterLive"
-  /** This tablet's tiles a month. */
+  /** This tablet's tiles a month (its own account). */
   val MONTH_TILES: Int
-    get() = Fleet.share(app.navmaster.truck.BuildConfig.TOMTOM_MONTH_FREE)
+    get() = Quota.usable(app.navmaster.truck.BuildConfig.TOMTOM_MONTH_FREE)
 
   /** Today's tiles at most. */
   val DAY_TILES: Int
     get() = dayLimit(current())
 
-  private fun dayLimit(u: TomTomUsage): Int = Fleet.today(MONTH_TILES - u.monthAtDayStart)
+  private fun dayLimit(u: TomTomUsage): Int = Quota.today(MONTH_TILES - u.monthAtDayStart)
 
   private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
   private var file: File? = null
@@ -118,7 +118,7 @@ object TomTomGuard : Interceptor {
 
   @Synchronized
   private fun pauseTillTomorrow() {
-    save(current().copy(pausedUntil = Fleet.tomorrowMs()))
+    save(current().copy(pausedUntil = Quota.tomorrowMs()))
     Log.w(TAG, "TomTom: free allowance reached, paused until tomorrow")
   }
 

@@ -129,7 +129,9 @@ private fun summary(p: SettingsPage, s: Settings): String =
       SettingsPage.OFFLINE -> (if (s.downloadWifiOnly) "Scarica solo con Wi-Fi" else "Scarica anche con i dati mobili")
       SettingsPage.PHOTOS -> if (app.navmaster.truck.live.ApiKeys.mapillary(s).isBlank()) "Panoramax e KartaView" else "Panoramax, KartaView e Mapillary"
       SettingsPage.ABOUT -> "OpenStreetMap, Esri, divieti di circolazione"
-      SettingsPage.KEYS -> "Solo con la password del proprietario" + (if (KeysGate.unlocked) " · aperto" else "")
+      SettingsPage.KEYS -> listOf(
+          if (s.tomtomKey.isNotBlank()) "TomTom ✓" else "TomTom: manca la chiave",
+          if (s.hereKey.isNotBlank()) "HERE ✓" else "HERE: manca la chiave").joinToString(" · ")
     }
 
 @Composable
@@ -394,9 +396,9 @@ private fun LivePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       }
       val tt = app.navmaster.truck.live.ApiKeys.tomtom(s).isNotBlank()
       val hr = app.navmaster.truck.live.ApiKeys.here(s).isNotBlank()
-      Caption(if (!tt && !hr) "TomTom e HERE non attivi: l'app è stata compilata senza le loro chiavi."
+      Caption(if (!tt && !hr) "TomTom e HERE non attivi: scrivi le chiavi dei tuoi account gratuiti in Impostazioni › Chiavi dei servizi."
           else "Incidenti, code e chiusure di tutta Europa: prima TomTom, poi HERE quando TomTom ha finito la parte " +
-              "di oggi. Ogni tablet usa solo la sua parte delle quote gratuite (flotta di ${app.navmaster.truck.live.Fleet.size} mezzi).\n" +
+              "di oggi. L'app usa le quote gratuite dei tuoi account, mai oltre il 90%.\n" +
               (if (tt) app.navmaster.truck.live.TomTomGuard.summary() else "TomTom: chiave mancante") + "\n" +
               (if (hr) app.navmaster.truck.live.HereGuard.summary() else "HERE: chiave mancante"),
           Modifier.padding(start = 4.dp, bottom = 6.dp), size = 13, lines = 6)

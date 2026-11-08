@@ -65,24 +65,26 @@ jobs:
           echo "motore $(git rev-parse --short HEAD)"; ls -la "$GITHUB_WORKSPACE/app/libs/"
 
       - name: Compila APK
-        # service keys from the repository secrets (empty when not set): openrouteservice online routing,
-        # TomTom and HERE traffic (one free account each for the whole fleet); fleet size and free
-        # monthly requests from the repository variables (defaults 20, 200000, 5000 when not set)
+        # service keys from the repository secrets (empty when not set): openrouteservice online routing;
+        # TomTom and HERE are left empty on purpose: every driver types the keys of his own free
+        # accounts on the tablet. The free allowances of those accounts from the repository variables
+        # (defaults 200000 TomTom tiles, 5000 HERE traffic and 30000 HERE searches a month, 1000 HERE
+        # requests a day, when not set)
         env:
           ORS_KEY: ${{ secrets.ORS_KEY }}
           TOMTOM_KEY: ${{ secrets.TOMTOM_KEY }}
           HERE_KEY: ${{ secrets.HERE_KEY }}
-          FLEET_SIZE: ${{ vars.FLEET_SIZE }}
           TOMTOM_MONTH_FREE: ${{ vars.TOMTOM_MONTH_FREE }}
           HERE_MONTH_FREE: ${{ vars.HERE_MONTH_FREE }}
           HERE_SEARCH_MONTH_FREE: ${{ vars.HERE_SEARCH_MONTH_FREE }}
+          HERE_DAY_FREE: ${{ vars.HERE_DAY_FREE }}
         run: gradle :app:assembleRelease --stacktrace --no-daemon
 
       # the rules of the free search (legal forms, synonyms, typos, the town in the query, the HERE
       # answers): pure Kotlin, a minute, no emulator; a broken rule stops the APK
       - name: Prove della ricerca
         run: |
-          gradle :app:testDebugUnitTest --tests 'app.navmaster.truck.search.*' --no-daemon -q || {
+          gradle :app:testDebugUnitTest --tests 'app.navmaster.truck.search.*' --tests 'app.navmaster.truck.live.*' --no-daemon -q || {
             for f in app/build/test-results/testDebugUnitTest/*.xml; do grep -q "<failure" "$f" && { echo "== $f"; grep -A6 "<failure" "$f" | head -20; }; done; exit 1; }
 
       - name: Pubblica APK (release app-${{ github.run_number }})

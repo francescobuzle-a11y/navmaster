@@ -62,7 +62,7 @@ object AppGraph {
     app = application
     // the engine's graphs in the internal storage (see NmEngine.internalRoot)
     NmEngine.internalRoot = java.io.File(application.filesDir, "nm")
-    // TomTom and HERE only inside this tablet's part of the fleet's free allowance (also the map's own requests)
+    // TomTom and HERE only inside the free allowance of the driver's own accounts (also the map's own requests)
     TomTomGuard.init(application)
     HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)

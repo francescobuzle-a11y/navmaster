@@ -18,7 +18,7 @@ import uniffi.ferrostar.GeographicCoordinate
 /**
  * The companies and places of HERE (Geocoding & Search v7, "discover": the search of HERE WeGo),
  * for what the open data of the tablet do not have: a haulier's yard, a workshop, a warehouse
- * known by its sign. Asked with the fleet's HERE key, through HereGuard (its own allowance,
+ * known by its sign. Asked with the driver's own HERE key, through HereGuard (its own allowance,
  * HERE_SEARCH_MONTH_FREE): over the limit the answer is empty and nothing is sent. The answers
  * are kept (the last 64 queries), so retyping costs nothing.
  *

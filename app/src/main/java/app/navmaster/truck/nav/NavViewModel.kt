@@ -1133,7 +1133,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
    * TomTom incidents of the road ahead (30 km on motorways, 15 km elsewhere), read as zoom 12
    * tiles: a tile is asked again only after 15 minutes on motorways and 25 elsewhere (twice as
    * long when less than a third of the day's part is left), never while the vehicle stands still.
-   * With a fleet of 20 a tablet has about 300 tiles a day: about 25 an hour of driving.
+   * About 25 tiles an hour of driving, against the 6,000 a day of the driver's own free account.
    */
   private fun refreshTomTom(key: String, a: RouteAnalysis, traveled: Double) {
     val now = System.currentTimeMillis()
@@ -2344,7 +2344,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         Log.i(TAG, "livetest mvt: ${bytes.size} bytes, ${f.size} features, layers ${f.map { it.layer }.distinct()}, " +
             "roads ${roads.size}, first road point $first, props ${roads.firstOrNull()?.props}")
       }.onFailure { Log.w(TAG, "livetest mvt: $it") }
-      Log.i(TAG, "livetest tomtom guard: ${app.navmaster.truck.live.TomTomGuard.summary()} | ${app.navmaster.truck.live.HereGuard.summary()} (fleet ${app.navmaster.truck.live.Fleet.size})")
+      Log.i(TAG, "livetest tomtom guard: ${app.navmaster.truck.live.TomTomGuard.summary()} | ${app.navmaster.truck.live.HereGuard.summary()}")
       // the national traffic centres, every open feed read whole: how many events of each kind
       for (line in app.navmaster.truck.live.NationalFeeds.selfTest()) Log.i(TAG, "livetest national $line")
     }

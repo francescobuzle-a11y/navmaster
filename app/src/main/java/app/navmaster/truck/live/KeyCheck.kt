@@ -14,9 +14,19 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * sees at once whether it works. One request per check, counted in the service's allowance.
  */
 object KeyCheck {
-  enum class Service(val label: String, val where: String) {
-    TOMTOM("TomTom Traffic", "developer.tomtom.com"),
-    HERE("HERE Traffic", "platform.here.com"),
+  /**
+   * A service: its name, where its free account is made, the page to open for it and, for the
+   * driver's own accounts (TomTom, HERE), the steps to get the key.
+   */
+  enum class Service(val label: String, val where: String, val signUp: String? = null, val steps: String? = null) {
+    TOMTOM("TomTom (traffico)", "my.tomtom.com", "https://my.tomtom.com",
+        "1. Apri my.tomtom.com e crea l'account: è gratis, senza carta di credito.\n" +
+            "2. Vai in «Keys» › «API & SDK Keys» e copia la chiave (deve avere la Traffic API).\n" +
+            "3. Incollala qui sotto (tieni premuto nel campo › Incolla), poi «Verifica» e «Salva»."),
+    HERE("HERE (traffico e ricerca aziende)", "platform.here.com", "https://platform.here.com/portal/sign-up",
+        "1. Apri platform.here.com e crea l'account: scegli il piano «Limited», gratis e senza carta di credito.\n" +
+            "2. Vai in «Access Manager» › «Apps», crea un'app, poi «API Keys» › «Create API key» e copia la chiave.\n" +
+            "3. Incollala qui sotto (tieni premuto nel campo › Incolla), poi «Verifica» e «Salva»."),
     ORS("openrouteservice", "openrouteservice.org"),
     TRAFIKVERKET("Trafikverket (Svezia)", "api.trafikinfo.trafikverket.se"),
     MAPILLARY("Mapillary", "mapillary.com/developer"),
