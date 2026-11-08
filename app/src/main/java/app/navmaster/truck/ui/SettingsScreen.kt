@@ -278,14 +278,19 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     }
   }
   Card("Autovelox") {
-    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap confermati (elenco ufficiale, relazione, velocità o nome) e dal tuo elenco. " +
+    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap confermati (elenco ufficiale, censimento del ministero in Italia, relazione, " +
+        "velocità o nome), da quelli visti dagli altri autisti e dal tuo elenco. " +
         (if (s.enforcementEverywhere) "In tutti i Paesi (scelta in Traffico e segnalazioni)." else "In Germania e Svizzera non compare, in Francia solo «zona di controllo»."),
         s.speedCameras) { v -> set { it.copy(speedCameras = v) } }
     if (s.speedCameras) {
-      ToggleRow("Anche gli autovelox non confermati", "Punti di OpenStreetMap senza velocità, nome né direzione su autostrade e superstrade: " +
-          "spesso sono vecchi errori, colonnine SOS o portali. Spento: non vengono annunciati.", s.speedCamerasUnverified) { v ->
+      ToggleRow("Anche gli autovelox non confermati", "Punti di OpenStreetMap senza velocità, nome né direzione su autostrade e superstrade " +
+          "(spesso vecchi errori, colonnine SOS o portali) e, in Italia, quelli dei comuni che non hanno nulla nel censimento del ministero " +
+          "o che lo segna spento. Spento: non vengono annunciati, salvo se altri autisti li hanno visti.", s.speedCamerasUnverified) { v ->
         set { it.copy(speedCamerasUnverified = v) }
       }
+      ToggleRow("Chiedi «c'era?» dopo un autovelox", "Una domanda con un tocco (o a voce) dopo l'autovelox, al massimo ogni 10 minuti. " +
+          "La risposta va agli altri autisti NavMaster senza il tuo nome: un autovelox che due autisti non hanno visto non viene più annunciato.",
+          s.cameraQuestions) { v -> set { it.copy(cameraQuestions = v) } }
       CameraListRow(s, set)
     }
   }

@@ -1,0 +1,36 @@
+# The drivers' answers about the fixed speed cameras ("c'era?" after a camera): ntfy keeps them
+# for 12 hours, this job gathers them every 4 hours into voti.json on the release
+# "voti-autovelox", which the tablets download twice a day (live/CameraVotes.kt).
+name: Voti autovelox
+
+on:
+  schedule:
+    - cron: "17 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: voti-autovelox
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/votes
+      - name: Raccolta delle risposte
+        run: |
+          gh release view voti-autovelox >/dev/null 2>&1 || gh release create voti-autovelox --latest=false \
+            --title "Voti autovelox" \
+            --notes "Risposte degli autisti NavMaster sugli autovelox fissi (c'era / non c'era), raccolte da ntfy ogni 4 ore. Nessun nome: il punto, la risposta e una sigla casuale del tablet."
+          gh release download voti-autovelox -p voti.json -O old.json 2>/dev/null || echo '{"votes":[]}' > old.json
+          python3 tools/votes/collect_votes.py old.json voti.json
+          gh release upload voti-autovelox voti.json --clobber

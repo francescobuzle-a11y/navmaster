@@ -6,6 +6,7 @@ import app.navmaster.truck.AppGraph
 import app.navmaster.truck.core.Geo
 import app.navmaster.truck.data.RouteMatcher
 import app.navmaster.truck.limits.RouteLimit
+import app.navmaster.truck.live.CameraVotes
 import app.navmaster.truck.live.GeoBox
 import app.navmaster.truck.live.LiveEvent
 import app.navmaster.truck.live.LiveKind
@@ -174,6 +175,8 @@ data class NavExtras(
     val liveAsk: RouteLiveEvent? = null,
     /** The tablet listens for the spoken answer to [liveAsk] ("sì" / "no"). */
     val liveListening: Boolean = false,
+    /** A fixed speed camera just passed: was it there? (CameraVotes) */
+    val cameraAsk: RouteLimit? = null,
     /** A report made with one touch (long press on ⚠), sent in a few seconds unless undone. */
     val pendingReport: LiveKind? = null,
     /** Where the live information comes from and how fresh it is ("TomTom, segnalazioni · 1 min fa"). */
@@ -1256,6 +1259,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private fun refreshLive() {
     val s = AppGraph.settings.settings.value
     val a = _nav.value.analysis ?: return
+    // the other drivers' answers about the speed cameras (every 30 minutes, the gathered file twice a day)
+    if (s.speedCameras && (s.cameraQuestions || s.liveReports)) runCatching { CameraVotes.refreshIfDue(s.reportsServer) }
     if (!s.liveReports && !s.liveTraffic) {
       _nav.update { it.copy(live = emptyList(), liveInfo = null) }
       return
@@ -1433,6 +1438,48 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   }
 
   fun dismissLiveAsk() = _nav.update { it.copy(liveAsk = null) }
+
+  private var lastCameraAskAt = 0L
+
+  /**
+   * Answer to "c'era?" on a speed camera just passed: kept and shared with the other tablets (not
+   * in a simulation: the vehicle was not there).
+   */
+  fun voteCamera(cam: RouteLimit, yes: Boolean) {
+    VoiceAnswer.stop()
+    _nav.update { it.copy(cameraAsk = null, liveListening = false) }
+    if (_simulating.value) {
+      Log.i(TAG, "camera answer ${if (yes) "yes" else "no"} in a simulation: not kept")
+      return
+    }
+    val s = AppGraph.settings.settings.value
+    val device = deviceTag()
+    viewModelScope.launch(Dispatchers.IO) {
+      CameraVotes.record(cam.lat, cam.lon, yes, device, s.reportsServer, share = s.liveReports)
+    }
+  }
+
+  /** "C'era?" said aloud after a camera, then the tablet listens for "sì" or "no" (as for the reports). */
+  private fun askCameraByVoice(cam: RouteLimit) {
+    val s = AppGraph.settings.settings.value
+    if (!s.voiceAnswers || !s.voiceWarnings || AppGraph.ferrostar.spokenInstructionObserver?.isMuted == true) return
+    if (!VoiceAnswer.allowed(AppGraph.app)) return
+    viewModelScope.launch {
+      say("Hai appena passato un autovelox: c'era? Rispondi sì o no.")
+      var waited = 0
+      delay(400)
+      while (voice.busy && waited < 8_000) { delay(200); waited += 200 }
+      if (_nav.value.cameraAsk !== cam) return@launch
+      _nav.update { it.copy(liveListening = true) }
+      VoiceAnswer.listen(AppGraph.app) { answer ->
+        _nav.update { it.copy(liveListening = false) }
+        if (answer != null && _nav.value.cameraAsk === cam) {
+          voteCamera(cam, answer)
+          say(if (answer) "Grazie, confermato." else "Grazie, lo segnalo.")
+        }
+      }
+    }
+  }
 
   /**
    * "C'è ancora?" said aloud, then the tablet listens for "sì" or "no" (VoiceAnswer): the driver
@@ -1790,6 +1837,28 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         viewModelScope.launch {
           delay(20_000)
           _nav.update { if (it.liveAsk?.e?.id == passed.e.id) it.copy(liveAsk = null, liveListening = false) else it }
+        }
+      }
+    }
+    // a fixed speed camera just passed: was it there? (one question at a time, at most one every 10
+    // minutes, never twice in 60 days for the same camera; not where cameras may not be announced)
+    if (extras.liveAsk == null && extras.cameraAsk == null && extras.prompt == null && settings.speedCameras && settings.cameraQuestions &&
+        System.currentTimeMillis() - lastCameraAskAt > 10 * 60_000L) {
+      val cam = extras.limits.firstOrNull { l ->
+        l.kind == "speed_camera" && l.cameraWhat == null && traveled - l.alongM in 60.0..400.0 && "cam:${l.alongM.toLong()}" !in asked
+      }
+      if (cam != null) {
+        asked += "cam:${cam.alongM.toLong()}"
+        val country = a?.edgeAt(cam.alongM)?.country
+        val allowed = settings.enforcementEverywhere || country?.uppercase() !in LiveRules.ENFORCEMENT_BANNED
+        if (allowed && !CameraVotes.answeredRecently(cam.lat, cam.lon, deviceTag())) {
+          lastCameraAskAt = System.currentTimeMillis()
+          _nav.update { it.copy(cameraAsk = cam) }
+          askCameraByVoice(cam)
+          viewModelScope.launch {
+            delay(20_000)
+            _nav.update { if (it.cameraAsk === cam) it.copy(cameraAsk = null, liveListening = false) else it }
+          }
         }
       }
     }

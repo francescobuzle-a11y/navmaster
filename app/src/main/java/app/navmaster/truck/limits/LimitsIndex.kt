@@ -4,6 +4,7 @@ import android.util.Log
 import app.navmaster.truck.data.RegionDbs
 import app.navmaster.truck.data.RegionManager
 import app.navmaster.truck.data.RouteMatcher
+import app.navmaster.truck.live.CameraVotes
 import app.navmaster.truck.routing.RouteAnalysis
 import app.navmaster.truck.routing.RoutePointAt
 import app.navmaster.truck.vehicle.AdrTunnel
@@ -36,6 +37,9 @@ data class RouteLimit(
     val ver: String? = null,
     /** Where it ends along the route: a section under average speed control (Tutor); else [alongM]. */
     val endM: Double = alongM,
+    /** Drivers whose latest answer about this camera is "it was there" / "it was not" (CameraVotes). */
+    val driversYes: Int = 0,
+    val driversNo: Int = 0,
 ) {
   /** A section under average speed control (Tutor, trajectcontrole, ETVM sections). */
   val isSection: Boolean
@@ -49,14 +53,26 @@ data class RouteLimit(
     get() = name?.takeIf { kind == "speed_camera" && (it.startsWith("semaforo") || it.startsWith("passaggio") || it.startsWith("controllo")) }
         ?.substringBefore(" (")
 
-  /** What the driver is told about the data, or null when there is nothing to say. */
+  /**
+   * What the driver is told about the data, or null when there is nothing to say: how sure the
+   * map is (for a camera put aside by Italy's census, why) and what the drivers answered.
+   */
   val check: String?
-    get() = when (ver) {
-      "dubbio" -> "dato da verificare"
-      "doppio" -> if (kind == "speed_camera") "confermato (elenco ufficiale o relazione)" else "confermato da due fonti"
-      "ufficiale" -> "elenco ufficiale"
-      CameraImport.VER -> "dal tuo elenco"
-      else -> null
+    get() {
+      val camera = kind == "speed_camera" || kind == "average_speed"
+      val base = when (ver) {
+        "dubbio" -> if (camera && name?.contains("censimento") == true) name else "dato da verificare"
+        "doppio" -> if (camera) "confermato (elenco ufficiale o relazione)" else "confermato da due fonti"
+        "ufficiale" -> "elenco ufficiale"
+        CameraImport.VER -> "dal tuo elenco"
+        else -> null
+      }
+      val drivers = when {
+        driversYes > 0 && driversYes >= driversNo -> "visto da " + (if (driversYes == 1) "un autista" else "$driversYes autisti")
+        driversNo > 0 -> "non visto da " + (if (driversNo == 1) "un autista" else "$driversNo autisti")
+        else -> null
+      }
+      return listOfNotNull(base, drivers).joinToString(" · ").ifEmpty { null }
     }
 
   /** Short text for the banner: "Altezza max", "Divieto mezzi pesanti" ... */
@@ -100,7 +116,9 @@ data class RouteLimit(
  * about every signed limit in advance, and what warns of a limit on a motorway (told, never a
  * block: the route stays on the motorway).
  */
-class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
+class LimitsIndex(regions: RegionManager) {
+  /** limiti.sqlite of every country on the tablet: the checked speed cameras and the Tutor sections. */
+  private val dbs = RegionDbs(regions) { it.limits }
 
   /**
    * The limits signed on the roads of the route [a], in route order, for this vehicle: only what
@@ -150,18 +168,11 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
         out += RouteLimit(r.kind, r.value, r.text, null, r.condition, e.startM, p.lat, p.lng, blocks(r.kind, r.value, vehicle, weightT), osm, "osm")
       }
     }
-    // speed cameras, red-light cameras and average-speed sections (Tutor), from the graph
-    var sectionStart: RoutePointAt? = null
-    for (p in a.points) {
-      when (p.type) {
-        "speed_camera" -> out += RouteLimit("speed_camera", p.valueKmh.toDouble(), null, null, null, p.alongM, p.lat, p.lon, false, null, "osm")
-        "traffic_signals_camera" -> out += RouteLimit("speed_camera", 0.0, null, "semaforo rosso", null, p.alongM, p.lat, p.lon, false, null, "osm")
-        "average_speed_start" -> sectionStart = p
-        "average_speed_end" -> sectionStart?.let { s ->
-          if (p.alongM > s.alongM) out += RouteLimit("average_speed", (if (s.valueKmh > 0) s.valueKmh else p.valueKmh).toDouble(), null, null, null, s.alongM, s.lat, s.lon, false, null, "osm", p.alongM)
-          sectionStart = null
-        }
-      }
+    // speed cameras, red-light cameras and average-speed sections (Tutor): the graph's, checked
+    // against the countries' data and the drivers' answers
+    out += runCatching { cameras(m, a) }.getOrElse { e ->
+      Log.w("NavMasterLimits", "checked cameras: $e")
+      graphCameras(a)
     }
     Log.i("NavMasterLimits", "limits on the route: ${out.size} (${out.count { it.blocking }} blocking, ${out.count { it.kind == "speed_camera" || it.kind == "average_speed" }} cameras)")
     return out.sortedBy { it.alongM }
@@ -193,6 +204,170 @@ class LimitsIndex(@Suppress("unused") private val regions: RegionManager) {
       "access", "vehicle", "motor_vehicle" -> if (valueText == "no") TimedRestriction("access", 0.0, valueText, cond) else null
       "hazmat" -> if (valueText == "no" && v.hazmat) TimedRestriction("hazmat", 0.0, valueText, cond) else null
       else -> null
+    }
+  }
+
+  /** The speed cameras and the Tutor sections of the graph (OpenStreetMap, no check). */
+  private fun graphCameras(a: RouteAnalysis): List<RouteLimit> {
+    val out = mutableListOf<RouteLimit>()
+    var sectionStart: RoutePointAt? = null
+    for (p in a.points) {
+      when (p.type) {
+        "speed_camera" -> out += RouteLimit("speed_camera", p.valueKmh.toDouble(), null, null, null, p.alongM, p.lat, p.lon, false, null, "osm")
+        "traffic_signals_camera" -> out += RouteLimit("speed_camera", 0.0, null, "semaforo rosso", null, p.alongM, p.lat, p.lon, false, null, "osm")
+        "average_speed_start" -> sectionStart = p
+        "average_speed_end" -> sectionStart?.let { s ->
+          if (p.alongM > s.alongM) out += RouteLimit("average_speed", (if (s.valueKmh > 0) s.valueKmh else p.valueKmh).toDouble(), null, null, null, s.alongM, s.lat, s.lon, false, null, "osm", p.alongM)
+          sectionStart = null
+        }
+      }
+    }
+    return out
+  }
+
+  /**
+   * The speed cameras and Tutor sections to announce on the route: the graph's ones, the ones of
+   * the countries' data (limiti.sqlite: each with its check, the official lists, Italy's census,
+   * the Tutor placed from it) and the owner's imported list. The same camera from two sources is
+   * one (within 40 m along the route: the imported list first, then the data, then the graph).
+   * Left out: the cameras put aside ("dubbio") unless the driver wants them, or unless drivers
+   * saw them; the ones the drivers say are gone (CameraVotes); with "only my list", every other one.
+   */
+  private fun cameras(m: RouteMatcher, a: RouteAnalysis): List<RouteLimit> {
+    val settings = app.navmaster.truck.AppGraph.settings.settings.value
+    val graph = graphCameras(a)
+    val imported = if (settings.speedCamerasImported) CameraImport.db() else null
+    val fromData = ArrayList<RouteLimit>()
+    var otherSide = 0
+    val rows: (android.database.sqlite.SQLiteDatabase, String) -> List<RouteLimit> = { db, inList ->
+      val found = mutableListOf<RouteLimit>()
+      db.rawQuery("SELECT DISTINCT l.id, l.value, l.raw, l.name, l.pts, l.osm, " + (if (hasCheck(db)) "l.ver" else "NULL") +
+          " FROM cells c JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList) AND l.kind = 'speed_camera'", null).use { c ->
+        while (c.moveToNext()) {
+          val pts = RouteMatcher.parsePts(c.getString(4))
+          // a camera stands beside the road
+          val lo = m.span(pts, 25.0)?.first ?: continue
+          val p = pts.minByOrNull { pt -> m.nearest(pt)?.first ?: 1e9 } ?: continue
+          // on a motorway or trunk road the other carriageway runs 10-25 m to the left (right where
+          // traffic keeps left): a camera over there is not on this road
+          val e = a.edgeAt(lo)
+          if (e != null && (e.roadClass == "motorway" || e.roadClass == "trunk")) {
+            val right = sideOf(m, lo, p)
+            val away = if (e.country?.uppercase() in LHT) right else -right
+            if (away > 7.0) {
+              otherSide++
+              continue
+            }
+          }
+          found += RouteLimit("speed_camera", c.getDouble(1), c.getString(2), c.getString(3), null, lo, p.lat, p.lng, false,
+              c.getString(5)?.ifBlank { null }, c.getString(6))
+        }
+      }
+      found
+    }
+    if (imported != null) {
+      for (chunk in m.cells.chunked(400)) fromData += runCatching { rows(imported, chunk.joinToString(",")) }
+          .onFailure { Log.w("NavMasterLimits", "imported cameras: $it") }.getOrDefault(emptyList())
+    }
+    fromData += dbs.perCells(m.cells, rows)
+    // the same camera from more sources: the first of the list wins (two cameras facing opposite
+    // ways at the same place are two: the screen keeps the one that faces the vehicle)
+    val merged = ArrayList<RouteLimit>()
+    for (l in fromData + graph.filter { it.kind == "speed_camera" }) {
+      if (merged.any { it.kind == l.kind && abs(it.alongM - l.alongM) < 40 && (it.raw == null || l.raw == null || it.raw == l.raw) }) continue
+      merged += l
+    }
+    val device = settings.deviceTag
+    val out = mutableListOf<RouteLimit>()
+    var putAside = 0
+    var gone = 0
+    for (l0 in merged.sortedBy { it.alongM }) {
+      val st = CameraVotes.status(l0.lat, l0.lon, device)
+      val l = l0.copy(driversYes = st.yes, driversNo = st.no)
+      if (st.hidden) {
+        gone++
+        continue
+      }
+      if (imported != null && settings.speedCamerasImportedOnly && l.ver != CameraImport.VER) continue
+      if (l.ver == "dubbio" && !settings.speedCamerasUnverified && !st.confirmed) {
+        putAside++
+        continue
+      }
+      out += l
+    }
+    // the Tutor sections: the graph's, and the data's ones the graph has not (Italy's census places
+    // the motorway Tutor between their junctions); one that both have is confirmed by the data
+    val dataSections = runCatching { sections(m) }.getOrElse { Log.w("NavMasterLimits", "sections: $it"); emptyList() }
+    val graphSections = graph.filter { it.isSection }
+    val sections = ArrayList<RouteLimit>()
+    for (g in graphSections) {
+      val same = dataSections.firstOrNull { d -> abs(d.alongM - g.alongM) < 2500 && abs(d.endM - g.endM) < 2500 }
+      sections += if (same != null && same.ver != null && same.ver != "osm") g.copy(ver = same.ver) else g
+    }
+    for (d in dataSections) {
+      if (sections.any { s -> d.alongM < s.endM && d.endM > s.alongM }) continue
+      if (d.ver == "dubbio" && !settings.speedCamerasUnverified) continue
+      sections += d
+    }
+    Log.i("NavMasterLimits", "cameras: ${graph.count { it.kind == "speed_camera" }} from the graph, ${fromData.size} from the data" +
+        (if (imported != null) " and the imported list" else "") + ", ${out.size} announced, $putAside put aside (unconfirmed), " +
+        "$gone gone for the drivers, $otherSide on the other carriageway; Tutor ${graphSections.size} from the graph, " +
+        "${dataSections.size} from the data, ${sections.size} announced")
+    return out + sections
+  }
+
+  /**
+   * The sections under average speed control the route drives through from their start to their
+   * end, in their direction (table «sections» of limiti.sqlite; not in older packages).
+   */
+  private fun sections(m: RouteMatcher): List<RouteLimit> {
+    val rows = dbs.perCells(m.cells) { db, inList ->
+      val out = mutableListOf<RouteLimit>()
+      try {
+        db.rawQuery("SELECT DISTINCT s.id, s.osm, s.value, s.hgv, s.name, s.pts, s.ver FROM section_cells c " +
+            "JOIN sections s ON s.id = c.sid WHERE c.cell IN ($inList)", null).use { c ->
+          while (c.moveToNext()) {
+            val pts = RouteMatcher.parsePts(c.getString(5))
+            if (pts.size < 2) continue
+            val (da, from) = m.nearest(pts.first()) ?: continue
+            val (db2, to) = m.nearest(pts.last()) ?: continue
+            // both ends on the route, in this order (the other carriageway has them the other way)
+            if (da > 40 || db2 > 40 || to - from < 300) continue
+            out += RouteLimit("average_speed", c.getDouble(2), if (c.isNull(3)) null else c.getDouble(3).toInt().toString(),
+                c.getString(4), null, from, pts.first().lat, pts.first().lng, false, c.getString(1)?.ifBlank { null }, c.getString(6), endM = to)
+          }
+        }
+      } catch (e: android.database.sqlite.SQLiteException) {
+        // a package made before the sections
+      }
+      out
+    }
+    return rows.distinctBy { (it.alongM / 50).toLong() }
+  }
+
+  /** Metres of [p] to the right of the route at [alongM] (negative: to the left). */
+  private fun sideOf(m: RouteMatcher, alongM: Double, p: GeographicCoordinate): Double {
+    val a = app.navmaster.truck.core.Geo.pointAt(m.route, m.cum, (alongM - 5).coerceAtLeast(0.0))
+    val b = app.navmaster.truck.core.Geo.pointAt(m.route, m.cum, (alongM + 15).coerceAtMost(m.cum.last()))
+    val k = kotlin.math.cos(Math.toRadians(a.lat))
+    val rx = (b.lng - a.lng) * k
+    val ry = b.lat - a.lat
+    val len = kotlin.math.hypot(rx, ry)
+    if (len < 1e-9) return 0.0
+    val vx = (p.lng - a.lng) * k
+    val vy = p.lat - a.lat
+    // the cross product: positive = p to the left of the direction of travel
+    val cross = (rx * vy - ry * vx) / len
+    return -cross * 111_195.0
+  }
+
+  // the packages made before the checks have no "ver" column
+  private val checkColumn = java.util.WeakHashMap<android.database.sqlite.SQLiteDatabase, Boolean>()
+
+  private fun hasCheck(db: android.database.sqlite.SQLiteDatabase): Boolean = synchronized(checkColumn) {
+    checkColumn.getOrPut(db) {
+      runCatching { db.rawQuery("PRAGMA table_info(limits)", null).use { c -> var f = false; while (c.moveToNext()) if (c.getString(1) == "ver") f = true; f } }
+          .getOrDefault(false)
     }
   }
 

@@ -90,6 +90,28 @@ fun LiveAskCard(ev: RouteLiveEvent, country: String?, onAnswer: (Boolean) -> Uni
   }
 }
 
+/** A fixed speed camera just passed: was it there? Same look as the question on the reports. */
+@Composable
+fun CameraAskCard(cam: app.navmaster.truck.limits.RouteLimit, onAnswer: (Boolean) -> Unit, modifier: Modifier = Modifier, listening: Boolean = false) {
+  Column(
+      modifier.shadow(10.dp, RoundedCornerShape(22.dp)).clip(RoundedCornerShape(22.dp)).background(Nm.PanelSolid)
+          .border(1.dp, Color(0xFF1E6FD9), RoundedCornerShape(22.dp)).padding(14.dp).widthIn(max = 380.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text("📷", fontSize = 26.sp)
+      Spacer(Modifier.width(10.dp))
+      Text("Autovelox appena passato: c'era?", color = Nm.Text, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+    }
+    cam.check?.let { Text(it, color = Nm.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp), maxLines = 1) }
+    if (listening) Text("🎤 Rispondi a voce: «sì» o «no»", color = Nm.Accent, fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
+    Spacer(Modifier.height(10.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      BigButton("Sì, c'era", Modifier.weight(1f)) { onAnswer(true) }
+      BigButton("Non c'era", Modifier.weight(1f), style = BtnStyle.SECONDARY) { onAnswer(false) }
+    }
+  }
+}
+
 /**
  * What the driver can report, in big tiles (one touch, with gloves). The police checks are not
  * offered where announcing them is forbidden.

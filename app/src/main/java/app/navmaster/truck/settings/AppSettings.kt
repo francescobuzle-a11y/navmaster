@@ -193,6 +193,8 @@ data class Settings(
     val speedCamerasImported: Boolean = true,
     /** With an imported list, the OpenStreetMap cameras are left out (the list is the only source). */
     val speedCamerasImportedOnly: Boolean = false,
+    /** After a fixed speed camera the tablet asks "c'era?" and shares the answer (CameraVotes). */
+    val cameraQuestions: Boolean = true,
     val nightMode: NightMode = NightMode.AUTO,
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,

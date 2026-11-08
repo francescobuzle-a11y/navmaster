@@ -543,7 +543,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       NavigatingOverlay(vm, ui, garage.active, nextLimit, nextLimitDist, nextCrit, booth, traveled, nav.pois, landscape, mapState,
           settings, nav.analysis, night, lastMapTap, nextCamera, cameraZoneOnly, here?.iso, onCrit = { openCrit = it }, onPoi = { openPoi = it },
           section = section?.let { Triple(it, sectionLimit, sectionAvg) },
-          live = nav.live, liveAsk = nav.liveAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
+          live = nav.live, liveAsk = nav.liveAsk, cameraAsk = nav.cameraAsk, onSettings = { sheet = Sheet.SETTINGS }, onReport = { reportOpen = true },
           onQuickReport = { vm.quickReport(nav.analysis?.edgeAt(traveled)?.country ?: here?.iso) },
           pendingReport = nav.pendingReport, onUndoReport = vm::undoReport, liveListening = nav.liveListening,
           stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true },
@@ -809,6 +809,7 @@ private fun NavigatingOverlay(
     onPoi: (RoutePoi) -> Unit,
     live: List<app.navmaster.truck.live.RouteLiveEvent> = emptyList(),
     liveAsk: app.navmaster.truck.live.RouteLiveEvent? = null,
+    cameraAsk: RouteLimit? = null,
     onSettings: () -> Unit = {},
     onReport: () -> Unit = {},
     onQuickReport: () -> Unit = {},
@@ -1104,6 +1105,9 @@ private fun NavigatingOverlay(
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (simulating) 84.dp else 12.dp))
       } else if (liveAsk != null) {
         LiveAskCard(liveAsk, analysis?.edgeAt(liveAsk.startM)?.country, onAnswer = { yes -> vm.voteLive(liveAsk, yes) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (simulating) 84.dp else 12.dp), listening = liveListening)
+      } else if (cameraAsk != null) {
+        CameraAskCard(cameraAsk, onAnswer = { yes -> vm.voteCamera(cameraAsk, yes) },
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (simulating) 84.dp else 12.dp), listening = liveListening)
       }
       if (simulating) {
