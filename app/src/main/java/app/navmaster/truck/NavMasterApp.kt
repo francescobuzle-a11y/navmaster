@@ -72,15 +72,18 @@ object AppGraph {
     Thread {
       runCatching {
         val v = profiles.garage.value.active
-        val countries = regions.installed.value.size.coerceAtLeast(1)
-        var index = -1; var last: String? = null; var shown = -1
-        engine.warmUp(if (v.isHgv || v.isBus) "driving-hgv" else "driving-car") { r, f ->
-          val next = r.id != last
-          if (next) { last = r.id; index++ }
+        // the budget from the memory free now: a part of it, so the map and the other apps keep theirs
+        val mem = android.app.ActivityManager.MemoryInfo().also { (app.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it) }
+        val budget = (mem.availMem * 6 / 10).coerceIn(256L shl 20, 1536L shl 20)
+        // the country where the vehicle is (last known position), warmed whole first
+        val here = runCatching { kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeoutOrNull(1500) { smartLocation.lastLocation() } } }.getOrNull()
+        val first = here?.let { regions.regionAt(it.latitude, it.longitude)?.id }
+        android.util.Log.i("NavMasterRoute", "riscaldamento: ${budget shr 20} MB su ${mem.availMem shr 20} MB liberi, prima ${first ?: "nessun Paese noto"}")
+        var shown = -1; var label: String? = null
+        engine.warmUp(if (v.isHgv || v.isBus) "driving-hgv" else "driving-car", budget, first) { r, fraction ->
           // one update per percent and per country (the warm-up reports every megabyte: hundreds of frames for nothing)
-          val fraction = ((index + f) / countries).coerceIn(0f, 1f)
           val pct = (fraction * 100).toInt()
-          if (next || pct != shown) { shown = pct; startup.value = Startup("Preparo ${r.label}…", fraction, false) }
+          if (r.label != label || pct != shown) { shown = pct; label = r.label; startup.value = Startup("Preparo ${r.label}…", fraction.coerceIn(0f, 1f), false) }
         }
       }.onFailure { android.util.Log.w("NavMasterRoute", "riscaldamento: $it") }
       startup.value = Startup("Pronto", 1f, true)

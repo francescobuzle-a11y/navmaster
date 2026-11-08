@@ -187,28 +187,42 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
    */
   /**
    * Warms the graphs of the downloaded countries for [profile] (`driving-hgv` or `driving-car`):
-   * the files a core search reads at random (levels, landmarks, shortcuts, nodes) go into the
-   * system's file cache, up to [budget] bytes a country. The first route after the start read them
-   * cold and took 28 s to Komjatice against 16 s warm. In the background, at low priority; the
-   * graphs stay open (see [graphOf]).
+   * the files a core search reads at random go into the system's file cache, within one [budget]
+   * for all the countries. First the core files of every country (levels, landmarks, shortcuts:
+   * what every search reads), then the graph files (nodes, turn restrictions, edges) starting from
+   * the country [first] (where the vehicle is): cold, the edges of Italy alone cost 5 s on the
+   * first route to Komjatice (14.6 s against 6.6 s warm). [progress] gets the country and the
+   * fraction of the whole warm-up. In the background; the graphs stay open (see [graphOf]).
    */
-  fun warmUp(profile: String, budget: Long = 512L shl 20, progress: ((region: InstalledRegion, fraction: Float) -> Unit)? = null) {
+  fun warmUp(profile: String, budget: Long, first: String? = null, progress: ((region: InstalledRegion, fraction: Float) -> Unit)? = null) {
     // first the graphs still on the shared storage into the internal one (see internalRoot)
     for (r in regions.installed.value) migrate(r.dir) { reset() }
-    for (r in regions.installed.value.filter { installed(it.dir) }) {
-      progress?.invoke(r, 0f)
+    val list = regions.installed.value.filter { installed(it.dir) }.sortedBy { if (it.id == first) 0 else 1 }
+    if (list.isEmpty()) return
+    var left = budget
+    val steps = list.size * 2
+    var step = 0
+    for (part in listOf(RoutingGraph.WARM_CORE, RoutingGraph.WARM_GRAPH)) for (r in list) {
+      val base = step++.toFloat() / steps
+      progress?.invoke(r, base)
+      if (left <= 0) continue
       val o = graphOf(r) ?: continue
       try {
+        var used = 0L
         val line = lock.read {
-          if (open[r.id] === o) o.graph.warm(profile, budget = budget) { done, total -> progress?.invoke(r, if (total > 0) done.toFloat() / total else 1f) } else null
+          if (open[r.id] === o) o.graph.warm(profile, budget = left, parts = part) { done, total ->
+            used = done
+            progress?.invoke(r, base + (if (total > 0) done.toFloat() / total else 1f) / steps)
+          } else null
         } ?: continue
+        left -= used
         o.used = SystemClock.elapsedRealtime()
         Log.i(TAG, "${r.id}: $line")
       } catch (e: Throwable) {
         Log.w(TAG, "${r.id}: riscaldamento fallito: $e")
       }
-      progress?.invoke(r, 1f)
     }
+    list.lastOrNull()?.let { progress?.invoke(it, 1f) }
   }
 
   fun prepareBorders() {
