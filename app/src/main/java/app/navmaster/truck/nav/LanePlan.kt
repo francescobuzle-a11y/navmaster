@@ -20,10 +20,13 @@ object LanePlan {
 
   /**
    * A lane to draw: its arrow (the one that goes the route's way when there is one), every arrow
-   * painted on it ([arrows]), whether to take it, whether it is the lane of a merge, and whether
-   * arrows are painted on it at all (false: lanes known from their number only, drawn without arrows).
+   * painted on it ([arrows]), whether to take it, whether it is the lane of a merge, whether
+   * arrows are painted on it at all (false: lanes known from their number only, drawn without
+   * arrows), and whether it is a lane that opens just before the junction for the branch (the
+   * deceleration lane of an exit: not one of the lanes of the road further back).
    */
-  data class Lane(val arrow: String, val take: Boolean, val merge: Boolean = false, val arrows: List<String> = listOf(arrow), val painted: Boolean = true)
+  data class Lane(val arrow: String, val take: Boolean, val merge: Boolean = false, val arrows: List<String> = listOf(arrow), val painted: Boolean = true,
+                  val added: Boolean = false)
 
   enum class Kind { EXIT, FORK, MERGE, JUNCTION }
 
@@ -139,8 +142,10 @@ object LanePlan {
    * or the lanes to take are not the obvious ones (the exit side). Null when it goes without saying.
    */
   fun say(lanes: List<Lane>, kind: Kind): String? {
-    val n = lanes.count { !it.merge }
-    val idx = lanes.indices.filter { lanes[it].take && !lanes[it].merge }
+    // the road's own lanes: a lane opening for the exit is where the exit is anyway, nothing to add for it
+    val own = lanes.filter { !it.merge && !it.added }
+    val n = own.size
+    val idx = own.indices.filter { own[it].take }
     if (idx.isEmpty() || idx.size == n) return null
     val k = idx.size
     val contiguous = idx.last() - idx.first() + 1 == k

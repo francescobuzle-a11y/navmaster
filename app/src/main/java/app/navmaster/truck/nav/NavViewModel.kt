@@ -1100,6 +1100,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // the places along the route from their databases off the main thread (it froze the tap on "Vai")
     _nav.value = NavExtras(v.analysis, v.limits, v.criticalities, emptyList(), v.analysis.length)
     refreshPois()
+    // the exits and forks of the route the map lacks signs or lanes for, kept to be completed on OpenStreetMap
+    viewModelScope.launch(Dispatchers.Default) {
+      MapGaps.record(v.analysis, v.analysis.countries.firstOrNull()?.first in setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE"))
+    }
     if (navigationUiState.value.isNavigating()) core.replaceRoute(v.route) else core.startNavigation(v.route)
     startLive()
   }

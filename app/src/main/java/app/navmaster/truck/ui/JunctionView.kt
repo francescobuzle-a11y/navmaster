@@ -70,11 +70,13 @@ import uniffi.ferrostar.LaneInfo
 /**
  * The junction view, a fixed drawing as on the dedicated navigators: the road ahead in a set
  * perspective with its lanes (the same lanes as in the lane strip and the voice: nav.LaneModel),
- * the lanes to take lit with the arrows painted on them, the exit or the turn on its side, the
- * sign over the lanes (the map's direction signs when it has them, else a sign made from the road
- * taken: its number, its name, the turn), a bar with the distance. Nothing of the road's real
- * shape is drawn (that made the picture wrong wherever the map's lines were rough): only what the
- * driver has to choose. The vehicle's mark sits in its lane when the satellites know it.
+ * the lanes to take lit with the arrows painted on them, the sign over the lanes (the map's
+ * direction signs when it has them, else a sign made from the road taken: its number, its name,
+ * the turn), a bar with the distance. Of the junction's real shape only what is sure is drawn:
+ * in town the roads at the angles they leave with (from the graph), the lit lanes turning into
+ * the road taken; at an exit or a fork the branch on its side, bending as the route's own line
+ * goes on (a tight curve, a loop, a ramp curving back), dividing again when the route has a second
+ * choice on it soon after. The vehicle's mark sits in its lane when the satellites know it.
  */
 data class JunctionScene(
     val junction: LaneModel.Junction,
@@ -90,6 +92,10 @@ data class JunctionScene(
     val tollEntry: Boolean = false,
     /** The number of the motorway entered at the booth ("A21"), when the graph has it. */
     val tollRef: String? = null,
+    /** A second choice of the route on the road taken soon after the junction: its side (−1 left, 1 right). */
+    val nextSide: Int? = null,
+    /** How far after the junction the second choice is, metres. */
+    val nextM: Double? = null,
 )
 
 /** What the junction view needs of the route: its line and its roads (from RouteAnalysis, or made up in the tests). */
@@ -200,15 +206,42 @@ fun junctionSceneOf(
   val hereLanes = a.edgeAt(traveled)?.lanes ?: 0
   val nJ = j.lanes.count { !it.merge }
   val laneHere = vehicleLane?.takeIf { nJ > 0 && (nJ == hereLanes || (nJ == hereLanes + 1 && j.side > 0)) }
-  val (tollEntry, tollRef) = synchronized(tollCache) {
-    tollCache.getOrPut("${System.identityHashCode(a)}:${Math.round(at / 25.0)}") { tollOf(a, at) }
+  val x = synchronized(extrasCache) {
+    extrasCache.getOrPut("${System.identityHashCode(a)}:${Math.round(at / 25.0)}") {
+      val (tollEntry, tollRef) = tollOf(a, at)
+      val next = nextChoiceOf(a, at, country in LEFT_TRAFFIC)
+      Extras(tollEntry, tollRef, next?.first, next?.second)
+    }
   }
-  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, laneHere, tollEntry, tollRef)
+  return JunctionScene(j, distanceM, range, JvRoute.of(a), traveled, at, country, laneHere, x.tollEntry, x.tollRef, x.nextSide, x.nextM)
 }
 
-/** The booth of the last junctions asked for (asked at every fix: the route's roads are not scanned each time). */
-private val tollCache = object : LinkedHashMap<String, Pair<Boolean, String?>>(8, 0.75f, true) {
-  override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Boolean, String?>>?) = size > 6
+/** What the scene needs of the route around the junction beyond its lanes. */
+private class Extras(val tollEntry: Boolean, val tollRef: String?, val nextSide: Int?, val nextM: Double?)
+
+/** The booth and the next choice of the last junctions asked for (asked at every fix: the route's roads are not scanned each time). */
+private val extrasCache = object : LinkedHashMap<String, Extras>(8, 0.75f, true) {
+  override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Extras>?) = size > 6
+}
+
+/** How far after a junction a second choice of the route is drawn on the branch. */
+private const val NEXT_CHOICE_M = 450.0
+
+/**
+ * The route's next choice on the road taken at [at]: an instruction of the route within 450 m
+ * whose junction the graph describes with a side to keep (a slip road dividing again). Its side
+ * and its distance after the junction, or null.
+ */
+private fun nextChoiceOf(a: RouteAnalysis, at: Double, lht: Boolean): Pair<Int, Double>? {
+  for ((m, type) in a.maneuvers) {
+    if (m <= at + 40) continue
+    if (m > at + NEXT_CHOICE_M) break
+    if (type.contains("ARRIVE") || type.contains("ROUNDABOUT") || type.contains("ROTARY")) return null
+    val j2 = LaneModel.at(a, m, lht) ?: continue
+    if (j2.side == 0 || j2.kind == LanePlan.Kind.JUNCTION) continue
+    return j2.side to (m - at)
+  }
+  return null
 }
 
 /** Whether the road taken at [at] leads to the entry booth of a motorway, and the motorway's number. */
@@ -257,6 +290,16 @@ internal class SignPanel(val l0: Int, val l1: Int, val refs: List<String>, val t
   val lines: List<String> get() = listOfNotNull(refs.joinToString("  ").takeIf { it.isNotBlank() }) + towns
 }
 
+/**
+ * The road taken's sign when the map puts it on a later piece of it (the slip road's way split a
+ * little after the junction): within 300 m, before the route's next choice.
+ */
+private fun laterSign(s: JunctionScene): EdgeSign? {
+  val j = s.junction
+  val until = j.atM + min(300.0, (s.nextM ?: 1e9) - 5)
+  return s.route.edges.firstOrNull { it.startM > j.atM - 5 && it.startM <= until && it.sign?.isEmpty == false }?.sign
+}
+
 /** The sign over the lanes, and whether its texts are the map's (OSM destination tags) or made from the road taken. */
 internal class Sign(val panels: List<SignPanel>, val fromMap: Boolean)
 
@@ -299,7 +342,7 @@ internal fun signOf(s: JunctionScene): Sign {
     }
   }
   if (panels.isEmpty()) {
-    val takenSign = j.sign?.takeIf { !it.isEmpty }
+    val takenSign = j.sign?.takeIf { !it.isEmpty } ?: laterSign(s)
     val otherSign = j.otherSign?.takeIf { !it.isEmpty }
     val others = (0 until nLanes).filter { it !in active }
     if (takenSign != null) {
@@ -362,36 +405,84 @@ internal const val HORIZON_FRAC = 0.34
 /** Depth of the far end of the road (1 = the bottom edge of the picture). */
 private const val Z_FAR = 30.0
 /** Depth where an exit or a fork leaves the road. */
-private const val Z_SPLIT = 2.3
-/** Depth of the middle of the crossing road of a junction in town. */
+internal const val Z_SPLIT = 2.3
+/** Depth where the branch divides again (the route's second choice on it). */
+internal const val Z_SPLIT2 = 4.4
+/** Depth of the middle of the junction in town. */
 private const val Z_CROSS = 3.4
-/** Half the depth the crossing road takes (its near and far edges). */
-private const val Z_CROSS_HALF = 0.55
 /** Depth of the sign's posts. */
 private const val Z_SIGN = 2.0
+/** Metres of ground per unit of depth (the bottom edge of the picture is about 12 m ahead). */
+internal const val M_PER_Z = 12.0
+/** The width of a lane, metres. */
+private const val LANE_M = 3.5
 
 /**
  * The fixed perspective of the picture: a point of the road is given by its depth z (1 at the
  * bottom edge of the picture, growing towards the horizon) and its place across u (−1 … 1 from the
- * left to the right edge of the road arriving, lane boundary b at −1 + 2b/n).
+ * left to the right edge of the road arriving, lane boundary b at −1 + 2b/n). The same in metres
+ * on the ground ([g]): a lane 3.5 m wide, 12 m per unit of depth.
  */
 internal class Persp(val w: Float, val h: Float, val n: Int) {
   val hz: Float = h * HORIZON_FRAC.toFloat()
   val cx: Float = w / 2
   /** Half the road's width at the bottom edge: wide, but a lane never wider than a third of the picture. */
   val hw0: Float = min(w * 0.46f, max(1, n) * w * 0.34f / 2)
+  /** Half the width of the road arriving, metres. */
+  val halfM: Double = max(1, n) * LANE_M / 2
   fun y(z: Double): Float = (hz + (h - hz) / z).toFloat()
   fun x(u: Double, z: Double): Float = (cx + u * hw0 / z).toFloat()
   /** The depth of a screen row (inverse of y). */
   fun zAt(yy: Float): Double = ((h - hz) / (yy - hz).coerceAtLeast(0.5f)).toDouble()
   fun boundary(b: Int): Double = -1.0 + 2.0 * b / max(1, n)
+  /** The screen point of a point of the ground (metres; never closer than 2 m ahead). */
+  fun g(q: GP): Offset {
+    val z = max(q.d, 2.0) / M_PER_Z
+    return Offset(x(q.x / halfM, z), y(z))
+  }
+}
+
+/** A point of the ground in metres: [x] to the right of the middle of the road arriving, [d] ahead. */
+internal data class GP(val x: Double, val d: Double) {
+  operator fun plus(o: GP) = GP(x + o.x, d + o.d)
+  operator fun minus(o: GP) = GP(x - o.x, d - o.d)
+  operator fun times(k: Double) = GP(x * k, d * k)
+  fun len(): Double = sqrt(x * x + d * d)
+}
+
+/** The direction of a road leaving the junction at [deg] degrees from straight on (right positive). */
+internal fun dirOf(deg: Double): GP = Math.toRadians(deg).let { GP(sin(it), cos(it)) }
+
+/** The side to the right of a road going towards [deg]. */
+internal fun rightOf(deg: Double): GP = Math.toRadians(deg).let { GP(cos(it), -sin(it)) }
+
+/** How the road taken goes on after an exit or a fork, from the route's own line. */
+internal enum class Curve { STRAIGHT, TIGHT, LOOP, BACK }
+
+/**
+ * How much the route turns over [lengthM] metres after the junction at [atM], degrees (right
+ * positive; past 180 for a loop): every turn of its line added up, from the direction it arrives with.
+ */
+internal fun routeTurn(route: JvRoute, atM: Double, lengthM: Double = NEXT_CHOICE_M): Double {
+  if (route.length <= 0 || atM <= 0) return 0.0
+  var prev = app.navmaster.truck.core.Geo.bearing(route.pointAt((atM - 30).coerceAtLeast(0.0)), route.pointAt(atM))
+  var sum = 0.0
+  var m = atM
+  val end = min(route.length, atM + lengthM)
+  while (m + 15 <= end) {
+    val hd = app.navmaster.truck.core.Geo.bearing(route.pointAt(m), route.pointAt(m + 15))
+    sum += app.navmaster.truck.core.Geo.angleDiff(prev, hd)
+    prev = hd
+    m += 15
+  }
+  return sum
 }
 
 /** The layout of the junction in the picture: which lanes branch off, on which side, how. */
 internal class Layout(val scene: JunctionScene) {
   val j = scene.junction
   val exitLike = j.kind == LanePlan.Kind.EXIT || j.kind == LanePlan.Kind.FORK
-  /** The lanes are known (painted arrows or counts that add up). */
+  /** The lanes are known (painted arrows or counts that explain the junction). */
   val known = j.lanes.isNotEmpty()
   /** Lanes drawn: the junction's, or (unknown) a road of three lanes' width without lines, the branch on one of them. */
   val n = if (known) j.lanes.size else 3
@@ -405,36 +496,64 @@ internal class Layout(val scene: JunctionScene) {
   /** Boundaries of the lit lanes. */
   val litA = active.minOrNull() ?: 0
   val litB = (active.maxOrNull() ?: -1) + 1
-  /** A turn in town of less than 50°: drawn as a road branching off, like an exit. */
-  val shallow = !exitLike && abs(j.taken.angle) < 50
-  /** The branch of an exit, a fork or a slight turn: from the first lit lane to the road's edge on its side. */
-  val branch = (exitLike || shallow) && side != 0 && active.isNotEmpty()
+  /** The branch of an exit or a fork: from the first lit lane to the road's edge on its side. */
+  val branch = exitLike && side != 0 && active.isNotEmpty()
   /** The boundary where the branch leaves (it belongs to both). */
   val splitB = if (side > 0) litA else litB
-  /** A turn in town: the crossing road, the lit lanes turning into it. */
-  val turn = !exitLike && !shallow && side != 0
+  /** A junction in town: its roads at their real angles, the lit lanes turning into the road taken. */
+  val turn = !exitLike
   val lht = scene.country in LEFT_TRAFFIC
-  /** In a turn: into the near half of the crossing road (right turns where traffic keeps right), else the far half. */
-  val nearHalf = (side > 0) != lht
-  /** At a junction in town: a road goes on straight beyond the crossing. */
-  val straightOn = !exitLike && j.roads.any { !it.taken && abs(it.angle) < 35 }
+  /** The lanes opening for the branch just before the junction (the deceleration lane of an exit). */
+  val opened = known && j.lanes.any { it.added }
+  /** A second choice of the route on the branch soon after: its side. */
+  val nextSide: Int? = scene.nextSide?.takeIf { branch && it != 0 }
+  /** How much the route turns after the junction (the branch's real course). */
+  val turnAfter: Double by lazy { if (branch) routeTurn(scene.route, j.atM) else 0.0 }
+  val curve: Curve by lazy {
+    val t = turnAfter * side
+    when {
+      t >= 200 -> Curve.LOOP
+      t >= 70 -> Curve.TIGHT
+      t <= -50 -> Curve.BACK
+      else -> Curve.STRAIGHT
+    }
+  }
+  /**
+   * The depth where the branch reaches past the picture's edge: soon for a tight curve or a loop,
+   * later for a ramp curving back across the road or dividing again (it stays in the picture).
+   */
+  val zEnd: Double by lazy {
+    when {
+      nextSide != null -> 15.0
+      curve == Curve.LOOP -> 6.0
+      curve == Curve.TIGHT -> 7.0
+      curve == Curve.BACK -> 13.0
+      else -> 10.0
+    }
+  }
 }
 
 /** How much a branch has moved sideways at depth [z] (in road half-widths), towards its side. */
-private fun bend(z: Double, p: Persp, fork: Boolean, outward: Boolean): Double {
+private fun bend(z: Double, p: Persp, l: Layout, outward: Boolean): Double {
   if (z <= Z_SPLIT) return 0.0
-  val zEnd = 10.0
+  val zEnd = l.zEnd
   // at its far end the branch reaches past the picture's edge
   val target = 1.15 * zEnd * (p.w / 2) / p.hw0
   val a = target / ((zEnd - Z_SPLIT) * (zEnd - Z_SPLIT))
-  val k = if (outward) 1.0 else if (fork) 0.22 else 0.0
+  val k = if (outward) 1.0 else if (l.j.kind == LanePlan.Kind.FORK) 0.22 else 0.0
   return k * a * (z - Z_SPLIT) * (z - Z_SPLIT)
 }
 
-/** The screen point of boundary place [u] at depth [z], on the branch ([branch]) or on the road going on. */
-internal fun pt(p: Persp, l: Layout, u: Double, z: Double, onBranch: Boolean): Offset {
-  val b = if (!l.branch) 0.0 else if (onBranch) l.side * bend(z, p, l.j.kind == LanePlan.Kind.FORK, true)
-      else -l.side * bend(z, p, l.j.kind == LanePlan.Kind.FORK, false)
+/** How far the two roads of the branch's second division have moved apart at depth [z], each way. */
+private fun bend2(z: Double): Double = if (z <= Z_SPLIT2) 0.0 else 0.075 * (z - Z_SPLIT2) * (z - Z_SPLIT2)
+
+/**
+ * The screen point of boundary place [u] at depth [z], on the branch ([onBranch]) or on the road
+ * going on; [sub] −1/1: on the left/right road of the branch's second division.
+ */
+internal fun pt(p: Persp, l: Layout, u: Double, z: Double, onBranch: Boolean, sub: Int = 0): Offset {
+  val b = if (!l.branch) 0.0 else if (onBranch) l.side * bend(z, p, l, true) + sub * bend2(z)
+      else -l.side * bend(z, p, l, false)
   return Offset(p.x(u + b, z), p.y(z))
 }
 
@@ -445,30 +564,85 @@ private fun depths(z0: Double, z1: Double, steps: Int = 40): List<Double> {
 }
 
 /** A band of road between places [u0] and [u1] from depth [z0] to [z1], as one shape. */
-private fun band(p: Persp, l: Layout, u0: Double, u1: Double, z0: Double, z1: Double, onBranch: Boolean): Path {
+private fun band(p: Persp, l: Layout, u0: Double, u1: Double, z0: Double, z1: Double, onBranch: Boolean, sub: Int = 0): Path {
   val zs = depths(z0, z1)
   return Path().apply {
-    zs.forEachIndexed { i, z -> val q = pt(p, l, u0, z, onBranch); if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) }
-    zs.asReversed().forEach { z -> val q = pt(p, l, u1, z, onBranch); lineTo(q.x, q.y) }
+    zs.forEachIndexed { i, z -> val q = pt(p, l, u0, z, onBranch, sub); if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) }
+    zs.asReversed().forEach { z -> val q = pt(p, l, u1, z, onBranch, sub); lineTo(q.x, q.y) }
     close()
   }
 }
 
-/** A painted line along place [u] from depth [z0] to [z1]: solid, or dashed in equal steps of depth. */
-private fun DrawScope.line(p: Persp, l: Layout, u: Double, z0: Double, z1: Double, onBranch: Boolean, color: Color, dashed: Boolean) {
-  // 20 cm on a lane of 3.5 m
-  val half = max(0.01, 0.2 / 3.5 / max(1, p.n))
+/**
+ * A painted line along place [u] from depth [z0] to [z1]: solid, dashed in equal steps of depth,
+ * or ([opened]) the short thick dashes along a lane opening for an exit.
+ */
+private fun DrawScope.line(p: Persp, l: Layout, u: Double, z0: Double, z1: Double, onBranch: Boolean, color: Color, dashed: Boolean,
+                           sub: Int = 0, opened: Boolean = false) {
+  // 20 cm on a lane of 3.5 m (twice as wide along a lane opening)
+  val half = max(0.01, 0.2 / 3.5 / max(1, p.n)) * (if (opened) 1.8 else 1.0)
   if (!dashed) {
-    drawPath(band(p, l, u - half, u + half, z0, z1, onBranch), color)
+    drawPath(band(p, l, u - half, u + half, z0, z1, onBranch, sub), color)
     return
   }
-  // dashes 3 m long every 9 m (the bottom edge of the picture is about 12 m ahead)
+  // dashes 3 m long every 9 m (the bottom edge of the picture is about 12 m ahead); 1.5 m every 3 m along a lane opening
+  val dash = if (opened) 0.125 else 0.25
+  val gap = if (opened) 0.125 else 0.5
   var z = z0
   while (z < z1) {
-    val e = min(z + 0.25, z1)
-    drawPath(band(p, l, u - half, u + half, z, e, onBranch), color)
-    z = e + 0.5
+    val e = min(z + dash, z1)
+    drawPath(band(p, l, u - half, u + half, z, e, onBranch, sub), color)
+    z = e + gap
   }
+}
+
+/** A band along the ground line [pts] (metres), [half] metres each side at each point, as one shape on the screen. */
+private fun ribbon(p: Persp, pts: List<GP>, half: (Int) -> Double): Path {
+  val last = pts.size - 1
+  val left = ArrayList<Offset>(pts.size); val right = ArrayList<Offset>(pts.size)
+  for (i in pts.indices) {
+    val d = pts[min(i + 1, last)] - pts[max(i - 1, 0)]
+    val len = d.len().coerceAtLeast(1e-6)
+    // the normal to the right of the way forward
+    val nr = GP(d.d / len, -d.x / len)
+    left += p.g(pts[i] - nr * half(i)); right += p.g(pts[i] + nr * half(i))
+  }
+  return Path().apply {
+    left.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
+    right.asReversed().forEach { lineTo(it.x, it.y) }
+    close()
+  }
+}
+
+/** A painted line along the ground line [pts]: solid, or dashed (3 m every 9 m along it). */
+private fun DrawScope.groundLine(p: Persp, pts: List<GP>, color: Color, dashed: Boolean) {
+  if (pts.size < 2) return
+  val half = 0.2
+  if (!dashed) {
+    drawPath(ribbon(p, pts, { half }), color)
+    return
+  }
+  // walk the line, a dash of 3 m every 9 m
+  val seg = ArrayList<GP>()
+  var phase = 0.0
+  for (i in 1 until pts.size) {
+    val a = pts[i - 1]; val b = pts[i]
+    val len = (b - a).len()
+    var t = 0.0
+    while (t < len) {
+      val inDash = phase < 3.0
+      val step = min(len - t, if (inDash) 3.0 - phase else 9.0 - phase)
+      val q0 = a + (b - a) * (t / len); val q1 = a + (b - a) * ((t + step) / len)
+      if (inDash) {
+        if (seg.isEmpty()) seg += q0
+        seg += q1
+      }
+      t += step; phase += step
+      if (inDash && phase >= 3.0 - 1e-9) { if (seg.size >= 2) drawPath(ribbon(p, seg.toList(), { half }), color); seg.clear() }
+      if (phase >= 9.0 - 1e-9) phase = 0.0
+    }
+  }
+  if (seg.size >= 2) drawPath(ribbon(p, seg.toList(), { half }), color)
 }
 
 /**
@@ -501,6 +675,46 @@ private fun DrawScope.laneChevron(p: Persp, l: Layout, lane: Int, z: Double, col
   }, color)
 }
 
+/**
+ * A thick arrow along a circle turning [deg] degrees from straight up (right positive), centred on
+ * [c], about [size] across: how the branch goes on beyond the picture (a tight curve, a loop, a
+ * ramp curving back the other way).
+ */
+private fun DrawScope.curveArrow(c: Offset, deg: Double, size: Float, color: Color) {
+  val a = deg.coerceIn(-300.0, 300.0)
+  val sgn = if (a >= 0) 1.0 else -1.0
+  val total = Math.toRadians(abs(a))
+  val r = size * 0.32
+  // the line: a short straight lead, then the circle; the screen's y grows downwards
+  val pts = ArrayList<Offset>()
+  pts += Offset(0f, (r * 0.7).toFloat())
+  val steps = 28
+  for (k in 0..steps) {
+    val th = total * k / steps
+    pts += Offset((sgn * (r - r * cos(th))).toFloat(), (-r * sin(th)).toFloat())
+  }
+  // the head along the circle's way at its end
+  val tx = (sgn * sin(total)).toFloat(); val ty = (-cos(total)).toFloat()
+  val hl = size * 0.24f; val hw = size * 0.2f
+  val e0 = pts.last()
+  val headPts = listOf(Offset(e0.x + tx * hl, e0.y + ty * hl), Offset(e0.x - ty * hw, e0.y + tx * hw), Offset(e0.x + ty * hw, e0.y - tx * hw))
+  // the whole arrow, head included, centred on [c]
+  val all = pts + headPts
+  val minX = all.minOf { it.x }; val maxX = all.maxOf { it.x }; val minY = all.minOf { it.y }; val maxY = all.maxOf { it.y }
+  val shift = Offset(c.x - (minX + maxX) / 2, c.y - (minY + maxY) / 2)
+  val path = Path().apply { pts.forEachIndexed { i, o -> val q = o + shift; if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) } }
+  val head = Path().apply {
+    headPts.forEachIndexed { i, o -> val q = o + shift; if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) }
+    close()
+  }
+  val sw = size * 0.13f
+  val outline = Color(0xAA000000)
+  drawPath(path, outline, style = androidx.compose.ui.graphics.drawscope.Stroke(width = sw + 4f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+  drawPath(head, outline, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f * density, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+  drawPath(path, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = sw, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+  drawPath(head, color)
+}
+
 /** The fixed picture of the junction, drawn once into a bitmap. */
 internal fun renderJunction(scene: JunctionScene, w: Int, h: Int, density: Density, night: Boolean): ImageBitmap {
   val img = ImageBitmap(w, h)
@@ -521,120 +735,19 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
   // the road's colour, lighter into the distance
   val road = Brush.verticalGradient(listOf(pal.asphaltFar, pal.asphalt), hy, h)
   val litBrush = Brush.verticalGradient(listOf(pal.litFar, pal.lit), hy, h)
-  val shoulder = 0.07
-  val zEndBranch = 10.0
-  val zNear = Z_CROSS - Z_CROSS_HALF; val zFarX = Z_CROSS + Z_CROSS_HALF
-  // ---- the asphalt
-  when {
-    l.branch -> {
-      val zMain = Z_FAR
-      if (l.side > 0) {
-        drawPath(band(p, l, -1 - shoulder, p.boundary(l.splitB) + shoulder * 0.3, 1.0, zMain, false), road)
-        drawPath(band(p, l, p.boundary(l.splitB) - shoulder * 0.3, 1 + shoulder, 1.0, zEndBranch, true), road)
-      } else {
-        drawPath(band(p, l, p.boundary(l.splitB) - shoulder * 0.3, 1 + shoulder, 1.0, zMain, false), road)
-        drawPath(band(p, l, -1 - shoulder, p.boundary(l.splitB) + shoulder * 0.3, 1.0, zEndBranch, true), road)
-      }
-    }
-    l.turn -> {
-      drawPath(band(p, l, -1 - shoulder, 1 + shoulder, 1.0, zNear + 0.05, false), road)
-      // the crossing road, the whole width
-      drawRect(road, Offset(0f, p.y(zFarX)), Size(w, p.y(zNear) - p.y(zFarX)))
-      if (l.straightOn) drawPath(band(p, l, -1 - shoulder, 1 + shoulder, zFarX - 0.05, Z_FAR, false), road)
-      // the corners of the crossing rounded
-      for (sgn in listOf(-1, 1)) {
-        val ex = p.x(sgn * (1 + shoulder), zNear); val ey = p.y(zNear)
-        val r = (p.y(zNear - 0.35) - ey)
-        val corner = Path().apply {
-          moveTo(ex, ey + r); quadraticTo(ex, ey, ex + sgn * r * 1.4f, ey); lineTo(ex, ey); close()
-        }
-        drawPath(corner, road)
-      }
-    }
-    else -> drawPath(band(p, l, -1 - shoulder, 1 + shoulder, 1.0, Z_FAR, false), road)
-  }
-  // ---- the lanes to take
-  if (l.active.isNotEmpty()) {
-    val ua = p.boundary(l.litA); val ub = p.boundary(l.litB)
-    when {
-      l.branch -> drawPath(band(p, l, ua, ub, 1.0, zEndBranch, true), litBrush)
-      l.turn -> {
-        // up the lanes, then round the corner into the crossing road's half on the turn's side
-        val yNear = p.y(zNear); val yMid = p.y(Z_CROSS); val yFar = p.y(zFarX)
-        val yEnd = if (l.nearHalf) yMid else yFar
-        val yIn = if (l.nearHalf) yNear else yMid
-        val s = l.side.toFloat()
-        // the outer edge of the turn (away from its side) and the inner one
-        val uOut = if (l.side > 0) ua else ub; val uIn = if (l.side > 0) ub else ua
-        val zOut = p.zAt(yEnd); val zIn = p.zAt(yIn)
-        val xOut = p.x(uOut, zOut); val xIn = p.x(uIn, zIn)
-        val edge = if (l.side > 0) w else 0f
-        val rOut = (p.y(1.6) - yEnd).coerceAtMost(abs(edge - xOut) * 0.6f).coerceAtLeast(4f)
-        val rIn = (yNear - yIn + (p.y(2.2) - yNear) * 0.5f).coerceAtLeast(3f).coerceAtMost(abs(edge - xIn) * 0.5f)
-        val path = Path().apply {
-          moveTo(p.x(uOut, 1.0), h)
-          lineTo(p.x(uOut, p.zAt(yEnd + rOut)), yEnd + rOut)
-          quadraticTo(xOut, yEnd, xOut + s * rOut, yEnd)
-          lineTo(edge, yEnd)
-          lineTo(edge, yIn)
-          lineTo(xIn + s * rIn, yIn)
-          quadraticTo(xIn, yIn, p.x(uIn, p.zAt(yIn + rIn)), yIn + rIn)
-          lineTo(p.x(uIn, 1.0), h)
-          close()
-        }
-        drawPath(path, litBrush)
-      }
-      else -> drawPath(band(p, l, ua, ub, 1.0, Z_FAR, false), litBrush)
-    }
-  }
-  // ---- the markings
-  val m = pal.marking
-  if (l.branch) {
-    val zEndMain = Z_FAR
-    // the road's outer edges
-    line(p, l, -1.0, 1.0, if (l.side > 0) zEndMain else zEndBranch, l.side < 0, m, false)
-    line(p, l, 1.0, 1.0, if (l.side > 0) zEndBranch else zEndMain, l.side > 0, m, false)
-    // where the branch leaves: a lane line before, two edges after
-    val us = p.boundary(l.splitB)
-    if (l.known) line(p, l, us, 1.0, Z_SPLIT, false, m, true)
-    line(p, l, us, Z_SPLIT, zEndMain, false, m, false)
-    line(p, l, us, Z_SPLIT, zEndBranch, true, m, false)
-    if (l.known) for (b in 1 until l.n) {
-      if (b == l.splitB) continue
-      val onBranch = if (l.side > 0) b > l.splitB else b < l.splitB
-      line(p, l, p.boundary(b), 1.0, if (onBranch) zEndBranch else zEndMain, onBranch, m, true)
-    }
-  } else if (l.turn) {
-    line(p, l, -1.0, 1.0, zNear, false, m, false)
-    line(p, l, 1.0, 1.0, zNear, false, m, false)
-    if (l.known) for (b in 1 until l.n) line(p, l, p.boundary(b), 1.0, zNear - 0.15, false, m, true)
-    // the crossing road: its middle dashed, its edges solid except across the mouths of the roads
-    val lw = max(2f, (p.y(Z_CROSS - 0.02) - p.y(Z_CROSS + 0.02)))
-    var x = 0f
-    while (x < w) { drawRect(m, Offset(x, p.y(Z_CROSS) - lw / 2), Size(w * 0.05f, lw)); x += w * 0.09f }
-    val xl = p.x(-1 - shoulder, zNear); val xr = p.x(1 + shoulder, zNear)
-    drawRect(m, Offset(0f, p.y(zNear) - lw), Size(xl, lw))
-    drawRect(m, Offset(xr, p.y(zNear) - lw), Size(w - xr, lw))
-    if (l.straightOn) {
-      val fl = p.x(-1 - shoulder, zFarX); val fr = p.x(1 + shoulder, zFarX)
-      drawRect(m, Offset(0f, p.y(zFarX)), Size(fl, lw))
-      drawRect(m, Offset(fr, p.y(zFarX)), Size(w - fr, lw))
-      line(p, l, -1.0, zFarX, Z_FAR, false, m, false)
-      line(p, l, 1.0, zFarX, Z_FAR, false, m, false)
-    } else drawRect(m, Offset(0f, p.y(zFarX)), Size(w, lw))
-  } else {
-    line(p, l, -1.0, 1.0, Z_FAR, false, m, false)
-    line(p, l, 1.0, 1.0, Z_FAR, false, m, false)
-    if (l.known) for (b in 1 until l.n) line(p, l, p.boundary(b), 1.0, Z_FAR, false, m, true)
-  }
+  if (l.turn) drawTown(l, p, pal, road, litBrush) else drawRoad(l, p, pal, road, litBrush)
   // ---- the arrows painted on the lanes (the ones of the route bright on the lanes to take), or
   // chevrons on lanes to take known from their number only
   // two rows: near (big) and a little further; arrows of a lane with two side by side
   val rows = if (l.turn) listOf(1.45, 2.3) else listOf(1.5, 2.6)
+  // how the branch goes on beyond the picture (a tight curve, a loop, a ramp curving back): a big
+  // arrow on the lit lanes in place of their far row of arrows
+  val curveHere = l.branch && l.nextSide == null && l.curve != Curve.STRAIGHT
   if (l.known) for (i in 0 until l.n) {
     val lane = l.j.lanes[i]
     val onBranch = l.branch && i in l.active
     for (z0 in rows) {
+      if (curveHere && onBranch && z0 == rows[1]) continue
       if (!lane.painted) {
         if (lane.take) laneChevron(p, l, i, z0, pal.paint, onBranch)
         continue
@@ -647,10 +760,247 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
       }
     }
   } else if (l.branch) {
-    for (z0 in rows) laneChevron(p, l, l.active.first(), z0 + 0.2, pal.paint, true)
+    for (z0 in rows) if (!(curveHere && z0 == rows[1])) laneChevron(p, l, l.active.first(), z0 + 0.2, pal.paint, true)
+  }
+  if (curveHere) {
+    val ua = p.boundary(l.litA); val ub = p.boundary(l.litB)
+    val zc = rows[1]
+    val c = pt(p, l, (ua + ub) / 2, zc, true)
+    val size0 = (abs(p.x(ub, zc) - p.x(ua, zc)) * 0.8f).coerceIn(56f * density, 76f * density)
+    val cc = Offset(c.x.coerceIn(size0 * 0.6f, w - size0 * 0.6f), c.y)
+    curveArrow(cc, l.turnAfter, size0, pal.paint)
   }
   // ---- the sign
   drawSignStatic(signOf(scene), p, l, pal)
+}
+
+/**
+ * The road of an exit or a fork (or a junction passed straight on): the road going on, the branch
+ * on its side bending away as the route goes (dividing again when the route has a second choice on
+ * it), the lanes to take lit, the lines painted.
+ */
+private fun DrawScope.drawRoad(l: Layout, p: Persp, pal: Palette, road: Brush, litBrush: Brush) {
+  val shoulder = 0.07
+  val zEndB = if (l.branch) l.zEnd else 10.0
+  val ns = l.nextSide ?: 0
+  // the branch as one road up to its second division, then its two roads
+  val zB = if (ns != 0) Z_SPLIT2 else zEndB
+  val ua = p.boundary(l.litA); val ub = p.boundary(l.litB)
+  // ---- the asphalt
+  if (l.branch) {
+    val us = p.boundary(l.splitB)
+    if (l.side > 0) {
+      drawPath(band(p, l, -1 - shoulder, us + shoulder * 0.3, 1.0, Z_FAR, false), road)
+      drawPath(band(p, l, us - shoulder * 0.3, 1 + shoulder, 1.0, zB + (if (ns != 0) 0.2 else 0.0), true), road)
+    } else {
+      drawPath(band(p, l, us - shoulder * 0.3, 1 + shoulder, 1.0, Z_FAR, false), road)
+      drawPath(band(p, l, -1 - shoulder, us + shoulder * 0.3, 1.0, zB + (if (ns != 0) 0.2 else 0.0), true), road)
+    }
+    if (ns != 0) for (sub in listOf(-1, 1)) drawPath(band(p, l, ua - shoulder, ub + shoulder, Z_SPLIT2, zEndB, true, sub), road)
+  } else drawPath(band(p, l, -1 - shoulder, 1 + shoulder, 1.0, Z_FAR, false), road)
+  // ---- the lanes to take
+  if (l.active.isNotEmpty()) {
+    if (l.branch) {
+      drawPath(band(p, l, ua, ub, 1.0, zB + (if (ns != 0) 0.1 else 0.0), true), litBrush)
+      if (ns != 0) drawPath(band(p, l, ua, ub, Z_SPLIT2, zEndB, true, ns), litBrush)
+    } else drawPath(band(p, l, ua, ub, 1.0, Z_FAR, false), litBrush)
+  }
+  // ---- the markings
+  val m = pal.marking
+  if (l.branch) {
+    // the road's outer edges
+    line(p, l, -1.0, 1.0, if (l.side > 0) Z_FAR else zB, l.side < 0, m, false)
+    line(p, l, 1.0, 1.0, if (l.side > 0) zB else Z_FAR, l.side > 0, m, false)
+    // where the branch leaves: a lane line before (short thick dashes along a lane opening for the
+    // exit), two edges after
+    val us = p.boundary(l.splitB)
+    if (l.known) line(p, l, us, 1.0, Z_SPLIT, false, m, true, opened = l.opened)
+    line(p, l, us, Z_SPLIT, Z_FAR, false, m, false)
+    line(p, l, us, Z_SPLIT, zB, true, m, false)
+    if (l.known) for (b in 1 until l.n) {
+      if (b == l.splitB) continue
+      val onBranch = if (l.side > 0) b > l.splitB else b < l.splitB
+      line(p, l, p.boundary(b), 1.0, if (onBranch) zB else Z_FAR, onBranch, m, true)
+    }
+    // the branch's two roads after its second division: their edges
+    if (ns != 0) for (sub in listOf(-1, 1)) {
+      line(p, l, ua, Z_SPLIT2, zEndB, true, m, false, sub)
+      line(p, l, ub, Z_SPLIT2, zEndB, true, m, false, sub)
+    }
+  } else {
+    line(p, l, -1.0, 1.0, Z_FAR, false, m, false)
+    line(p, l, 1.0, 1.0, Z_FAR, false, m, false)
+    if (l.known) for (b in 1 until l.n) line(p, l, p.boundary(b), 1.0, Z_FAR, false, m, true)
+  }
+}
+
+/** A road at a junction in town: its direction, half its width, whether it is the road arriving. */
+private class Arm(val deg: Double, val half: Double, val approach: Boolean, val road: LaneModel.Road?) {
+  /** Where its edges start, metres from the junction's middle (NaN: not drawn, the next road is too close). */
+  var rightFrom = 0.0
+  var leftFrom = 0.0
+}
+
+/** Shoulder of asphalt beyond the edge lines in town, metres. */
+private const val TOWN_SHOULDER = 0.6
+/** The radius of the corners between two roads in town, metres. */
+private const val TOWN_CORNER = 7.0
+
+/**
+ * The junction in town: the road arriving and every road leaving at the angle it leaves with (from
+ * the graph), the corners between them rounded, the lit lanes turning into their half of the road
+ * taken, the lines painted. Only straight roads: what the map's lines say near a junction is
+ * often rough, their directions are sure.
+ */
+private fun DrawScope.drawTown(l: Layout, p: Persp, pal: Palette, road: Brush, litBrush: Brush) {
+  val c0 = GP(0.0, Z_CROSS * M_PER_Z)
+  val arms = ArrayList<Arm>()
+  arms += Arm(180.0, p.halfM, true, null)
+  for (r in l.j.roads) {
+    // a road going on straight as wide as the road arriving, the others as their lanes
+    val half = if (abs(r.angle) < 25) p.halfM else ((if (r.lanes > 0) r.lanes else 2) * LANE_M / 2).coerceIn(3.2, 7.0)
+    arms += Arm(r.angle, half, false, r)
+  }
+  arms.sortBy { it.deg }
+  // how far a road is drawn: to the horizon, a road coming back towards the viewer until it leaves the picture
+  fun reach(a: Arm): Double {
+    val dd = dirOf(a.deg).d
+    return if (dd < -1e-6) ((c0.d - 4.0 - a.half) / -dd).coerceIn(1.0, 400.0) else 400.0
+  }
+  fun edgeR(a: Arm, off: Double, t: Double) = c0 + rightOf(a.deg) * off + dirOf(a.deg) * t
+  fun edgeL(a: Arm, off: Double, t: Double) = c0 - rightOf(a.deg) * off + dirOf(a.deg) * t
+  /** Where the right edge of [a] (at [offA]) meets the left edge of [b] (at [offB]): metres along each. */
+  fun meet(a: Arm, offA: Double, b: Arm, offB: Double): Pair<Double, Double>? {
+    val da = dirOf(a.deg); val db = dirOf(b.deg)
+    val rhs = (c0 - rightOf(b.deg) * offB) - (c0 + rightOf(a.deg) * offA)
+    // ta·da − tb·db = rhs
+    val det = -da.x * db.d + db.x * da.d
+    if (abs(det) < 1e-6) return null
+    val ta = (-rhs.x * db.d + db.x * rhs.d) / det
+    val tb = (da.x * rhs.d - da.d * rhs.x) / det
+    return if (ta > 0 && tb > 0) ta to tb else null
+  }
+  class Corner(val a: Arm, val b: Arm, val ta: Double, val tb: Double)
+  val corners = ArrayList<Corner>()
+  val lineCorners = ArrayList<Corner>()
+  for (i in arms.indices) {
+    val a = arms[i]; val b = arms[(i + 1) % arms.size]
+    val gap = ((b.deg - a.deg) % 360 + 360) % 360
+    when {
+      // two roads leaving almost together: one stretch of asphalt between them, no edges there
+      gap < 20 -> { a.rightFrom = Double.NaN; b.leftFrom = Double.NaN }
+      // nearly in line: the edges go on straight
+      gap > 172 -> { a.rightFrom = 0.0; b.leftFrom = 0.0 }
+      else -> {
+        val mA = meet(a, a.half + TOWN_SHOULDER, b, b.half + TOWN_SHOULDER)
+        val mL = meet(a, a.half, b, b.half)
+        if (mA != null && mL != null) {
+          val rho = TOWN_CORNER
+          if (mA.first + rho < reach(a) && mA.second + rho < reach(b)) corners += Corner(a, b, mA.first, mA.second)
+          if (mL.first + rho < reach(a) && mL.second + rho < reach(b)) {
+            lineCorners += Corner(a, b, mL.first, mL.second)
+            a.rightFrom = mL.first + rho; b.leftFrom = mL.second + rho
+          } else { a.rightFrom = mL.first; b.leftFrom = mL.second }
+        }
+      }
+    }
+  }
+  /** The rounded corner between [k.a] and [k.b] at [off] beyond their middle lines: the curve from one edge to the other. */
+  fun cornerCurve(k: Corner, offA: Double, offB: Double): List<GP> {
+    val i0 = edgeR(k.a, offA, k.ta)
+    val pa = edgeR(k.a, offA, k.ta + TOWN_CORNER); val pb = edgeL(k.b, offB, k.tb + TOWN_CORNER)
+    return (0..12).map { s -> val t = s / 12.0; pa * ((1 - t) * (1 - t)) + i0 * (2 * t * (1 - t)) + pb * (t * t) }
+  }
+  // ---- the asphalt: every road from the middle out, then the corners filled round
+  for (a in arms) {
+    val o = a.half + TOWN_SHOULDER
+    drawPath(ribbon(p, listOf(c0, c0 + dirOf(a.deg) * reach(a)), { o }), road)
+  }
+  for (k in corners) {
+    val oa = k.a.half + TOWN_SHOULDER; val ob = k.b.half + TOWN_SHOULDER
+    val i0 = edgeR(k.a, oa, k.ta)
+    val curve = cornerCurve(k, oa, ob)
+    val path = Path().apply {
+      val s0 = p.g(curve.first()); moveTo(s0.x, s0.y)
+      val si = p.g(i0); lineTo(si.x, si.y)
+      val sb = p.g(curve.last()); lineTo(sb.x, sb.y)
+      for (q in curve.asReversed()) { val s = p.g(q); lineTo(s.x, s.y) }
+      close()
+    }
+    drawPath(path, road)
+  }
+  // ---- the lit lanes: up to the junction, round into their half of the road taken
+  val approach = arms.first { it.approach }
+  val taken = arms.firstOrNull { it.road?.taken == true }
+  // the end of the road arriving: where its corners start
+  val mouth = listOf(approach.rightFrom, approach.leftFrom).filter { !it.isNaN() }.maxOrNull()?.takeIf { it > 0 }
+      ?: ((arms.filter { !it.approach && abs(it.deg) in 30.0..150.0 }.maxOfOrNull { it.half } ?: 4.0) + 2.0)
+  val dMouth = c0.d - mouth.coerceIn(4.0, 14.0)
+  if (l.active.isNotEmpty() && taken != null) {
+    val x0 = (p.boundary(l.litA) + p.boundary(l.litB)) / 2 * p.halfM
+    val w0 = (l.litB - l.litA) * LANE_M / 2
+    val p0 = GP(x0, dMouth)
+    val r = taken.road!!
+    val straight = abs(taken.deg) < 25
+    val twoWay = !r.ramp && r.lanes != 1
+    // the lanes of our direction: the right half of the road taken where traffic keeps right
+    val off = when {
+      straight -> x0
+      twoWay -> (if (l.lht) -1 else 1) * taken.half / 2
+      else -> 0.0
+    }
+    val w1 = when {
+      straight -> w0
+      twoWay -> taken.half * 0.46
+      else -> taken.half * 0.9
+    }
+    val into = listOf(taken.rightFrom, taken.leftFrom).filter { !it.isNaN() }.maxOrNull()?.coerceAtLeast(6.0) ?: mouth
+    val p3 = c0 + dirOf(taken.deg) * into + rightOf(taken.deg) * off
+    val k = (p3 - p0).len() * 0.55
+    val p1 = p0 + GP(0.0, k); val p2 = p3 - dirOf(taken.deg) * k
+    val pts = ArrayList<GP>()
+    val halves = ArrayList<Double>()
+    pts += GP(x0, 4.0); halves += w0
+    val nb = 20
+    for (s in 0..nb) {
+      val t = s / nb.toDouble(); val u = 1 - t
+      pts += p0 * (u * u * u) + p1 * (3 * u * u * t) + p2 * (3 * u * t * t) + p3 * (t * t * t)
+      halves += w0 + (w1 - w0) * t
+    }
+    val far = (reach(taken) - into).coerceAtLeast(0.0)
+    for (s in 1..6) { pts += p3 + dirOf(taken.deg) * (far * s / 6); halves += w1 }
+    drawPath(ribbon(p, pts, { halves[it] }), litBrush)
+  }
+  // ---- the markings
+  val m = pal.marking
+  for (a in arms) {
+    val end = reach(a)
+    if (!a.rightFrom.isNaN() && a.rightFrom < end) groundLine(p, listOf(edgeR(a, a.half, a.rightFrom), edgeR(a, a.half, end)), m, false)
+    if (!a.leftFrom.isNaN() && a.leftFrom < end) groundLine(p, listOf(edgeL(a, a.half, a.leftFrom), edgeL(a, a.half, end)), m, false)
+  }
+  for (k in lineCorners) groundLine(p, cornerCurve(k, k.a.half, k.b.half), m, false)
+  // the lanes of the road arriving up to the junction
+  if (l.known) for (b in 1 until l.n) {
+    val xb = p.boundary(b) * p.halfM
+    groundLine(p, listOf(GP(xb, 4.0), GP(xb, dMouth - 1.0)), m, true)
+  }
+  for (a in arms) {
+    if (a.approach) continue
+    val r = a.road ?: continue
+    val from = listOf(a.rightFrom, a.leftFrom).filter { !it.isNaN() }.maxOrNull()?.coerceAtLeast(a.half + 2.0) ?: (a.half + 4.0)
+    val end = reach(a)
+    if (from >= end) continue
+    if (abs(a.deg) < 25) {
+      // straight on: the lanes go on
+      if (l.known) for (b in 1 until l.n) {
+        val xb = p.boundary(b) * p.halfM
+        groundLine(p, listOf(c0 + dirOf(a.deg) * from + rightOf(a.deg) * xb, c0 + dirOf(a.deg) * end + rightOf(a.deg) * xb), m, true)
+      }
+    } else if (!r.ramp && r.lanes != 1) {
+      // a road both ways: its middle line
+      groundLine(p, listOf(c0 + dirOf(a.deg) * from, c0 + dirOf(a.deg) * end), m, true)
+    }
+  }
 }
 
 /** A panel laid out on the screen. */

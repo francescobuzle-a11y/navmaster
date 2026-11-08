@@ -36,11 +36,10 @@ class StaticJunctionTest {
       if (sign.panels.isEmpty()) problems += "${c.name}: nessun cartello"
       if (sign.panels.any { it.l0 < 0 || it.l1 >= maxOf(lay.n, 2) || it.l1 < it.l0 }) problems += "${c.name}: pannello su corsie inesistenti"
       if (lay.active.isEmpty()) problems += "${c.name}: nessuna corsia da prendere"
-      // exits and forks: a branch on the manoeuvre's side; turns in town: the crossing road
+      // exits and forks: a branch on the manoeuvre's side; junctions in town: the roads at their angles
       val exitLike = c.scene.junction.kind != app.navmaster.truck.nav.LanePlan.Kind.JUNCTION
-      val slight = !exitLike && abs(c.scene.junction.taken.angle) < 50
-      if ((exitLike || slight) && !lay.branch) problems += "${c.name}: uscita o svolta leggera senza ramo"
-      if (!exitLike && !slight && !lay.turn) problems += "${c.name}: svolta senza strada trasversale"
+      if (exitLike && !lay.branch) problems += "${c.name}: uscita o bivio senza ramo"
+      if (!exitLike && !lay.turn) problems += "${c.name}: incrocio in città senza le sue strade"
       if (lay.branch) {
         val p = Persp(538f, 575f, lay.n)
         // the branch leaves the road going on only outwards, more and more, from where it splits
@@ -69,6 +68,31 @@ class StaticJunctionTest {
       if (taken.isEmpty()) problems += "solo il cartello dell'altro ramo: manca il pannello della strada presa"
       else if ("A21" !in taken.first().refs || "Casello" !in taken.first().towns) problems += "pannello della strada presa al casello: ${taken.first().lines}"
       if (sign.panels.none { !it.taken && "A4" in it.refs }) problems += "il pannello della mappa per l'altro ramo è sparito"
+    }
+    // the slip road drawn as the route goes on: hard curve, loop, curving back, or straight away
+    val curves = mapOf("uscita" to Curve.STRAIGHT, "bivio" to Curve.STRAIGHT, "decelerazione" to Curve.TIGHT, "ricciolo" to Curve.LOOP,
+        "rampa_indietro" to Curve.BACK)
+    for (c in JvCases.all()) {
+      val want = curves[c.name] ?: continue
+      val lay = Layout(c.scene)
+      if (lay.curve != want) problems += "${c.name}: rampa ${lay.curve} (giro di ${lay.turnAfter.toInt()}°) invece di $want"
+    }
+    // the deceleration lane: a third lane on the right, lit, opening for the exit
+    run {
+      val lay = Layout(JvCases.decelCase().scene)
+      if (lay.n != 3 || lay.active != listOf(2) || !lay.opened) problems += "corsia di decelerazione: ${lay.n} corsie, accese ${lay.active}, aperta ${lay.opened}"
+    }
+    // a slip road dividing again: one road up to the division, then two going apart, the route's on the left
+    run {
+      val c = JvCases.splitAgainCase()
+      val lay = Layout(c.scene)
+      val p = Persp(538f, 575f, lay.n)
+      val u = (p.boundary(lay.litA) + p.boundary(lay.litB)) / 2
+      if (lay.nextSide != -1) problems += "doppio bivio: secondo bivio ${lay.nextSide}"
+      val before = abs(pt(p, lay, u, Z_SPLIT2 - 0.3, true, -1).x - pt(p, lay, u, Z_SPLIT2 - 0.3, true, 1).x)
+      val after = pt(p, lay, u, 9.0, true, 1).x - pt(p, lay, u, 9.0, true, -1).x
+      if (before > 0.5f) problems += "doppio bivio: le due strade si separano prima della divisione ($before px)"
+      if (after < 20f) problems += "doppio bivio: le due strade non si separano ($after px)"
     }
     assertTrue(problems.joinToString("\n"), problems.isEmpty())
   }

@@ -7,6 +7,7 @@ import app.navmaster.truck.routing.EdgeInfo
 import app.navmaster.truck.routing.EdgeSign
 import app.navmaster.truck.routing.LaneDest
 import uniffi.ferrostar.GeographicCoordinate
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sqrt
 
@@ -156,6 +157,106 @@ internal object JvCases {
     return Case("svolta_leggera", JunctionScene(j, 90.0, 300.0, r, 310.0, 400.0, "IT", null), roads, 375.0, false)
   }
 
+  /**
+   * A line driven from ([e0], [n0]) heading east, in steps of 10 m: each leg (metres, degrees
+   * turned over it, right positive).
+   */
+  fun drive(e0: Double, n0: Double, vararg legs: Pair<Double, Double>): List<Pair<Double, Double>> {
+    val out = ArrayList<Pair<Double, Double>>()
+    var e = e0; var n = n0; var head = 0.0 // math angle, east = 0, counter-clockwise
+    for ((len, turn) in legs) {
+      val steps = maxOf(1, (len / 10).toInt())
+      for (k in 0 until steps) {
+        head -= Math.toRadians(turn / steps)
+        e += 10 * kotlin.math.cos(head); n += 10 * kotlin.math.sin(head)
+        out += e to n
+      }
+    }
+    return out
+  }
+
+  /** A motorway exit on the right of [lanes] lanes onto a slip road driven along [ramp], the motorway going on east. */
+  private fun motorwayExit(name: String, lanes: List<LanePlan.Lane>, ramp: List<Pair<Double, Double>>, taken: EdgeSign, other: EdgeSign,
+                           kind: LanePlan.Kind = LanePlan.Kind.EXIT, laneSigns: List<LaneDest>? = null, nextSide: Int? = null, nextM: Double? = null,
+                           vehicleLane: Int? = null): Case {
+    val pts = line(-900.0 to 0.0, 0.0 to 0.0, *ramp.toTypedArray())
+    val n = lanes.count { !it.added }
+    val r = route(pts, emptyList()).let { r0 ->
+      route(pts, listOf(edge(0.0, 900.0, "motorway", "", n, 51), edge(900.0, r0.length, "motorway", if (kind == LanePlan.Kind.EXIT) "ramp" else "", 1, 52)))
+    }
+    val j = LaneModel.Junction(
+        900.0, kind, 1, lanes, lanes.any { it.painted },
+        listOf(LaneModel.Road(18.0, true, 1, "motorway", kind == LanePlan.Kind.EXIT, taken, 52), LaneModel.Road(0.0, false, n, "motorway", false, other, 53)),
+        taken, other, laneSigns, 1, n, 51, "motorway", false)
+    val roads = listOf(
+        road(51, "motorway", 1, n, line(-1500.0 to 0.0, 0.0 to 0.0)),
+        road(52, "motorway_link", 1, 1, line(0.0 to 0.0, *ramp.toTypedArray())),
+        road(53, "motorway", 1, n, line(0.0 to 0.0, 900.0 to 0.0)),
+    )
+    return Case(name, JunctionScene(j, 260.0, 1500.0, r, 640.0, 900.0, "IT", vehicleLane, nextSide = nextSide, nextM = nextM), roads, 640.0, true)
+  }
+
+  /**
+   * A1 with two lanes, exit 12 on the right without turn:lanes: the slip road leaves from a lane
+   * that opens before the exit (the counts: 2 before, 2 going on, 1 on the slip road), then curves
+   * hard to the right (about 110°).
+   */
+  fun decelCase(): Case = motorwayExit("decelerazione",
+      LaneModel.lanesFromCounts(2, 1, 2, 1, LanePlan.Kind.EXIT)!!,
+      drive(0.0, 0.0, 40.0 to 8.0, 220.0 to 105.0),
+      EdgeSign(listOf("12"), listOf("SS9"), listOf("Lodi", "Codogno"), emptyList()),
+      EdgeSign(emptyList(), listOf("A1"), listOf("Bologna"), emptyList()), vehicleLane = 1)
+
+  /** A cloverleaf: exit on the right of three lanes, the slip road looping 270° to the right. */
+  fun loopCase(): Case = motorwayExit("ricciolo",
+      LaneModel.lanesFromCounts(3, 1, 2, 1, LanePlan.Kind.EXIT)!!,
+      drive(0.0, 0.0, 60.0 to 10.0, 330.0 to 260.0),
+      EdgeSign(listOf("7"), listOf("SP415"), listOf("Crema"), emptyList()),
+      EdgeSign(emptyList(), listOf("A35"), listOf("Milano"), emptyList()))
+
+  /** An exit on the right whose slip road curves back to the left, across the motorway on a bridge. */
+  fun backCase(): Case = motorwayExit("rampa_indietro",
+      LaneModel.lanesFromCounts(3, 1, 2, 1, LanePlan.Kind.EXIT)!!,
+      drive(0.0, 0.0, 80.0 to 15.0, 300.0 to -125.0),
+      EdgeSign(listOf("4"), listOf("SS10"), listOf("Cremona"), emptyList()),
+      EdgeSign(emptyList(), listOf("A21"), listOf("Brescia"), emptyList()))
+
+  /**
+   * A fork on the right of three lanes onto two (the middle lane goes both ways: counts 3 < 2 + 2),
+   * the road taken dividing again 250 m on, the route keeping left there.
+   */
+  fun splitAgainCase(): Case = motorwayExit("doppio_bivio",
+      LaneModel.lanesFromCounts(3, 2, 2, 1, LanePlan.Kind.FORK)!!,
+      drive(0.0, 0.0, 300.0 to 20.0),
+      EdgeSign(emptyList(), listOf("A21"), listOf("Piacenza", "Cremona"), emptyList()),
+      EdgeSign(emptyList(), listOf("A4"), listOf("Milano"), emptyList()),
+      kind = LanePlan.Kind.FORK, nextSide = -1, nextM = 250.0)
+
+  /** A junction in town of the road arriving and three roads at [angles] (the taken one first) with its painted lanes. */
+  private fun townJunction(name: String, lanes: List<LanePlan.Lane>, angles: List<Double>, out: List<Pair<Double, Double>>): Case {
+    val pts = line(-400.0 to 0.0, 0.0 to 0.0, *out.toTypedArray())
+    val r0 = route(pts, emptyList())
+    val r = route(pts, listOf(edge(0.0, 400.0, "primary", "", lanes.size, 61),
+        edge(400.0, r0.length, "secondary", "", 2, 62).copy(name = "Via Roma", names = listOf("SP12", "Via Roma"))))
+    val side = if (angles[0] > 0) 1 else -1
+    val roadsJ = angles.mapIndexed { i, a -> LaneModel.Road(a, i == 0, if (abs(a) < 25) 4 else 2, if (i == 0) "secondary" else "residential", false, null, 62L + i) }
+    val j = LaneModel.Junction(400.0, LanePlan.Kind.JUNCTION, side, lanes, true, roadsJ, null, null, null, 2, 2, 61, "primary", false)
+    val roads = listOf(road(61, "primary", 0, lanes.size + 2, line(-600.0 to 0.0, 0.0 to 0.0), lanesF = lanes.size, lanesB = 2),
+        road(62, "secondary", 0, 2, line(0.0 to 0.0, *out.toTypedArray())))
+    return Case(name, JunctionScene(j, 90.0, 300.0, r, 310.0, 400.0, "IT", null), roads, 375.0, false)
+  }
+
+  /** In town: an oblique left turn (55°) onto the SP12 "Via Roma", a road straight on, another one sharp to the right. */
+  fun obliqueLeftCase(): Case = townJunction("obliqua_sinistra",
+      listOf(LanePlan.Lane("slight left", true, arrows = listOf("slight left")), LanePlan.Lane("straight", false), LanePlan.Lane("straight", false)),
+      listOf(-55.0, 0.0, 115.0), drive(0.0, 0.0, 30.0 to -55.0, 250.0 to 0.0))
+
+  /** In town: a sharp right turn (135°) back onto the SP12 "Via Roma", roads straight on and to the left. */
+  fun sharpRightCase(): Case = townJunction("stretta_destra",
+      listOf(LanePlan.Lane("straight", false), LanePlan.Lane("straight", false), LanePlan.Lane("sharp right", true, arrows = listOf("sharp right"))),
+      listOf(135.0, 0.0, -90.0), drive(0.0, 0.0, 30.0 to 135.0, 250.0 to 0.0))
+
   /** The junctions. */
-  fun all(): List<Case> = listOf(exitCase(), forkCase(), townCase(), slightCase())
+  fun all(): List<Case> = listOf(exitCase(), forkCase(), townCase(), slightCase(), decelCase(), loopCase(), backCase(), splitAgainCase(),
+      obliqueLeftCase(), sharpRightCase())
 }

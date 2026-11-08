@@ -9,6 +9,7 @@ import app.navmaster.truck.limits.LimitsIndex
 import app.navmaster.truck.live.ApiKeys
 import app.navmaster.truck.live.HereGuard
 import app.navmaster.truck.live.TomTomGuard
+import app.navmaster.truck.nav.MapGaps
 import app.navmaster.truck.location.SmartLocationProvider
 import app.navmaster.truck.poi.PoiIndex
 import app.navmaster.truck.data.RoadsIndex
@@ -66,6 +67,8 @@ object AppGraph {
     TomTomGuard.init(application)
     HereGuard.init(application)
     TomTomGuard.installOnMapLibre(application)
+    // the junctions of the routes driven that the map lacks signs or lanes for (Impostazioni › Guida)
+    MapGaps.init(application.filesDir, application.getExternalFilesDir(null))
     // at once, behind the start screen (ui.StartupScreen): the graphs of the active vehicle's profile
     // warmed (the first route cold cost twice: see NmEngine.warmUp); then, at low priority, the
     // border crossings of the downloaded countries

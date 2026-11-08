@@ -285,6 +285,34 @@ class RouteAnalysis(
 
   fun pointAt(alongM: Double): GeographicCoordinate = Geo.pointAt(route.geometry, cum, alongM)
 
+  /**
+   * The instructions of the route after the departure: where each one is (metres along the route,
+   * the first point of its step found on the route's line) and its kind ("OFF_RAMP", "FORK"…).
+   */
+  val maneuvers: List<Pair<Double, String>> by lazy {
+    val g = route.geometry
+    val out = ArrayList<Pair<Double, String>>()
+    var i = 0
+    for ((k, st) in route.steps.withIndex()) {
+      val first = st.geometry.firstOrNull() ?: continue
+      // searched forward from the previous step: the closest point of the line, stopping once well past it
+      var best = i
+      var bestD = Double.MAX_VALUE
+      var j = i
+      while (j < g.size) {
+        val d = Geo.dist(first, g[j])
+        if (d < bestD) { bestD = d; best = j }
+        if (d < 0.5 || (bestD < 30 && d > bestD + 300)) break
+        j++
+      }
+      i = best
+      if (k == 0 || i >= cum.size) continue
+      val type = st.visualInstructions.firstOrNull()?.primaryContent?.maneuverType?.name ?: ""
+      out += cum[i] to type
+    }
+    out
+  }
+
   companion object {
     private const val TAG = "NavMasterAnalysis"
     val UNPAVED = setOf("compacted", "dirt", "gravel", "path", "impassable")

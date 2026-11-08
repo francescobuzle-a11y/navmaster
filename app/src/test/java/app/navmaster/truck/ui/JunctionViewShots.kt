@@ -38,11 +38,11 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * The junction view on four made-up junctions (a motorway exit with its signs, a motorway fork
- * known from the lane counts with signs over the lanes, a right turn and a slight right turn in
- * town with painted arrows and no sign on the map), by day and by night, wide and tall: a picture
- * of each in build/shots, and checks that the picture has its sign and its lit lanes on the side
- * of the manoeuvre.
+ * The junction view on made-up junctions (JvCases: motorway exits and forks with their signs, lanes
+ * from painted arrows or from the lane counts, a deceleration lane, slip roads curving hard,
+ * looping, curving back, dividing again; turns in town at their real angles with painted arrows
+ * and no sign on the map), by day and by night, wide and tall: a picture of each in build/shots,
+ * and checks that the picture has its sign and its lit lanes on the side of the manoeuvre.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -87,18 +87,20 @@ class JunctionViewShots {
           if (sign.panels.isEmpty()) problems += "$name: manca il cartello"
           else if (sign.fromMap != c.signFromMap) problems += "$name: cartello ${if (sign.fromMap) "della mappa" else "ricostruito"} invece di ${if (c.signFromMap) "della mappa" else "ricostruito"}"
           else if (!sign.fromMap && (sign.panels.none { "SP12" in it.refs } || sign.panels.none { "Via Roma" in it.towns })) problems += "$name: cartello ricostruito senza numero e nome della strada: ${sign.panels.map { it.lines }}"
-          // the lanes to take lit, on the side of the manoeuvre (all the junctions here go right)
+          // the lanes to take lit, on the side of the manoeuvre
           val (left, right) = litSides(img, wh.first, wh.second)
+          val side = c.scene.junction.side
           if (left + right < 200) problems += "$name: corsie da prendere non evidenziate ($left + $right pixel)"
-          else if (right <= left) problems += "$name: corsie accese a sinistra ($left) più che a destra ($right) in una manovra a destra"
+          else if (side > 0 && right <= left) problems += "$name: corsie accese a sinistra ($left) più che a destra ($right) in una manovra a destra"
+          else if (side < 0 && left <= right) problems += "$name: corsie accese a destra ($right) più che a sinistra ($left) in una manovra a sinistra"
           report.append("$name: cartello ${sign.panels.size} pannelli (${if (sign.fromMap) "mappa" else "ricostruito"}), corsie accese $left a sinistra, $right a destra\n")
         } catch (e: Throwable) {
           problems += "$name: errore ${e::class.simpleName}: ${e.message?.take(300)} ${e.stackTrace.take(4).joinToString(" < ")}"
         }
       }
     }
-    // the whole view as on the screen (picture, distance, lane strip) for the exit
-    val c = JvCases.exitCase()
+    // the whole view as on the screen (picture, distance, lane strip) for the exit with its deceleration lane
+    val c = JvCases.decelCase()
     jvRoadsNear = { _, _, _ -> c.roads }
     for ((q, name) in listOf("w800dp-h1280dp-port-mdpi" to "vista_svincolo_tablet_vert", "w1280dp-h800dp-land-mdpi" to "vista_svincolo_tablet_orizz")) {
       RuntimeEnvironment.setQualifiers(q)

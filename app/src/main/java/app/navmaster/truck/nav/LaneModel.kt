@@ -16,9 +16,13 @@ import kotlin.math.abs
  *  1. the arrows painted on the lanes (OpenStreetMap turn:lanes) of the last stretch before the
  *     junction: each arrow is matched with the road it points to among the roads that really
  *     leave the junction, and the lanes whose arrow points to the road the route takes are lit;
- *  2. at a motorway exit or fork without turn:lanes, the lane counts, when they add up exactly
- *     (the road before has as many lanes as the two roads after it together): the lanes on the
- *     side of the road taken; no arrows are drawn then (none are painted on the map);
+ *  2. at a motorway exit or fork without turn:lanes, the lane counts, when they explain the
+ *     junction: the road before has as many lanes as the two roads after it together (the lanes on
+ *     the side of the road taken), or as many as the road going on (the road taken leaves from a
+ *     lane that opens on its side just before: the deceleration lane of an exit), or fewer than
+ *     the two together but more than each (the lanes in the middle go both ways: the lanes on the
+ *     side of the road taken are lit, the shared ones too); no arrows are drawn then (none are
+ *     painted on the map);
  *  3. otherwise no lanes, only the side to keep.
  */
 object LaneModel {
@@ -166,16 +170,51 @@ object LaneModel {
       }
     }
     if (kind == LanePlan.Kind.JUNCTION) return null
-    // 2. exits and forks: the lane counts, only when they add up exactly
+    // 2. exits and forks: the lane counts, when they explain the junction
     val n = approach.lanes
-    val t = taken.lanes
+    // an exit's slip road with no number of lanes on the map has one (the map's default for a link)
+    val t = if (taken.lanes == 0 && kind == LanePlan.Kind.EXIT && takenEdge.isRamp) 1 else taken.lanes
     val c = other.lanes
-    if (n >= 2 && t >= 1 && c >= 1 && n == t + c && side != 0) {
-      val lanes = (0 until n).map { i -> LanePlan.Lane("straight", if (side > 0) i >= n - t else i < t, painted = false) }
-      return Junction(node, kind, side, lanes, false, roads, taken.sign, other.sign, laneSigns, t, c, approach.wayId, approach.roadClass, approach.isRamp)
+    val counted = if (side != 0) lanesFromCounts(n, t, c, side, kind) else null
+    if (counted != null) {
+      // signs over the lanes count only when they are as many as the lanes drawn
+      val signs = laneSigns?.takeIf { it.size == counted.size }
+      return Junction(node, kind, side, counted, false, roads, taken.sign, other.sign, signs, t, c, approach.wayId, approach.roadClass, approach.isRamp)
     }
     // 3. only the side
     return Junction(node, kind, side, emptyList(), false, roads, taken.sign, other.sign, null, t, c, approach.wayId, approach.roadClass, approach.isRamp)
+  }
+
+  /**
+   * The lanes of an exit or a fork from the lane counts alone: [n] lanes before the junction, [t]
+   * on the road taken, [c] on the road going on, the road taken on [side]. Null when the counts do
+   * not explain the junction (a lane ends somewhere, a count is missing).
+   */
+  internal fun lanesFromCounts(n: Int, t: Int, c: Int, side: Int, kind: LanePlan.Kind): List<LanePlan.Lane>? {
+    if (n < 1 || t < 1 || c < 1 || side == 0 || n > 8) return null
+    fun split(): List<LanePlan.Lane> = (0 until n).map { i -> LanePlan.Lane("straight", if (side > 0) i >= n - t else i < t, painted = false) }
+    return when {
+      // the lanes divide between the two roads
+      n >= 2 && n == t + c -> split()
+      // the road going on keeps all its lanes: the road taken leaves from a lane that opens on its
+      // side just before the junction (an exit's deceleration lane; at a fork the lanes it gains)
+      n == c && t <= 2 -> {
+        val k = if (kind == LanePlan.Kind.EXIT) 1 else t
+        val main = (0 until n).map { LanePlan.Lane("straight", false, painted = false) }
+        val opened = (0 until k).map { LanePlan.Lane("straight", true, painted = false, added = true) }
+        if (side > 0) main + opened else opened + main
+      }
+      // at a fork the road taken keeps all the lanes: the other road leaves from lanes opening on its side
+      kind == LanePlan.Kind.FORK && n == t && c <= 2 -> {
+        val main = (0 until n).map { LanePlan.Lane("straight", true, painted = false) }
+        val opened = (0 until c).map { LanePlan.Lane("straight", false, painted = false, added = true) }
+        if (side > 0) opened + main else main + opened
+      }
+      // fewer lanes than the two roads together, more than each: the lanes in the middle go both
+      // ways (a lane that splits), lit with those on the side of the road taken
+      n >= 2 && n < t + c && t < n && c < n -> split()
+      else -> null
+    }
   }
 
   /** The stretch whose turn:lanes describe the lanes at the junction: the last one before it, or the ones just before when the way is split. */

@@ -144,12 +144,13 @@ internal fun DrawScope.drawLanes(plan: LanePlan.Plan, vehicleLane: Int?) {
     drawRect(LaneTake, Offset(xs[i] + inset, 0f), Size(xs[i + 1] - xs[i] - 2 * inset, h))
     drawRect(LaneTakeEdge, Offset(xs[i] + inset, 0f), Size(xs[i + 1] - xs[i] - 2 * inset, h * 0.06f))
   }
-  // lines: solid at the edges, dashed between lanes (the merge lane with short thick dashes)
+  // lines: solid at the edges, dashed between lanes (a merge lane and a lane opening for the exit
+  // with short thick dashes, as they are painted)
   val lw = (unit * 0.06f).coerceIn(2f, 5f)
   drawLine(Color.White, Offset(lw / 2, 0f), Offset(lw / 2, h), lw)
   drawLine(Color.White, Offset(w - lw / 2, 0f), Offset(w - lw / 2, h), lw)
   for (i in 1 until n) {
-    val mergeLine = lanes[i].merge || lanes[i - 1].merge
+    val mergeLine = lanes[i].merge || lanes[i - 1].merge || lanes[i].added != lanes[i - 1].added
     val dash = if (mergeLine) floatArrayOf(h * 0.12f, h * 0.10f) else floatArrayOf(h * 0.22f, h * 0.18f)
     drawLine(Color.White, Offset(xs[i], 0f), Offset(xs[i], h), if (mergeLine) lw * 1.4f else lw * 0.8f,
         pathEffect = PathEffect.dashPathEffect(dash, 0f))

@@ -271,6 +271,7 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       Pills { for (t in listOf(15, 25, 40)) Pill("$t s prima", s.junctionViewSeconds == t) { set { it.copy(junctionViewSeconds = t) } } }
     }
   }
+  MapGapsCard()
   Card("Tempi di guida") {
     ToggleRow("Promemoria delle pause", "Pausa dopo 4 h 30 di guida (reg. CE 561/2006) con i parcheggi adatti", s.driveTimeReminder) { v ->
       set { it.copy(driveTimeReminder = v) }
@@ -604,5 +605,53 @@ private fun AboutPage() {
   Card("Avvertenze") {
     Caption("I divieti nazionali di circolazione sono indicativi: verifica sempre il calendario ufficiale. " +
         "Le criticità (curve, strade strette, limiti) vengono dai dati OpenStreetMap e vanno confermate dalla segnaletica.", size = 14, lines = 6)
+  }
+}
+
+/**
+ * The exits and forks of the routes driven where OpenStreetMap has no sign or no lanes (nav.MapGaps):
+ * a tap opens one in the map's editor, the whole list can be sent. Added on the map, they show in
+ * the junction view at the next update of the maps.
+ */
+@Composable
+private fun MapGapsCard() {
+  val gaps by app.navmaster.truck.nav.MapGaps.gaps.collectAsState()
+  val context = androidx.compose.ui.platform.LocalContext.current
+  var all by remember { mutableStateOf(false) }
+  Card("Mappa da completare") {
+    if (gaps.isEmpty()) {
+      Caption("Nessun incrocio dei tuoi percorsi senza cartelli o corsie su OpenStreetMap, per ora. " +
+          "Si riempie da solo a ogni viaggio: uscite e bivi dove la mappa non ha il cartello o le corsie.", size = 13, lines = 4)
+      return@Card
+    }
+    Caption("${gaps.size} uscite e bivi dei tuoi percorsi senza cartello o senza corsie su OpenStreetMap: la vista svincolo li disegna " +
+        "con il solo numero della strada o senza linee. Aggiunti sulla mappa (tocca un incrocio per aprirlo nell'editor), " +
+        "compaiono al prossimo aggiornamento delle mappe.", size = 13, lines = 6)
+    Spacer(Modifier.height(6.dp))
+    for (g in (if (all) gaps else gaps.take(8))) {
+      Column(
+          Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(12.dp)).background(Nm.PanelSolid)
+              .clickable {
+                runCatching {
+                  context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(g.editUrl))
+                      .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+              }.padding(horizontal = 12.dp, vertical = 8.dp),
+      ) {
+        Text("${g.kind} ${g.road}", color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("Manca: ${g.missing} · ${if (g.times > 1) "${g.times} viaggi" else "1 viaggio"}, l'ultimo il ${g.lastSeen}", color = Nm.Muted, fontSize = 13.sp)
+      }
+    }
+    Pills {
+      if (gaps.size > 8) Pill(if (all) "Meno" else "Tutti (${gaps.size})", false) { all = !all }
+      Pill("Condividi l'elenco", false) {
+        runCatching {
+          val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+              .putExtra(android.content.Intent.EXTRA_SUBJECT, "Incroci da completare su OpenStreetMap")
+              .putExtra(android.content.Intent.EXTRA_TEXT, app.navmaster.truck.nav.MapGaps.text(gaps))
+          context.startActivity(android.content.Intent.createChooser(send, "Condividi l'elenco").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+      }
+    }
   }
 }
