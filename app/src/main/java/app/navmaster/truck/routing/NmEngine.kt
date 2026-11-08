@@ -231,7 +231,17 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       }
       done += item.bytes
     }
-    list.firstOrNull()?.let { progress?.invoke(it, 1f) }
+    // then the code: a few sample searches in the country [first], so the hot parts of the engine are
+    // compiled before the first real route (just after a start or an update the code runs interpreted:
+    // the first route to Komjatice cost 13 s, 5.9 s with the app compiled)
+    list.firstOrNull()?.let { r ->
+      progress?.invoke(r, 0.97f)
+      val o = graphOf(r) ?: return@let
+      runCatching { lock.read { if (open[r.id] === o) o.graph.warmCode(profile) else null } }
+          .onSuccess { line -> line?.let { Log.i(TAG, "${r.id}: $it") } }
+          .onFailure { Log.w(TAG, "${r.id}: riscaldamento del codice fallito: $it") }
+      progress?.invoke(r, 1f)
+    }
   }
 
   fun prepareBorders() {
