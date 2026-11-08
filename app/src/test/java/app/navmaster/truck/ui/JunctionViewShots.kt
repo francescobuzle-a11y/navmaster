@@ -38,10 +38,11 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * The junction view on three made-up junctions (a motorway exit with its signs, a motorway fork
- * known from the lane counts with signs over the lanes, a junction in town with painted arrows),
- * by day and by night, upright and lying down: a picture of each in build/shots, and checks that
- * the picture has its roads, its lit lanes and its signs.
+ * The junction view on four made-up junctions (a motorway exit with its signs, a motorway fork
+ * known from the lane counts with signs over the lanes, a right turn and a slight right turn in
+ * town with painted arrows and no sign on the map), by day and by night, wide and tall: a picture
+ * of each in build/shots, and checks that the picture has its sign and its lit lanes on the side
+ * of the manoeuvre.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -49,45 +50,16 @@ import java.io.FileOutputStream
 class JunctionViewShots {
   @get:Rule val compose = createEmptyComposeRule()
 
-  /**
-   * Thin lines across the lit lane (the seams between the pieces of a strip): along a line just
-   * inside the edge of the lit lanes (clear of the arrow heads and of the lane lines), from 12 m in
-   * front of the eye to 15 m before the node,
-   * a pixel much lighter or darker than the pixels a few steps before and after it. Null when none.
-   */
-  private fun seams(scene: Scene, img: ImageBitmap, w: Int, h: Int, litCount: Int): String? {
+  /** How many pixels of the lit lanes' blue are in the left and in the right half of the picture's road (below the sign). */
+  private fun litSides(img: ImageBitmap, w: Int, h: Int): Pair<Int, Int> {
     val bmp = img.asAndroidBitmap()
-    val p = Projector(scene, w.toFloat(), h.toFloat())
-    val lum = ArrayList<Pair<Int, Double>>() // screen y, luminance
-    var lastY = -1
-    val n = scene.routeX.size - 1
-    val camAlong = scene.visibleFromM - 9.0
-    var m = camAlong + 12.0
-    while (m < scene.nodeM - 15.0) {
-      val fi = (m - scene.routeFrom) / scene.routeStep
-      val k = fi.toInt().coerceIn(0, n - 1); val t = fi - k
-      val x = scene.routeX[k] + (scene.routeX[k + 1] - scene.routeX[k]) * t
-      val y = scene.routeY[k] + (scene.routeY[k + 1] - scene.routeY[k]) * t
-      val dx = scene.routeX[k + 1] - scene.routeX[k]; val dy = scene.routeY[k + 1] - scene.routeY[k]
-      val l = kotlin.math.sqrt(dx * dx + dy * dy).coerceAtLeast(1e-6)
-      val off = scene.routeLaneY[k] + litCount * scene.laneW / 2 - 0.45
-      val q = p.project(x - dy / l * off, y + dx / l * off, 0.0)
-      if (q != null) {
-        val px = q[0].toInt(); val py = q[1].toInt()
-        if (px in 0 until w && py in 0 until h && py != lastY) {
-          val c = bmp.getPixel(px, py)
-          lum += py to (0.3 * ((c shr 16) and 255) + 0.59 * ((c shr 8) and 255) + 0.11 * (c and 255))
-          lastY = py
-        }
-      }
-      m += 0.05
+    var left = 0; var right = 0
+    for (y in (h * 0.4).toInt() until h step 3) for (x in 0 until w step 3) {
+      val c = bmp.getPixel(x, y)
+      val r = (c shr 16) and 255; val g = (c shr 8) and 255; val b = c and 255
+      if (b > 180 && r < 120 && g in 90..190) { if (x < w / 2) left++ else right++ }
     }
-    var bad = 0
-    for (i in 3 until lum.size - 3) {
-      val ref = (lum[i - 3].second + lum[i + 3].second) / 2
-      if (kotlin.math.abs(lum[i].second - ref) > 6) bad++
-    }
-    return if (bad > 0) "$bad righe trasversali sulla corsia accesa (su ${lum.size} pixel)" else null
+    return left to right
   }
 
   private fun save(img: ImageBitmap, name: String, out: File) {
@@ -105,25 +77,21 @@ class JunctionViewShots {
       for (night in listOf(false, true)) for ((sizeName, wh) in listOf("vert" to (1600 to 600), "orizz" to (1400 to 1000))) {
         val name = "svincolo_${c.name}_${if (night) "notte" else "giorno"}_$sizeName"
         try {
-          val scene = buildScene(c.scene, night)
-          if (scene == null) { problems += "$name: nessuna scena"; continue }
-          val stat = renderStatic(scene, wh.first, wh.second, density)
           val img = ImageBitmap(wh.first, wh.second)
           CanvasDrawScope().draw(density, LayoutDirection.Ltr, Canvas(img), Size(wh.first.toFloat(), wh.second.toFloat())) {
-            drawImage(stat)
-            drawVehicle(scene, c.vehAlong, c.scene.vehicleLane)
+            drawJunction(c.scene, night)
+            drawVehicleLane(c.scene)
           }
           save(img, name, out)
-          seams(scene, stat, wh.first, wh.second, c.scene.junction.active.size.coerceAtLeast(1))?.let { problems += "$name: $it" }
-          if (scene.asphalt.isEmpty()) problems += "$name: nessuna strada"
-          if (scene.lit.isEmpty()) problems += "$name: nessuna corsia evidenziata"
-          val sign = scene.gantry
-          if (sign == null) problems += "$name: manca il cartello"
+          val sign = signOf(c.scene)
+          if (sign.panels.isEmpty()) problems += "$name: manca il cartello"
           else if (sign.fromMap != c.signFromMap) problems += "$name: cartello ${if (sign.fromMap) "della mappa" else "ricostruito"} invece di ${if (c.signFromMap) "della mappa" else "ricostruito"}"
           else if (!sign.fromMap && (sign.panels.none { "SP12" in it.refs } || sign.panels.none { "Via Roma" in it.towns })) problems += "$name: cartello ricostruito senza numero e nome della strada: ${sign.panels.map { it.lines }}"
-          if (scene.paint.size < 3) problems += "$name: ${scene.paint.size} punte di freccia sulle corsie da prendere"
-          report.append("$name: ${scene.asphalt.size} strade, ${scene.markings.size} segni, ${scene.lit.size} corsie accese, " +
-              "cartello ${scene.gantry?.panels?.size ?: 0} pannelli (${if (scene.gantry?.fromMap == true) "mappa" else "ricostruito"}), ${scene.paint.size} punte di freccia\n")
+          // the lanes to take lit, on the side of the manoeuvre (all the junctions here go right)
+          val (left, right) = litSides(img, wh.first, wh.second)
+          if (left + right < 200) problems += "$name: corsie da prendere non evidenziate ($left + $right pixel)"
+          else if (right <= left) problems += "$name: corsie accese a sinistra ($left) più che a destra ($right) in una manovra a destra"
+          report.append("$name: cartello ${sign.panels.size} pannelli (${if (sign.fromMap) "mappa" else "ricostruito"}), corsie accese $left a sinistra, $right a destra\n")
         } catch (e: Throwable) {
           problems += "$name: errore ${e::class.simpleName}: ${e.message?.take(300)} ${e.stackTrace.take(4).joinToString(" < ")}"
         }
