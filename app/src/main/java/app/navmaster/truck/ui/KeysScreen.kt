@@ -132,24 +132,23 @@ private fun KeyRow(service: KeyCheck.Service, value: String, builtIn: Boolean, s
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Nm.Text, unfocusedTextColor = Nm.Text, focusedBorderColor = Nm.Accent),
     )
-    Row {
-      // one button: the key is tried on its service and, when it works, saved at once (drivers
-      // pressed «Verifica», saw the tick and closed the page without saving)
-      BigButton(if (busy) "Verifico…" else "Verifica e salva", Modifier.weight(1f), enabled = !busy && text.isNotBlank()) {
-        busy = true
-        scope.launch {
-          val r = withContext(Dispatchers.IO) { KeyCheck.check(service, text) }
-          if (r.ok && text.trim() != value) onChange(text.trim())
-          result = if (r.ok) r.copy(text = r.text + " · salvata") else r
-          busy = false
-        }
+    // one big button: the key is tried on its service and, when it works, saved at once (drivers
+    // pressed «Verifica», saw the tick and closed the page without saving)
+    BigButton(if (busy) "Verifico…" else "Verifica e salva", Modifier.fillMaxWidth(), enabled = !busy && text.isNotBlank()) {
+      busy = true
+      scope.launch {
+        val r = withContext(Dispatchers.IO) { KeyCheck.check(service, text) }
+        if (r.ok && text.trim() != value) onChange(text.trim())
+        result = if (r.ok) r.copy(text = r.text + " · salvata") else r
+        busy = false
       }
-      Spacer(Modifier.width(8.dp))
+    }
+    Row(Modifier.padding(top = 6.dp)) {
       // a key that cannot be tried now (no network): saved as it is
-      BigButton("Salva senza verificare", Modifier.weight(1f), style = BtnStyle.GHOST, enabled = text.trim() != value) { onChange(text.trim()) }
+      BigButton("Solo salva", Modifier.weight(1f), style = BtnStyle.GHOST, enabled = text.trim() != value) { onChange(text.trim()) }
       if (value.isNotBlank()) {
         Spacer(Modifier.width(8.dp))
-        BigButton("Togli", style = BtnStyle.GHOST) { text = ""; onChange("") }
+        BigButton("Togli", Modifier.weight(1f), style = BtnStyle.GHOST) { text = ""; result = null; onChange("") }
       }
     }
     result?.let { r ->
