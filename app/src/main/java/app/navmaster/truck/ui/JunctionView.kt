@@ -315,9 +315,10 @@ internal fun signOf(s: JunctionScene): Sign {
       panels += SignPanel(others.min(), others.max(), otherSign.branches.take(3), otherSign.towards.take(3), null, bg, fg, 0f, false)
     }
   }
-  if (panels.isEmpty()) {
-    // no sign on the map: the road taken, as the graph knows it (number, name), with the turn;
-    // at the entry of a motorway the booth and the motorway's number. Nothing made up.
+  if (panels.none { it.taken }) {
+    // no sign on the map for the road taken (none at all, or only the other branch's): the road
+    // taken as the graph knows it (number, name), with the turn; at the entry of a motorway the
+    // booth and the motorway's number. Nothing made up.
     fromMap = false
     // the road taken, or (a link without name) the first named or numbered road within 600 m after it
     val takenEdge = s.route.edges.firstOrNull { it.startM >= j.atM - 5 && it.startM <= j.atM + 600 && (it.refs.isNotEmpty() || it.names.any { n -> !RefLike.matches(n.trim()) }) }

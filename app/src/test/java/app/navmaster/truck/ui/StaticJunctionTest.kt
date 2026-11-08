@@ -57,6 +57,19 @@ class StaticJunctionTest {
         if (prev < 40f) problems += "${c.name}: il ramo non si allontana dalla strada ($prev px)"
       }
     }
+    // the map has only the other branch's sign (the A21 Cremona entry): the road taken gets its
+    // own panel too, made from the graph, and the map's panel stays
+    run {
+      val c = JvCases.exitCase()
+      val j = c.scene.junction
+      val onlyOther = c.scene.copy(junction = j.copy(sign = null, roads = j.roads.map { if (it.taken) it.copy(sign = null) else it }),
+          tollEntry = true, tollRef = "A21")
+      val sign = signOf(onlyOther)
+      val taken = sign.panels.filter { it.taken }
+      if (taken.isEmpty()) problems += "solo il cartello dell'altro ramo: manca il pannello della strada presa"
+      else if ("A21" !in taken.first().refs || "Casello" !in taken.first().towns) problems += "pannello della strada presa al casello: ${taken.first().lines}"
+      if (sign.panels.none { !it.taken && "A4" in it.refs }) problems += "il pannello della mappa per l'altro ramo è sparito"
+    }
     assertTrue(problems.joinToString("\n"), problems.isEmpty())
   }
 }
