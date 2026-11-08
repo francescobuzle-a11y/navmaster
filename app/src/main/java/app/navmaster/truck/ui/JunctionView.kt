@@ -1222,8 +1222,16 @@ private fun DrawScope.drawSign(g: Gantry, scene: Scene, p: Projector, density: D
   // the beam slanting down to the edge looked broken); the beam reaches both posts
   if (boxes.isNotEmpty()) {
     val postW = 4f * dp
-    val posts = listOfNotNull(g.at(g.yLeft, 0.0, p), g.at(g.yRight, 0.0, p))
-        .filter { it[0] in 2f..(w - 2f) && it[1] > bottom }
+    val spanL = boxes.first().x0; val spanR = boxes.last().x1
+    val reach = (spanR - spanL) * 0.6f
+    var posts = listOfNotNull(g.at(g.yLeft, 0.0, p), g.at(g.yRight, 0.0, p))
+        .filter { it[0] in 2f..(w - 2f) && it[1] > bottom && it[0] in (spanL - reach)..(spanR + reach) }
+    // none near: one post under the panels, at the road's edge nearest to them
+    if (posts.isEmpty()) {
+      listOfNotNull(g.at(g.yLeft, 0.0, p), g.at(g.yRight, 0.0, p)).filter { it[1] > bottom }
+          .minByOrNull { abs(it[0].coerceIn(spanL, spanR) - it[0]) }
+          ?.let { q -> posts = listOf(floatArrayOf(q[0].coerceIn(spanL + 8f * dp, spanR - 8f * dp), q[1], q[2])) }
+    }
     val beamL = (posts.map { it[0] - postW } + (boxes.first().x0 - 4f * dp)).min().coerceAtLeast(0f)
     val beamR = (posts.map { it[0] + postW } + (boxes.last().x1 + 4f * dp)).max().coerceAtMost(w)
     for (q in posts) drawLine(pal.post, Offset(q[0], bottom), Offset(q[0], q[1]), postW)
@@ -1309,20 +1317,23 @@ internal fun DrawScope.drawVehicle(scene: Scene, alongM: Double, lane: Int?, pro
   val off = if (alongM < scene.nodeM - 15 && lane != null && lane in scene.laneY.indices) scene.laneY[lane]
       else scene.routeLaneY[k] + (scene.routeLaneY[k + 1] - scene.routeLaneY[k]) * t
   val cx = x + nx * off; val cy = y + ny * off
-  // a chevron on the road, 6 m long and 2.6 m wide, never smaller than a fingertip on the screen
-  // (seen from the eye, a flat mark far away would be a line); with its shadow
-  val c0 = p.project(cx, cy, 0.3) ?: return
-  val c1 = p.project(cx + ux * 3.0, cy + uy * 3.0, 0.3) ?: return
-  var dxs = c1[0] - c0[0]; var dys = c1[1] - c0[1]
-  val ls = sqrt(dxs * dxs + dys * dys)
-  if (ls < 1e-3f) { dxs = 0f; dys = -1f } else { dxs /= ls; dys /= ls }
-  val minL = 16f * density
-  val lenS = max(ls * 2, minL)
-  val wid = max((p.focal * 2.6 / c0[2]).toFloat(), minL * 0.8f)
-  val tip = floatArrayOf(c0[0] + dxs * lenS * 0.55f, c0[1] + dys * lenS * 0.55f)
-  val bl = floatArrayOf(c0[0] - dxs * lenS * 0.45f - dys * wid / 2, c0[1] - dys * lenS * 0.45f + dxs * wid / 2)
-  val br = floatArrayOf(c0[0] - dxs * lenS * 0.45f + dys * wid / 2, c0[1] - dys * lenS * 0.45f - dxs * wid / 2)
-  val mid = floatArrayOf(c0[0] - dxs * lenS * 0.2f, c0[1] - dys * lenS * 0.2f)
+  // a chevron lying on the lane, in the picture's own perspective like the arrow heads (built on
+  // the screen it pointed towards the horizon's middle and looked askew), 6 m long and 2.8 m wide,
+  // made bigger when far away so that it never shrinks below a fingertip
+  fun at(v: Double, u: Double, sc: Double) = p.project(cx + (ux * v + nx * u) * sc, cy + (uy * v + ny * u) * sc, 0.25)
+  var grow = 1.0
+  run {
+    val l = at(-1.5, 1.4, 1.0); val r = at(-1.5, -1.4, 1.0)
+    if (l != null && r != null) {
+      val wpx = sqrt((l[0] - r[0]) * (l[0] - r[0]) + (l[1] - r[1]) * (l[1] - r[1]))
+      val minW = 18f * density
+      if (wpx in 0.1f..minW) grow = (minW / wpx).toDouble().coerceAtMost(2.2)
+    }
+  }
+  val tip = at(3.2, 0.0, grow) ?: return
+  val bl = at(-2.8, 1.4, grow) ?: return
+  val br = at(-2.8, -1.4, grow) ?: return
+  val mid = at(-1.3, 0.0, grow) ?: return
   val shape = Path().apply { moveTo(tip[0], tip[1]); lineTo(bl[0], bl[1]); lineTo(mid[0], mid[1]); lineTo(br[0], br[1]); close() }
   // dark on the blue lane, with a white rim: unlike the white arrow heads of the lane
   drawPath(shape, Color(0x66000000), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.5f * density))
