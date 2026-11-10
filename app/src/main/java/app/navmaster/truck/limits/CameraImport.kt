@@ -21,7 +21,7 @@ object CameraImport {
   const val VER = "importato"
   private const val TAG = "NavMasterCameras"
 
-  data class Cam(val lat: Double, val lon: Double, val speed: Double, val name: String?, val what: String?)
+  data class Cam(val lat: Double, val lon: Double, val speed: Double, val name: String?, val what: String?, val kind: String = "speed_camera")
 
   data class Info(val count: Int, val file: String, val date: String)
 
@@ -79,7 +79,7 @@ object CameraImport {
       for (c in cams) {
         ins.clearBindings()
         ins.bindString(1, "")
-        ins.bindString(2, "speed_camera")
+        ins.bindString(2, c.kind)
         ins.bindDouble(3, c.speed)
         ins.bindNull(4)
         ins.bindNull(5)
@@ -196,18 +196,46 @@ object CameraImport {
 
   private val SPEED = Regex("(?<![\\d.])(\\d{2,3})(?![\\d.])")
 
-  /** The camera of a point: its kind and speed from the words of its name; null for a mobile hotspot. */
+  /** The camera or alert of a point: its kind, what it checks and its speed, from the words of its name. */
   private fun cam(lat: Double, lon: Double, name: String?): Cam? {
     val n = name?.lowercase() ?: ""
-    if (n.contains("mobil") || n.contains("hotspot") || n.contains("possible") || n.contains("probab")) return null
-    val what = when {
-      n.contains("red") || n.contains("rosso") || n.contains("feu") || n.contains("ampel") || n.contains("semaf") -> "semaforo rosso"
-      n.contains("section") || n.contains("tratto") || n.contains("tutor") || n.contains("average") || n.contains("traject") ||
-          n.contains("tronçon") || n.contains("abschnitt") -> "controllo della velocità media"
-      n.contains("rail") || n.contains("level") || n.contains("passaggio") -> "passaggio a livello"
-      else -> null
+    val kind: String
+    val what: String?
+    when {
+      n.contains("rosso") || n.contains("red") || n.contains("feu") || n.contains("ampel") || n.contains("semaf") -> {
+        kind = "speed_camera"; what = "semaforo rosso"
+      }
+      n.contains("tutor") || n.contains("section") || n.contains("tratto") || n.contains("average") || n.contains("traject") ||
+          n.contains("tronçon") || n.contains("abschnitt") || n.contains("velocità media") -> {
+        kind = "speed_camera"; what = "controllo della velocità media"
+      }
+      n.contains("rail") || n.contains("level") || n.contains("passaggio") -> {
+        kind = "speed_camera"; what = "passaggio a livello"
+      }
+      n.contains("mobil") || n.contains("hotspot") -> {
+        kind = "speed_camera_mobile"; what = null
+      }
+      n.contains("ztl") || n.contains("zona traffico") || n.contains("traffico limitato") -> {
+        kind = "access"; what = null
+      }
+      n.contains("ambiental") || n.contains("emission") || n.contains("lez") -> {
+        kind = "low_emission_zone"; what = null
+      }
+      n.contains("camion") || n.contains("truck") || n.contains("peso") -> {
+        kind = "truck_control"; what = null
+      }
+      n.contains("dosso") || n.contains("bump") || n.contains("dissest") -> {
+        kind = "speed_bump"; what = null
+      }
+      n.contains("punto nero") || n.contains("black") || n.contains("curva") || n.contains("tornant") ||
+          n.contains("animal") || n.contains("pericol") -> {
+        kind = "danger"; what = null
+      }
+      else -> {
+        kind = "speed_camera"; what = null
+      }
     }
     val speed = SPEED.findAll(n).map { it.groupValues[1].toInt() }.firstOrNull { it in 20..140 && it % 5 == 0 }?.toDouble() ?: 0.0
-    return Cam(lat, lon, speed, name?.take(60), what)
+    return Cam(lat, lon, speed, name?.take(60), what, kind)
   }
 }

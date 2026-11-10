@@ -198,6 +198,10 @@ fun LimitSign(limit: RouteLimit, modifier: Modifier) {
             "hgv" -> "🚚"
             "bus" -> "🚌"
             "motorhome" -> "🚐"
+            "low_emission_zone" -> "🌱"
+            "truck_control" -> "🚛"
+            "speed_bump" -> "⛔"
+            "danger" -> "⚠️"
             else -> "!"
           },
           fontSize = 18.sp,

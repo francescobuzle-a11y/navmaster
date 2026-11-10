@@ -265,14 +265,14 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // only what is a ban for this vehicle, or a limit it passes only just (not a 44 t sign for a 27 t lorry)
   val limitWeightT = garage.active.tripWeightT(garage.loadT)
   val nextLimit = nav.limits.firstOrNull {
-    it.kind != "speed_camera" && !it.isSection && it.alongM - traveled > -15 &&
+    it.kind != "speed_camera" && it.kind != "speed_camera_mobile" && !it.isSection && it.alongM - traveled > -15 &&
         app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, limitWeightT)
   }
   // fixed speed cameras: only where warning about them is allowed, facing our way when the map says
   // the cameras that may be announced, worked out once per route (not at every position)
   val camerasOk = remember(nav.limits, nav.analysis, settings.enforcementEverywhere) {
     nav.limits.filter { l ->
-      l.kind == "speed_camera" &&
+      (l.kind == "speed_camera" || l.kind == "speed_camera_mobile") &&
           (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_WARNINGS_BANNED) &&
           cameraFacesUs(l, nav.analysis)
     }
@@ -505,7 +505,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       // on the map too only what matters to this vehicle (a ban, or a limit passed only just)
       LimitMarkers(remember(limitsAll, garage) {
         val w = garage.active.tripWeightT(garage.loadT)
-        limitsAll.filter { it.kind != "speed_camera" && !it.isSection && app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, w) }
+        limitsAll.filter { it.kind != "speed_camera" && it.kind != "speed_camera_mobile" && !it.isSection && app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, w) }
       })
       val stopPts = remember(plan.stops) { plan.stops.map { it.coordinate } }
       StopMarkers(stopPts)

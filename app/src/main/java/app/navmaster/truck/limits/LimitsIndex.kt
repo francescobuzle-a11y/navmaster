@@ -50,8 +50,12 @@ data class RouteLimit(
    * "passaggio a livello", "controllo della velocità media"), for the voice; else null.
    */
   val cameraWhat: String?
-    get() = name?.takeIf { kind == "speed_camera" && (it.startsWith("semaforo") || it.startsWith("passaggio") || it.startsWith("controllo")) }
-        ?.substringBefore(" (")
+    get() = when {
+      kind == "speed_camera_mobile" -> "autovelox mobile"
+      kind == "speed_camera" && name != null && (name.startsWith("semaforo") || name.startsWith("passaggio") || name.startsWith("controllo")) ->
+          name.substringBefore(" (")
+      else -> null
+    }
 
   /**
    * What the driver is told about the data, or null when there is nothing to say: how sure the
@@ -59,7 +63,7 @@ data class RouteLimit(
    */
   val check: String?
     get() {
-      val camera = kind == "speed_camera" || kind == "average_speed"
+      val camera = kind == "speed_camera" || kind == "speed_camera_mobile" || kind == "average_speed"
       val base = when (ver) {
         "dubbio" -> if (camera && name?.contains("censimento") == true) name else "dato da verificare"
         "doppio" -> if (camera) "confermato (elenco ufficiale o relazione)" else "confermato da due fonti"
@@ -91,7 +95,12 @@ data class RouteLimit(
           "access" -> "Divieto di transito"
           "adr_tunnel" -> "Galleria ADR cat. ${raw ?: ""}"
           "speed_camera" -> "Autovelox"
+          "speed_camera_mobile" -> "Autovelox mobile"
           "average_speed" -> "Tutor"
+          "low_emission_zone" -> "Zona ambientale"
+          "truck_control" -> "Controllo camion"
+          "speed_bump" -> "Dosso"
+          "danger" -> name ?: "Pericolo"
           else -> "Divieto"
         }
 
@@ -102,7 +111,7 @@ data class RouteLimit(
           "maxheight", "maxwidth", "maxlength" -> fmt(value) + "m"
           "maxweight", "maxaxleload" -> fmt(value) + "t"
           "adr_tunnel" -> raw
-          "speed_camera", "average_speed" -> if (value > 0) value.toInt().toString() else null
+          "speed_camera", "speed_camera_mobile", "average_speed" -> if (value > 0) value.toInt().toString() else null
           else -> null
         }
 
@@ -245,8 +254,8 @@ class LimitsIndex(regions: RegionManager) {
     var otherSide = 0
     val rows: (android.database.sqlite.SQLiteDatabase, String) -> List<RouteLimit> = { db, inList ->
       val found = mutableListOf<RouteLimit>()
-      db.rawQuery("SELECT DISTINCT l.id, l.value, l.raw, l.name, l.pts, l.osm, " + (if (hasCheck(db)) "l.ver" else "NULL") +
-          " FROM cells c JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList) AND l.kind = 'speed_camera'", null).use { c ->
+      db.rawQuery("SELECT DISTINCT l.id, l.value, l.raw, l.name, l.pts, l.osm, " + (if (hasCheck(db)) "l.ver" else "NULL") + ", l.kind" +
+          " FROM cells c JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList) AND l.kind IN ('speed_camera','speed_camera_mobile','low_emission_zone','truck_control','speed_bump','danger')", null).use { c ->
         while (c.moveToNext()) {
           val pts = RouteMatcher.parsePts(c.getString(4))
           // a camera stands beside the road
@@ -263,7 +272,7 @@ class LimitsIndex(regions: RegionManager) {
               continue
             }
           }
-          found += RouteLimit("speed_camera", c.getDouble(1), c.getString(2), c.getString(3), null, lo, p.lat, p.lng, false,
+          found += RouteLimit(c.getString(7), c.getDouble(1), c.getString(2), c.getString(3), null, lo, p.lat, p.lng, false,
               c.getString(5)?.ifBlank { null }, c.getString(6))
         }
       }
@@ -421,7 +430,7 @@ class LimitsIndex(regions: RegionManager) {
     return out
   }
 
-  fun cameras(all: List<RouteLimit>): List<RouteLimit> = all.filter { it.kind == "speed_camera" }
+  fun cameras(all: List<RouteLimit>): List<RouteLimit> = all.filter { it.kind == "speed_camera" || it.kind == "speed_camera_mobile" }
 
   private fun blocks(kind: String, value: Double, v: VehicleProfile, weightT: Double): Boolean =
       when (kind) {
@@ -463,6 +472,7 @@ class LimitsIndex(regions: RegionManager) {
         "maxlength" -> l.value - v.lengthM < 1.0
         "maxweight" -> l.value - weightT < 2.0
         "maxaxleload" -> l.value - v.axleLoadT < 1.0
+        "low_emission_zone", "truck_control", "speed_bump", "danger" -> true
         else -> false
       }
     }
