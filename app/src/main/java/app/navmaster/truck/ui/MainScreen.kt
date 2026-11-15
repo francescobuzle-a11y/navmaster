@@ -488,17 +488,20 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val camPlain = androidx.compose.runtime.rememberUpdatedState(Triple(zoom, tilt, navPadding))
   val camTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
   val camUiLoc = androidx.compose.runtime.rememberUpdatedState(ui.location)
-  LaunchedEffect(navigating, camWindows, is3d) {
+  // the stretches read at each frame: a change of their values (the buttons, the settings) goes on
+  // from the view of the moment, it does not start the stretch's easing again
+  val camWindowsNow = androidx.compose.runtime.rememberUpdatedState(camWindows)
+  LaunchedEffect(navigating, is3d) {
     if (camDriver.active) {
       camDriver.reset()
       if (navigating) mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FOLLOW_USER_WITH_BEARING
     }
-    if (!navigating || camWindows.isEmpty()) return@LaunchedEffect
+    if (!navigating) return@LaunchedEffect
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
         val loc = smoothLoc.value?.let { DriveCamera.laneShift(it, camShift.value) } ?: camUiLoc.value ?: return@withFrameNanos
         val along = smoothAlong.value.takeIf { it >= 0 } ?: camTraveled.value
-        val win = DriveCamera.windowAt(camWindows, along)
+        val win = DriveCamera.windowAt(camWindowsNow.value, along)
         val cs = mapState.cameraState
         if (!camDriver.active) {
           if (win == null) return@withFrameNanos
@@ -1167,19 +1170,26 @@ private fun NavigatingOverlay(
       val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
       val nightMode = settings.nightMode
       // the controls needed now and then: in one bar that a touch on the map brings up
-      // nearer, farther, more or less tilted: kept in the settings (Mappa e vista), the map
-      // following at once (while the view of a roundabout or a junction is on, after it)
+      // nearer, farther, more or less tilted: the plain view and the views of roundabouts and
+      // junctions together (one of these is often on near a junction), kept in the settings
+      // (Mappa e vista), the map following at once
       fun closer(by: Double) {
         barTouch = System.currentTimeMillis()
         val now = AppGraph.settings.settings.value.driveZoom
         val next = (now + by).coerceIn(15.5, 19.5)
-        if (next == now) return
-        AppGraph.settings.update { it.copy(driveZoom = Math.round(next * 10) / 10.0) }
-        if (mapState.isTrackingUser) runCatching { if (by > 0) mapState.zoomIn(next - now) else mapState.zoomOut(now - next) }
+        fun r(v: Double) = Math.round(v * 10) / 10.0
+        AppGraph.settings.update {
+          it.copy(driveZoom = r(next), roundaboutZoom = r((it.roundaboutZoom + by).coerceIn(15.0, 19.5)),
+              junctionZoom = r((it.junctionZoom + by).coerceIn(15.0, 19.5)))
+        }
+        if (next != now && mapState.isTrackingUser) runCatching { if (by > 0) mapState.zoomIn(next - now) else mapState.zoomOut(now - next) }
       }
       fun tilted(by: Int) {
         barTouch = System.currentTimeMillis()
-        AppGraph.settings.update { it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, 70)) }
+        AppGraph.settings.update {
+          it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, 70), roundaboutTilt = (it.roundaboutTilt + by).coerceIn(0, 60),
+              junctionTilt = (it.junctionTilt + by).coerceIn(0, 70))
+        }
       }
       val bar = listOf(
           BarButton("Vista", null, if (is3d) "2D" else "3D", Nm.Raised) {
@@ -1192,8 +1202,8 @@ private fun NavigatingOverlay(
           BarButton("Zoom +", null, "+", Nm.Raised) { closer(0.2) },
           BarButton("Zoom −", null, "−", Nm.Raised) { closer(-0.2) },
       ) + (if (is3d) listOf(
-          BarButton("Più incl.", null, "+°", Nm.Raised) { tilted(3) },
-          BarButton("Meno incl.", null, "−°", Nm.Raised) { tilted(-3) },
+          BarButton("Più incl.", null, "+°", Nm.Raised) { tilted(5) },
+          BarButton("Meno incl.", null, "−°", Nm.Raised) { tilted(-5) },
       ) else emptyList()) + listOf(
           BarButton(if (satellite) "Mappa" else "Satellite", Icons.Rounded.Layers, null, if (satellite) Nm.Accent else Nm.Raised) {
             barTouch = System.currentTimeMillis()
