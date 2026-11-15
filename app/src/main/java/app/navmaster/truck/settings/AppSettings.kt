@@ -277,6 +277,8 @@ data class Settings(
     /** Optional free Mapillary token: with it the street photos also come from Mapillary. */
     val mapillaryToken: String = "",
     val speedWarningKmh: Int = 5,
+    /** Speeds and limits shown and said in miles per hour (off: km/h). The data stay in km/h (core.SpeedUnit). */
+    val speedMph: Boolean = false,
     /** Reports of the other NavMaster drivers on the road ahead (and the button to send one). */
     val liveReports: Boolean = true,
     /** "C'è ancora?" asked aloud and answered with the voice (sì / no), with the microphone. */

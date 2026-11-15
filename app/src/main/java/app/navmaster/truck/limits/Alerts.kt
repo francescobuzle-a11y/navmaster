@@ -1,5 +1,6 @@
 package app.navmaster.truck.limits
 
+import app.navmaster.truck.core.SpeedUnit
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
@@ -53,6 +54,8 @@ data class AlertPoint(
     val title: String,
     /** The speed it checks (km/h), 0 when not known. */
     val speed: Int = 0,
+    /** Radarbot's own limits for kinds of vehicles here, km/h ("hgv", "van", "bus"; AlertPack.vehicleSpeeds), where they differ from [speed]. */
+    val vehicleSpeeds: Map<String, Int> = emptyMap(),
     val road: String? = null,
     val country: String? = null,
     /** Radarbot's direction code (1–4): its meaning is not documented, kept but not shown. */
@@ -71,7 +74,10 @@ data class AlertPoint(
   /** The lines of the card opened by a touch on the icon. */
   fun details(): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>()
-    if (speed > 0) out += "Limite" to "$speed km/h"
+    if (speed > 0) out += "Limite" to "${SpeedUnit.show(speed)} ${SpeedUnit.label()}"
+    for ((k, words) in listOf("hgv" to "Limite camion", "van" to "Limite furgone", "bus" to "Limite autobus")) {
+      vehicleSpeeds[k]?.let { out += words to "${SpeedUnit.show(it)} ${SpeedUnit.label()}" }
+    }
     road?.let { out += "Strada" to it }
     // Radarbot's direction code (1–4) has no documented meaning and no angle: not shown
     facing?.let { f -> compass(f)?.let { out += "Inquadra" to it } }
@@ -102,7 +108,7 @@ data class AlertPoint(
 object Alerts {
   /** The alert of a row of the alert pack (data/allerte.py). */
   fun fromPack(lat: Double, lon: Double, grp: String?, type: String?, kind: String?, name: String?, speed: Double,
-               road: String?, dir: String?, cc: String?): AlertPoint? {
+               road: String?, dir: String?, cc: String?, vehicleSpeeds: Map<String, Int> = emptyMap()): AlertPoint? {
     val g = AlertGroup.byId(grp) ?: groupOf(kind, name) ?: return null
     val title = when (type) {
       "F", "FT" -> "Autovelox fisso"
@@ -113,7 +119,7 @@ object Alerts {
       "R", "RV" -> "Dosso"
       else -> name ?: g.title
     }
-    return AlertPoint(lat, lon, g, title, speedOf(speed), road?.ifBlank { null }, cc?.ifBlank { null }, dir?.ifBlank { null },
+    return AlertPoint(lat, lon, g, title, speedOf(speed), vehicleSpeeds, road?.ifBlank { null }, cc?.ifBlank { null }, dir?.ifBlank { null },
         sources = setOf(AlertSource.PACK))
   }
 
@@ -162,7 +168,7 @@ object Alerts {
     }
   }
 
-  private fun speedOf(v: Double): Int = if (v >= 5 && v <= 150) v.toInt() else 0
+  private fun speedOf(v: Double): Int = if (v >= 5 && v <= 200) v.toInt() else 0
 
   /** Two alerts closer than this are the same one when they are of the same group (the lists place them a few metres apart). */
   const val SAME_M = 40.0
@@ -211,6 +217,7 @@ object Alerts {
             group = group,
             title = if (group != o.group) p.title else o.title,
             speed = if (o.speed > 0) o.speed else p.speed,
+            vehicleSpeeds = o.vehicleSpeeds.ifEmpty { p.vehicleSpeeds },
             road = o.road ?: p.road,
             country = o.country ?: p.country,
             dirCode = o.dirCode ?: p.dirCode,
@@ -259,7 +266,7 @@ object Alerts {
       out.append("""]},"properties":{"g":"""").append(p.group.id).append("""","p":""")
       appendLong(out, p.group.priority.toLong())
       out.append(""","v":"""")
-      if (p.speed > 0) appendLong(out, p.speed.toLong())
+      if (p.speed > 0) appendLong(out, SpeedUnit.show(p.speed).toLong())
       out.append("""","i":""")
       appendLong(out, i.toLong())
       out.append("}}")

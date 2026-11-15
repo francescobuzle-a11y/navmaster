@@ -1,5 +1,6 @@
 package app.navmaster.truck.ui
 
+import app.navmaster.truck.core.SpeedUnit
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -338,9 +339,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         (cam.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") +
             " tra ${(((cam.alongM - traveled) / 50).roundToInt() * 50).coerceAtLeast(50)} metri" +
             (when {
-              lim != null && lim.why != app.navmaster.truck.vehicle.SpeedRules.Why.SIGNED -> ", limite per il tuo mezzo ${lim.kmh}"
-              lim != null -> ", limite ${lim.kmh}"
-              cam.value > 0 -> ", limite ${cam.value.toInt()}"
+              lim != null && lim.why != app.navmaster.truck.vehicle.SpeedRules.Why.SIGNED -> ", limite per il tuo mezzo ${SpeedUnit.spoken(lim.kmh)}"
+              lim != null -> ", limite ${SpeedUnit.spoken(lim.kmh)}"
+              cam.value > 0 -> ", limite ${SpeedUnit.spoken(cam.value.toInt())}"
               else -> ""
             }))
     }
@@ -369,7 +370,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   LaunchedEffect(sectionKey, section != null && section.alongM - traveled < 1000) {
     val s = section ?: return@LaunchedEffect
     if (s.alongM - traveled in 0.0..1000.0) vm.say("Tra ${app.navmaster.truck.nav.SpeechIt.distance(s.alongM - traveled)} " +
-        "inizia un tratto controllato dal Tutor" + (sectionLimit?.let { ", limite $it" } ?: "") + ".")
+        "inizia un tratto controllato dal Tutor" + (sectionLimit?.let { ", limite ${SpeedUnit.spoken(it)}" } ?: "") + ".")
   }
   val sectionOver = inSection && sectionAvg != null && sectionLimit != null && sectionAvg > sectionLimit + 2 &&
       traveled - (section?.alongM ?: 0.0) > 2000

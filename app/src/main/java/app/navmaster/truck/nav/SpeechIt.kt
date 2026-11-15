@@ -135,6 +135,7 @@ object SpeechIt {
   private val UNITS: List<Pair<Regex, (MatchResult) -> String>> =
       listOf(
           rxi("\\b(\\d+)(?:,(\\d+))?\\s?km/h\\b") to { m -> "${m.groupValues[1]} chilometri orari" },
+          rxi("\\b(\\d+)\\s?mph\\b") to { m -> "${m.groupValues[1]} miglia orarie" },
           rx("\\b(\\d+),5\\s?km\\b") to { m -> m.groupValues[1].toInt().let { if (it == 1) "un chilometro e mezzo" else "$it chilometri e mezzo" } },
           rx("\\b(\\d+),(\\d)\\s?km\\b") to { m -> "${m.groupValues[1]} virgola ${m.groupValues[2]} chilometri" },
           rx("\\b(\\d+)\\s?km\\b") to { m -> if (m.groupValues[1] == "1") "un chilometro" else "${m.groupValues[1]} chilometri" },

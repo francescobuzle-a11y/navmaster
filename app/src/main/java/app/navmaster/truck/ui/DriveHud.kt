@@ -1,5 +1,6 @@
 package app.navmaster.truck.ui
 
+import app.navmaster.truck.core.SpeedUnit
 import android.media.AudioManager
 import android.media.ToneGenerator
 import androidx.compose.animation.animateContentSize
@@ -224,7 +225,7 @@ fun SpeedArc(
   LaunchedEffect(beyondTolerance, state == SpeedState.FAR, muted) {
     if (muted) return@LaunchedEffect
     if (state == SpeedState.FAR && effective != null) {
-      onSay("Rallenta, limite $effective.")
+      onSay("Rallenta, limite ${SpeedUnit.spoken(effective)}.")
     } else if (beyondTolerance && System.currentTimeMillis() - beepedAt > 30_000) {
       beepedAt = System.currentTimeMillis()
       runCatching { tone?.startTone(ToneGenerator.TONE_PROP_BEEP, 160) }
@@ -288,9 +289,9 @@ fun SpeedArc(
       }
     }
     Column(Modifier.fillMaxWidth().padding(top = height * 0.30f), horizontalAlignment = Alignment.CenterHorizontally) {
-      Text(speedKmh?.toString() ?: "–", color = numberColor, fontSize = (w * 0.235f).sp, fontWeight = FontWeight.Bold,
+      Text(speedKmh?.let { SpeedUnit.show(it).toString() } ?: "–", color = numberColor, fontSize = (w * 0.235f).sp, fontWeight = FontWeight.Bold,
           lineHeight = (w * 0.235f).sp)
-      GaugeText("km/h", (w * 0.055f).sp, if (state == SpeedState.FAR) Color(0xDDFFFFFF) else Nm.Muted, FontWeight.SemiBold)
+      GaugeText(SpeedUnit.label(), (w * 0.055f).sp, if (state == SpeedState.FAR) Color(0xDDFFFFFF) else Nm.Muted, FontWeight.SemiBold)
     }
     Row(
         Modifier.align(Alignment.BottomCenter).padding(bottom = height * 0.05f),
@@ -302,10 +303,10 @@ fun SpeedArc(
         Box(
             Modifier.size(sign).testTag("arcSign").clip(CircleShape).background(Color.White).border(sign * 0.13f, NmRed, CircleShape),
             contentAlignment = Alignment.Center,
-        ) { GaugeText(effective.toString(), (w * (if (effective >= 100) 0.043f else 0.052f)).sp, Color.Black, FontWeight.Bold) }
+        ) { val n = SpeedUnit.show(effective); GaugeText(n.toString(), (w * (if (n >= 100) 0.043f else 0.052f)).sp, Color.Black, FontWeight.Bold) }
       }
       val label = when {
-        sectionAvg != null -> "media $sectionAvg" + (sectionLimit?.let { " / $it" } ?: "")
+        sectionAvg != null -> "media ${SpeedUnit.show(sectionAvg)}" + (sectionLimit?.let { " / ${SpeedUnit.show(it)}" } ?: "")
         forVehicle -> if (limit?.why == app.navmaster.truck.vehicle.SpeedRules.Why.LEGAL) "limite del mezzo" else "tuo limite"
         effective != null -> "limite"
         else -> null

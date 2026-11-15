@@ -1,5 +1,6 @@
 package app.navmaster.truck.ui
 
+import app.navmaster.truck.core.SpeedUnit
 import app.navmaster.truck.vehicle.SpeedRules
 
 import androidx.compose.animation.core.RepeatMode
@@ -266,7 +267,7 @@ fun SpeedPanel(speedKmh: Int?, limitKmh: Int?, vehicleMaxKmh: Int, modifier: Mod
           contentAlignment = Alignment.Center,
       ) {
         // the limit for this vehicle: on a motorway at 130 a lorry still has its own 80
-        Text((effective ?: limitKmh).toString(), color = Color.Black, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text(SpeedUnit.show(effective ?: limitKmh).toString(), color = Color.Black, fontSize = 24.sp, fontWeight = FontWeight.Bold)
       }
     }
     if (speedKmh != null) {
@@ -278,8 +279,8 @@ fun SpeedPanel(speedKmh: Int?, limitKmh: Int?, vehicleMaxKmh: Int, modifier: Mod
           contentAlignment = Alignment.Center,
       ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-          Text(speedKmh.toString(), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-          Text("km/h", color = Color(0xB3FFFFFF), fontSize = 11.sp)
+          Text(SpeedUnit.show(speedKmh).toString(), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+          Text(SpeedUnit.label(), color = Color(0xB3FFFFFF), fontSize = 11.sp)
         }
       }
     }
@@ -326,9 +327,10 @@ fun CameraBanner(camera: RouteLimit, distanceM: Double, zoneOnly: Boolean, modif
     Column(Modifier.padding(end = 12.dp)) {
       // the limit to respect with this vehicle, and the sign's when it is higher (the same two numbers as the sign at the side of the map)
       val speed = when {
-        limit != null && limit.signedAbove != null -> " · ${limit.kmh} km/h (cartello ${limit.signedAbove})"
-        limit != null -> " · ${limit.kmh} km/h"
-        camera.value > 0 -> " · ${camera.value.toInt()} km/h"
+        limit != null && limit.signedAbove != null ->
+            " · ${SpeedUnit.show(limit.kmh)} ${SpeedUnit.label()} (cartello ${SpeedUnit.show(limit.signedAbove!!)})"
+        limit != null -> " · ${SpeedUnit.show(limit.kmh)} ${SpeedUnit.label()}"
+        camera.value > 0 -> " · ${SpeedUnit.show(camera.value.toInt())} ${SpeedUnit.label()}"
         else -> ""
       }
       Text(if (zoneOnly) "Zona di controllo" else (camera.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") + speed,
@@ -353,11 +355,11 @@ fun SectionBanner(section: RouteLimit, traveled: Double, limitKmh: Int?, avgKmh:
       verticalAlignment = Alignment.CenterVertically,
   ) {
     Box(Modifier.size(46.dp).clip(CircleShape).background(Color(0xFF1565C0)), contentAlignment = Alignment.Center) {
-      Text(limitKmh?.toString() ?: "T", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+      Text(limitKmh?.let { SpeedUnit.show(it).toString() } ?: "T", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
     }
     Spacer(Modifier.width(10.dp))
     Column(Modifier.padding(end = 12.dp)) {
-      Text(if (inside) "Tutor · media " + (avgKmh?.let { "$it km/h" } ?: "…") else "Tutor", color = Color.White, fontSize = 14.sp,
+      Text(if (inside) "Tutor · media " + (avgKmh?.let { "${SpeedUnit.show(it)} ${SpeedUnit.label()}" } ?: "…") else "Tutor", color = Color.White, fontSize = 14.sp,
           fontWeight = FontWeight.Bold)
       Text(if (inside) "fine tra " + Fmt.distanceText((section.endM - traveled).coerceAtLeast(0.0))
            else "inizia tra " + Fmt.distanceText((section.alongM - traveled).coerceAtLeast(0.0)),
@@ -383,10 +385,11 @@ fun SpeedLimitSign(limit: SpeedRules.Limit, speedKmh: Int?, toleranceKmh: Int, m
       Box(
           Modifier.size(size).shadow(6.dp, CircleShape).clip(CircleShape).background(if (over) NmAmber else Color.White)
               .border(size * 0.11f, Color(0xFFD32F2F), CircleShape)
-              .semantics { contentDescription = "Limite da rispettare ${limit.kmh} km/h" },
+              .semantics { contentDescription = "Limite da rispettare ${SpeedUnit.show(limit.kmh)} ${SpeedUnit.label()}" },
           contentAlignment = Alignment.Center,
       ) {
-        Text("${limit.kmh}", color = Color.Black, fontSize = (size.value * (if (limit.kmh >= 100) 0.32f else 0.38f)).sp, fontWeight = FontWeight.Bold)
+        val n = SpeedUnit.show(limit.kmh)
+        Text("$n", color = Color.Black, fontSize = (size.value * (if (n >= 100) 0.32f else 0.38f)).sp, fontWeight = FontWeight.Bold)
       }
       if (why != SpeedRules.Why.SIGNED) TruckBadge(size * 0.46f, Modifier.align(Alignment.BottomEnd).offset(x = size * 0.1f, y = size * 0.02f))
     }
@@ -394,11 +397,11 @@ fun SpeedLimitSign(limit: SpeedRules.Limit, speedKmh: Int?, toleranceKmh: Int, m
       GaugeText(if (why == SpeedRules.Why.LEGAL) "per il mezzo" else "tuo limite", 12.sp, Color.White, FontWeight.Bold,
           Modifier.padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 7.dp, vertical = 2.dp))
     }
-    limit.signedAbove?.let { signed ->
+    limit.signedAbove?.let { SpeedUnit.show(it) }?.let { signed ->
       Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier.size(size * 0.5f).clip(CircleShape).background(Color(0xFFECEFF1)).border(size * 0.055f, Color(0xFFD32F2F), CircleShape)
-                .semantics { contentDescription = "Cartello $signed km/h" },
+                .semantics { contentDescription = "Cartello $signed ${SpeedUnit.label()}" },
             contentAlignment = Alignment.Center,
         ) { Text("$signed", color = Color.Black, fontSize = (size.value * (if (signed >= 100) 0.17f else 0.2f)).sp, fontWeight = FontWeight.Bold) }
         GaugeText("cartello", 12.sp, Color.White, FontWeight.SemiBold,

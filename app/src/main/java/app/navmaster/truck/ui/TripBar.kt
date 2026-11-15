@@ -1,5 +1,6 @@
 package app.navmaster.truck.ui
 
+import app.navmaster.truck.core.SpeedUnit
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -82,7 +83,7 @@ private fun compass(deg: Double): String {
 private fun valueOf(f: TripField, d: TripData): Triple<String, String, String> {
   val none = Triple("–", "", f.label)
   return when (f) {
-    TripField.SPEED -> d.speedKmh?.let { Triple("$it", "km/h", f.label) } ?: Triple("0", "km/h", f.label)
+    TripField.SPEED -> Triple("${SpeedUnit.show(d.speedKmh ?: 0)}", SpeedUnit.label(), f.label)
     TripField.ARRIVAL -> d.remainingS?.let { Triple(Fmt.eta(it), "", f.label) } ?: none
     TripField.DIST_LEFT -> d.remainingM?.let { Fmt.distance(it).let { x -> Triple(x.value, x.unit, f.label) } } ?: none
     TripField.TIME_LEFT -> d.remainingS?.let { Triple(hm(it), "", f.label) } ?: none

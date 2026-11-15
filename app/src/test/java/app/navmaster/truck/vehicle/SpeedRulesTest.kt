@@ -60,8 +60,8 @@ class SpeedRulesTest {
 
   @Test
   fun otherCountries() {
-    check(SpeedRules.at(truck, "AT", "motorway", 130), 80, Why.LEGAL)
-    check(SpeedRules.at(truck, "AT", "primary", 100), 70, Why.LEGAL)
+    check(SpeedRules.at(truck, "AT", "motorway", 130, hour = 12), 80, Why.LEGAL)
+    check(SpeedRules.at(truck, "AT", "primary", 100, hour = 12), 70, Why.LEGAL)
     check(SpeedRules.at(truck, "DE", "motorway", 130), 80, Why.LEGAL)
     // outside towns in Germany: 60 over 7.5 t or with a trailer
     check(SpeedRules.at(truck, "DE", "secondary", 100), 60, Why.LEGAL)
@@ -74,6 +74,37 @@ class SpeedRulesTest {
     check(SpeedRules.at(truck, "SK", "motorway", 130), 80, Why.OWN)
     check(SpeedRules.at(truck, "SK", "primary", 90), 80, Why.OWN)
     check(SpeedRules.at(truck, null, "motorway", 130), 80, Why.OWN)
+  }
+
+  @Test
+  fun austriaAtNight() {
+    // over 7.5 t from 22 to 5: 60 on every road outside towns, motorways too (Radarbot has these 60s at its cameras)
+    check(SpeedRules.at(truck, "AT", "motorway", 130, hour = 23), 60, Why.LEGAL)
+    check(SpeedRules.at(truck, "AT", "motorway", 130, hour = 4), 60, Why.LEGAL)
+    check(SpeedRules.at(truck, "AT", "primary", 100, hour = 22), 60, Why.LEGAL)
+    check(SpeedRules.at(truck, "AT", "motorway", 130, hour = 5), 80, Why.LEGAL)
+    // 7.5 t or less: the day's limits
+    check(SpeedRules.at(rigid10.copy(maxWeightT = 7.0), "AT", "motorway", 130, hour = 23), 80, Why.LEGAL)
+    // in a town: the sign
+    check(SpeedRules.at(truck, "AT", "secondary", 50, hour = 23), 50, Why.SIGNED)
+  }
+
+  @Test
+  fun franceOverTwelveTonnes() {
+    // an articulated lorry over 12 t: 60 on the ordinary roads, 80 on the main ones (priority roads) and on dual carriageways
+    check(SpeedRules.at(truck, "FR", "secondary", 90), 60, Why.LEGAL)
+    check(SpeedRules.at(truck, "FR", "tertiary", 80), 60, Why.LEGAL)
+    check(SpeedRules.at(truck, "FR", "primary", 90), 80, Why.LEGAL)
+    check(SpeedRules.at(truck, "FR", "trunk", 110), 80, Why.LEGAL)
+    // a rigid lorry over 12 t without trailer: 80 on the ordinary roads
+    val rigid26 = VehicleProfile.defaults().first { it.id == "motrice" }
+    check(SpeedRules.at(rigid26, "FR", "secondary", 90), 80, Why.LEGAL)
+    // up to 12 t: 90 on dual carriageways, 80 on the other roads
+    check(SpeedRules.at(rigid10, "FR", "trunk", 110), 90, Why.LEGAL)
+    check(SpeedRules.at(rigid10, "FR", "secondary", 90), 80, Why.LEGAL)
+    // the other countries do not tell main and ordinary roads apart
+    check(SpeedRules.at(truck, "DE", "primary", 100), 60, Why.LEGAL)
+    check(SpeedRules.at(truck, "PL", "tertiary", 90), 70, Why.LEGAL)
   }
 
   @Test

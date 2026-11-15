@@ -84,8 +84,8 @@ object AlertMapData {
         val b = firstPoint(pts.substringAfterLast(';')) ?: continue
         val speed = c.getDouble(0).let { if (it in 5.0..150.0) it.toInt() else 0 }
         val road = c.getString(1)?.ifBlank { null }
-        out += AlertPoint(a.first, a.second, AlertGroup.TUTOR, "Inizio Tutor", speed, road, ver = c.getString(3), sources = setOf(AlertSource.DATA))
-        out += AlertPoint(b.first, b.second, AlertGroup.TUTOR, "Fine Tutor", speed, road, ver = c.getString(3), sources = setOf(AlertSource.DATA))
+        out += AlertPoint(a.first, a.second, AlertGroup.TUTOR, "Inizio Tutor", speed, road = road, ver = c.getString(3), sources = setOf(AlertSource.DATA))
+        out += AlertPoint(b.first, b.second, AlertGroup.TUTOR, "Fine Tutor", speed, road = road, ver = c.getString(3), sources = setOf(AlertSource.DATA))
       }
     }
     return out

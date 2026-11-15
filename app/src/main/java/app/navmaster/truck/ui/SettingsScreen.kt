@@ -316,6 +316,10 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     }
   }
   Card("Velocità") {
+    ToggleRow("Velocità in miglia orarie (mph)", "Tachimetro, cartelli dei limiti, autovelox, Tutor e voce in mph. Spento: sempre in km/h, " +
+        "anche dove i dati sono in miglia (Regno Unito, Stati Uniti): vengono convertiti.", s.speedMph) { v ->
+      set { it.copy(speedMph = v) }
+    }
     Stepper("Avviso quando superi il limite di", s.speedWarningKmh.toDouble(), "km/h", 1.0, 0.0, 20.0, 0) { v ->
       set { it.copy(speedWarningKmh = v.toInt()) }
     }

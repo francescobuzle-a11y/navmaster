@@ -112,6 +112,43 @@ object AlertPack {
     return Info(meta["count"]?.toIntOrNull() ?: 0, meta["source"] ?: "", meta["file"] ?: "", meta["built"] ?: "", countries)
   }
 
+  /**
+   * Radarbot's own limits for kinds of vehicles at a camera (column veh, "hgv=80;van=70;bus=60", km/h,
+   * only where they differ from the camera's limit): key to km/h, empty when none.
+   */
+  fun vehicleSpeeds(veh: String?): Map<String, Int> {
+    if (veh.isNullOrBlank()) return emptyMap()
+    val out = HashMap<String, Int>()
+    for (part in veh.split(';')) {
+      val k = part.substringBefore('=', "").trim()
+      val v = part.substringAfter('=', "").trim().toIntOrNull() ?: continue
+      if (k.isNotEmpty() && v in 5..200) out[k] = v
+    }
+    return out
+  }
+
+  /** The key of [vehicleSpeeds] for a vehicle: lorries over 3.5 t "hgv", vans "van", buses "bus"; campers have none (the camera's own limit). */
+  fun vehicleKey(v: app.navmaster.truck.vehicle.VehicleProfile): String? = when (v.type) {
+    app.navmaster.truck.vehicle.VehicleType.AUTOARTICOLATO, app.navmaster.truck.vehicle.VehicleType.AUTOTRENO,
+    app.navmaster.truck.vehicle.VehicleType.MOTRICE -> if (v.maxWeightT > 3.5) "hgv" else "van"
+    app.navmaster.truck.vehicle.VehicleType.FURGONE -> "van"
+    app.navmaster.truck.vehicle.VehicleType.AUTOBUS -> "bus"
+    app.navmaster.truck.vehicle.VehicleType.CAMPER -> null
+  }
+
+  /** Radarbot's limit at a camera for [v] (km/h), null when it has none of its own for that kind of vehicle. */
+  fun vehicleSpeed(veh: String?, v: app.navmaster.truck.vehicle.VehicleProfile): Int? = vehicleKey(v)?.let { vehicleSpeeds(veh)[it] }
+
+  private val vehColumn = java.util.WeakHashMap<SQLiteDatabase, Boolean>()
+
+  /** The table limits of [db] has the column veh (packs made before 2026-11-16 do not). */
+  fun hasVehicleColumn(db: SQLiteDatabase): Boolean = synchronized(vehColumn) {
+    vehColumn.getOrPut(db) {
+      runCatching { db.rawQuery("PRAGMA table_info(limits)", null).use { c -> var f = false; while (c.moveToNext()) if (c.getString(1) == "veh") f = true; f } }
+          .getOrDefault(false)
+    }
+  }
+
   /** The alerts of the pack in [countries] (ISO codes, all of them when null). */
   fun points(db: SQLiteDatabase, countries: Collection<String>?): List<AlertPoint> {
     val out = ArrayList<AlertPoint>()
@@ -120,10 +157,11 @@ object AlertPack {
       if (ok.isEmpty()) return out
       " WHERE cc IN (" + ok.joinToString(",") { "'$it'" } + ")"
     }
-    db.rawQuery("SELECT lat, lon, grp, type, kind, name, value, road, dir, cc FROM limits$where", null).use { c ->
+    val veh = if (hasVehicleColumn(db)) "veh" else "NULL"
+    db.rawQuery("SELECT lat, lon, grp, type, kind, name, value, road, dir, cc, $veh FROM limits$where", null).use { c ->
       while (c.moveToNext()) {
         out += Alerts.fromPack(c.getDouble(0), c.getDouble(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5),
-            c.getDouble(6), c.getString(7), c.getString(8), c.getString(9)) ?: continue
+            c.getDouble(6), c.getString(7), c.getString(8), c.getString(9), vehicleSpeeds(c.getString(10))) ?: continue
       }
     }
     return out

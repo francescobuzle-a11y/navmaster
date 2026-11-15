@@ -186,7 +186,7 @@ class LimitsIndex(regions: RegionManager) {
     }
     // speed cameras, red-light cameras and average-speed sections (Tutor): the graph's, checked
     // against the countries' data and the drivers' answers
-    out += runCatching { cameras(m, a) }.getOrElse { e ->
+    out += runCatching { cameras(m, a, vehicle) }.getOrElse { e ->
       Log.w("NavMasterLimits", "checked cameras: $e")
       graphCameras(a)
     }
@@ -249,7 +249,7 @@ class LimitsIndex(regions: RegionManager) {
    * Left out: the cameras put aside ("dubbio") unless the driver wants them, or unless drivers
    * saw them; the ones the drivers say are gone (CameraVotes); with "only my list", every other one.
    */
-  private fun cameras(m: RouteMatcher, a: RouteAnalysis): List<RouteLimit> {
+  private fun cameras(m: RouteMatcher, a: RouteAnalysis, vehicle: VehicleProfile): List<RouteLimit> {
     val settings = app.navmaster.truck.AppGraph.settings.settings.value
     // the owner's pack of verified alerts (AlertPack: autovelox, Tutor, semafori, ZTL, pericoli…): when
     // it is on the tablet it is the only source (the owner's choice: the cameras of OpenStreetMap, of
@@ -262,7 +262,10 @@ class LimitsIndex(regions: RegionManager) {
     var otherSide = 0
     val rows: (android.database.sqlite.SQLiteDatabase, String) -> List<RouteLimit> = { db, inList ->
       val found = mutableListOf<RouteLimit>()
-      db.rawQuery("SELECT DISTINCT l.id, l.value, l.raw, l.name, l.pts, l.osm, " + (if (hasCheck(db)) "l.ver" else "NULL") + ", l.kind" +
+      // the owner's pack knows the limit of some cameras for lorries, vans and buses (Radarbot): this vehicle's one
+      val veh = AlertPack.hasVehicleColumn(db)
+      db.rawQuery("SELECT DISTINCT l.id, l.value, l.raw, l.name, l.pts, l.osm, " + (if (hasCheck(db)) "l.ver" else "NULL") + ", l.kind, " +
+          (if (veh) "l.veh" else "NULL") +
           " FROM cells c JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList) AND l.kind IN ('speed_camera','speed_camera_mobile','ztl','low_emission_zone','truck_control','speed_bump','danger')", null).use { c ->
         while (c.moveToNext()) {
           val pts = RouteMatcher.parsePts(c.getString(4))
@@ -280,7 +283,8 @@ class LimitsIndex(regions: RegionManager) {
               continue
             }
           }
-          found += RouteLimit(c.getString(7), c.getDouble(1), c.getString(2), c.getString(3), null, lo, p.lat, p.lng, false,
+          val value = (if (veh) AlertPack.vehicleSpeed(c.getString(8), vehicle)?.toDouble() else null) ?: c.getDouble(1)
+          found += RouteLimit(c.getString(7), value, c.getString(2), c.getString(3), null, lo, p.lat, p.lng, false,
               c.getString(5)?.ifBlank { null }, c.getString(6))
         }
       }
