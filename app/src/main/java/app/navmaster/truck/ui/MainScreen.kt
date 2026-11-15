@@ -205,7 +205,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
   val alertLayer by androidx.compose.runtime.produceState<app.navmaster.truck.limits.AlertMapData.Layer?>(null, alertsAll,
-      settings.alertsOnMap, settings.alertGroups, settings.speedCamerasUnverified) {
+      settings.alertsOnMap, settings.alertGroups, settings.speedCamerasUnverified, settings.speedMph) {
     val all = alertsAll
     value = if (!settings.alertsOnMap || all == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
       runCatching { app.navmaster.truck.limits.AlertMapData.render(all, settings.alertGroups, settings.speedCamerasUnverified,

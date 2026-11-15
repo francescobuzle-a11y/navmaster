@@ -304,7 +304,7 @@ fun AlertCard(p: AlertPoint, distanceM: Double?, modifier: Modifier = Modifier, 
   ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
       Box(Modifier.size(34.dp).clip(RoundedCornerShape(9.dp)).background(Color(p.group.color)), contentAlignment = Alignment.Center) {
-        Text(if (p.speed > 0) p.speed.toString() else "!", color = if (p.group == AlertGroup.MOBILE) Color(0xFF111111) else Color.White,
+        Text(if (p.speed > 0) app.navmaster.truck.core.SpeedUnit.show(p.speed).toString() else "!", color = if (p.group == AlertGroup.MOBILE) Color(0xFF111111) else Color.White,
             fontSize = 15.sp, fontWeight = FontWeight.Bold)
       }
       Spacer(Modifier.width(12.dp))

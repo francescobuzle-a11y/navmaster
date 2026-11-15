@@ -114,7 +114,7 @@ data class RouteLimit(
           "maxheight", "maxwidth", "maxlength" -> fmt(value) + "m"
           "maxweight", "maxaxleload" -> fmt(value) + "t"
           "adr_tunnel" -> raw
-          "speed_camera", "speed_camera_mobile", "average_speed" -> if (value > 0) value.toInt().toString() else null
+          "speed_camera", "speed_camera_mobile", "average_speed" -> if (value > 0) app.navmaster.truck.core.SpeedUnit.show(value.toInt()).toString() else null
           else -> null
         }
 
