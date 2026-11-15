@@ -48,6 +48,7 @@ class AlertsTest {
     assertEquals("4", f.dirCode)
     assertTrue("a code with no known meaning is not shown", f.details().none { it.first == "Direzione" })
     assertTrue(f.details().contains("Limite" to "50 km/h"))
+    assertTrue("no source line", f.details().none { it.first == "Fonte" || it.second.contains("Radarbot") })
     assertEquals("Autovelox in galleria", pack(45.0, 10.0, "fisso", "U", "speed_camera").title)
     assertEquals("Curva pericolosa", pack(45.0, 10.0, "pericolo", "CC", "danger", "Curva pericolosa").title)
     // a speed outside 5–150 is a service code, not a limit
@@ -67,6 +68,7 @@ class AlertsTest {
     assertEquals("90", m.facing)
     assertEquals("doppio", m.ver)
     assertEquals(setOf(AlertSource.PACK, AlertSource.DATA), m.sources)
+    assertTrue(m.details().none { it.first == "Fonte" })
     assertTrue(m.details().any { it.first == "Inquadra" && it.second.contains("ovest") })
   }
 
@@ -148,13 +150,14 @@ class AlertsTest {
     // the census put it aside; the pack has it with its speed
     val m = LimitsIndex.mergeCamera(cam(0.0, "non nel censimento del ministero", "dubbio"), cam(50.0, null, "radarbot"))
     assertEquals(50.0, m.value, 0.0)
-    assertEquals("Radarbot", m.confirmedBy)
+    assertEquals("pacchetto allerte", m.confirmedBy)
     assertEquals("non nel censimento del ministero", m.name)
-    assertTrue(m.check!!.contains("anche in Radarbot"))
+    assertTrue(m.check!!.contains("confermato dal pacchetto allerte"))
     // a plain camera learns from the pack that it is a red-light camera, a confirmed one is not "confirmed by" again
     val r = LimitsIndex.mergeCamera(cam(0.0, null, "doppio"), cam(0.0, "semaforo rosso", "radarbot"))
     assertEquals("semaforo rosso", r.cameraWhat)
     assertNull(r.confirmedBy)
-    assertEquals("da Radarbot", cam(0.0, null, "radarbot").check)
+    // the pack's cameras say nothing about where they come from (no names of other apps)
+    assertNull(cam(0.0, null, "radarbot").check)
   }
 }

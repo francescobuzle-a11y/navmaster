@@ -283,7 +283,7 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     // with the owner's Radarbot pack on the tablet, the pack is the only source (AlertPack)
     val packVersion by app.navmaster.truck.limits.AlertPack.version.collectAsState()
     val packOn = remember(packVersion) { runCatching { app.navmaster.truck.limits.AlertPack.db() != null }.getOrDefault(false) }
-    ToggleRow("Avviso autovelox fissi", (if (packOn) "Solo dal pacchetto Radarbot (Impostazioni › Mappa e vista › Allerte sulla mappa), " +
+    ToggleRow("Avviso autovelox fissi", (if (packOn) "Solo dal pacchetto delle allerte (Impostazioni › Mappa e vista › Allerte sulla mappa), " +
         "con le risposte degli altri autisti. " else "Dai dati OpenStreetMap confermati (elenco ufficiale, censimento del ministero in Italia, relazione, " +
         "velocità o nome), da quelli visti dagli altri autisti e dal tuo elenco. ") +
         (if (s.enforcementEverywhere) "In tutti i Paesi (scelta in Traffico e segnalazioni)." else "In Germania e Svizzera non compare, in Francia solo «zona di controllo»."),
@@ -486,7 +486,7 @@ private fun AlertPackRow(s: Settings, set: ((Settings) -> Settings) -> Unit) {
           .onFailure { android.util.Log.w("NavMasterAlerts", "import: $it") }.getOrDefault(0)
       kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
         busy = false
-        message = if (n > 0) "Caricate $n allerte da $name." else "$name non è un pacchetto di allerte NavMaster (file .sqlite fatto da data/allerte.py)."
+        message = if (n > 0) "Caricate $n allerte da $name." else "$name non è un pacchetto di allerte NavMaster (il file .sqlite preparato sul computer)."
       }
     }
   }
@@ -494,10 +494,10 @@ private fun AlertPackRow(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   val i = info
   if (i != null) {
     val it = i.countries["IT"]
-    Caption("Pacchetto allerte: ${i.count} allerte (${i.source}, ${i.countries.size} Paesi" + (if (it != null) ", Italia $it" else "") +
+    Caption("Pacchetto allerte: ${i.count} allerte (${i.countries.size} Paesi" + (if (it != null) ", Italia $it" else "") +
         "), del ${i.built}. Uso personale: non viene condiviso.", color = Nm.Text, lines = 3)
-    Caption("Con il pacchetto caricato autovelox e allerte vengono solo da qui, sulla mappa e in guida: quelli di OpenStreetMap, " +
-        "del censimento del ministero e del tuo elenco non sono usati.", Modifier.padding(top = 4.dp), size = 13, lines = 3)
+    Caption("Con il pacchetto caricato autovelox e allerte vengono solo da qui, sulla mappa e in guida: gli altri elenchi non sono usati.",
+        Modifier.padding(top = 4.dp), size = 13, lines = 3)
   } else {
     Caption("Pacchetto allerte: nessuno. Si carica qui il file allerte-navmaster.sqlite fatto sul computer, oppure lo si copia via cavo " +
         "in Android/data/app.navmaster.truck/files/allerte/ (viene preso al prossimo avvio).", lines = 4)

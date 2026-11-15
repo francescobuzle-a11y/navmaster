@@ -37,11 +37,11 @@ enum class AlertGroup(
   }
 }
 
-/** Where an alert comes from (several when the same alert is in more lists). */
-enum class AlertSource(val label: String) {
-  PACK("Radarbot"),
-  DATA("dati controllati (OpenStreetMap, elenchi ufficiali, censimento)"),
-  IMPORTED("il tuo elenco"),
+/** Where an alert comes from (several when the same alert is in more lists); never shown to the driver. */
+enum class AlertSource {
+  PACK,
+  DATA,
+  IMPORTED,
 }
 
 /** An alert on the map. */
@@ -78,12 +78,12 @@ data class AlertPoint(
     val check = when (ver) {
       "doppio" -> "confermato (elenco ufficiale o relazione)"
       "ufficiale" -> "elenco ufficiale"
-      "osm" -> "OpenStreetMap"
+      "osm" -> "dato della mappa"
       "dubbio" -> note?.takeIf { it.contains("censimento") } ?: "dato da verificare"
       else -> null
     }
     check?.let { out += "Verifica" to it }
-    if (sources.isNotEmpty()) out += "Fonte" to sources.sortedBy { it.ordinal }.joinToString(" · ") { it.label }
+    // where it comes from is not shown (the owner's choice: no names of other apps or services)
     return out
   }
 

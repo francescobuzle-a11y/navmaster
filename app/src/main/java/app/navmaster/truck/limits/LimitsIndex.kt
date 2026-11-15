@@ -40,7 +40,7 @@ data class RouteLimit(
     /** Drivers whose latest answer about this camera is "it was there" / "it was not" (CameraVotes). */
     val driversYes: Int = 0,
     val driversNo: Int = 0,
-    /** Another list that has the same camera (the owner's alert pack: "Radarbot"), when the data put it aside. */
+    /** Another list that has the same camera (the owner's alert pack), when the data put it aside: words for the driver. */
     val confirmedBy: String? = null,
 ) {
   /** A section under average speed control (Tutor, trajectcontrole, ETVM sections). */
@@ -71,7 +71,6 @@ data class RouteLimit(
         "doppio" -> if (camera) "confermato (elenco ufficiale o relazione)" else "confermato da due fonti"
         "ufficiale" -> "elenco ufficiale"
         CameraImport.VER -> "dal tuo elenco"
-        "radarbot" -> "da Radarbot"
         else -> null
       }
       val drivers = when {
@@ -79,7 +78,7 @@ data class RouteLimit(
         driversNo > 0 -> "non visto da " + (if (driversNo == 1) "un autista" else "$driversNo autisti")
         else -> null
       }
-      return listOfNotNull(base, confirmedBy?.let { "anche in $it" }, drivers).joinToString(" · ").ifEmpty { null }
+      return listOfNotNull(base, confirmedBy?.let { "confermato dal $it" }, drivers).joinToString(" · ").ifEmpty { null }
     }
 
   /** Short text for the banner: "Altezza max", "Divieto mezzi pesanti" ... */
@@ -509,7 +508,7 @@ class LimitsIndex(regions: RegionManager) {
       return a.copy(
           value = if (a.value > 0) a.value else b.value,
           name = if (what(a) == null && a.ver != "dubbio" && what(b) != null) what(b) else a.name,
-          confirmedBy = a.confirmedBy ?: if (a.ver == "dubbio" && b.ver == "radarbot") "Radarbot" else null,
+          confirmedBy = a.confirmedBy ?: if (a.ver == "dubbio" && b.ver == "radarbot") "pacchetto allerte" else null,
       )
     }
 
