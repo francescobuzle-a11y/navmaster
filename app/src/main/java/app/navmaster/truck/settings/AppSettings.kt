@@ -208,7 +208,7 @@ data class Settings(
      * (3° more across the screen) and closeness as the map's zoom. Over 60° only where the map on
      * the tablet allows it (ui.DriveCamera); otherwise 60° and a little less close, the same road.
      */
-    val driveTilt: Int = 65,
+    val driveTilt: Int = 78,
     val driveZoom: Double = 18.6,
     /**
      * Where the vehicle sits on the screen, percent of its height from the top, upright and across:

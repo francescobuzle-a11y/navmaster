@@ -447,12 +447,12 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       Spacer(Modifier.height(6.dp))
       Stepper("Inclinazione", s.driveTilt.toDouble(), "°", 1.0, 30.0, DriveCamera.MAX_SETTING_TILT.toDouble(), 0) { v -> set { it.copy(driveTilt = v.toInt()) } }
       Stepper("Vicinanza (zoom)", s.driveZoom, "", 0.1, 15.5, 19.5, 1) { v -> set { it.copy(driveZoom = v) } }
-      Caption("Come TomTom GO: 65° e 18,6, la stessa a ogni velocità; con il tablet in orizzontale 3° in più. Oltre 60° solo se " +
-          "la mappa del tablet lo permette, altrimenti 60° e un po' meno vicina, con la strada dei primi 100 m dove la mette TomTom.",
+      Caption("Come TomTom GO: 78° e 18,6 con il mezzo al centro dello schermo (l'orizzonte a un quinto dall'alto), la stessa vista " +
+          "a ogni velocità. Oltre 60° solo se la mappa del tablet lo permette, altrimenti un po' meno vicina.",
           Modifier.padding(top = 2.dp), size = 13, lines = 5)
-      if (s.driveTilt != 65 || s.driveZoom != 18.6) {
+      if (s.driveTilt != DriveCamera.TOMTOM_TILT || s.driveZoom != DriveCamera.TOMTOM_ZOOM) {
         Spacer(Modifier.height(6.dp))
-        Pills { Pill("Come TomTom GO", false) { set { it.copy(driveTilt = 65, driveZoom = 18.6) } } }
+        Pills { Pill("Come TomTom GO", false) { set { it.copy(driveTilt = DriveCamera.TOMTOM_TILT, driveZoom = DriveCamera.TOMTOM_ZOOM) } } }
       }
     }
     ToggleRow("Mezzo sulla corsia di marcia", "La freccia e la linea del percorso sulla corsia di destra (di sinistra dove si guida " +

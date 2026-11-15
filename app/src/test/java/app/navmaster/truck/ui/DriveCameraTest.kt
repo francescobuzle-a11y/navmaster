@@ -103,17 +103,13 @@ class DriveCameraTest {
   @Test
   fun plainViewAndEasing() {
     val s = Settings()
-    // TomTom GO's view where the map allows it
-    assertEquals(65.0 to 18.6, DriveCamera.plainView(s, false, 75.0))
-    val across = DriveCamera.plainView(s, true, 75.0)
-    assertEquals(68.0, across.first, 1e-9)
-    assertEquals(18.4, across.second, 1e-9)
-    // the map stops at 60°: a little less close (fitted on TomTom's pictures)
+    // TomTom GO's view where the map allows it, upright and across alike
+    assertEquals(78.0 to 18.6, DriveCamera.plainView(s, false, 85.0))
+    assertEquals(78.0 to 18.6, DriveCamera.plainView(s, true, 85.0))
+    // the map stops at 60°: a little less close
     val capped = DriveCamera.plainView(s, false, 60.0)
     assertEquals(60.0, capped.first, 1e-9)
-    assertEquals(18.225, capped.second, 1e-6)
-    val cappedAcross = DriveCamera.plainView(s, true, 60.0)
-    assertEquals(17.68, cappedAcross.second, 1e-6)
+    assertEquals(18.6 - 18 * 0.08, capped.second, 1e-6)
     // the short way round, eased
     assertEquals(10.0, DriveCamera.lerpAngle(350.0, 30.0, 0.5), 1e-9)
     assertEquals(350.0, DriveCamera.lerpAngle(350.0, 30.0, 0.0), 1e-9)

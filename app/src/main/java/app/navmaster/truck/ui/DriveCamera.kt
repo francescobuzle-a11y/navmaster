@@ -10,9 +10,9 @@ import kotlin.math.min
 /**
  * The driving camera, as TomTom GO draws it on the drivers' tablet (measured on 2026-11-15 from
  * its own route replay, see the report in "Claude outputs"):
- *  - an even view at every speed: tilted about 65° (68° across the screen), close (map zoom about
- *    18.6), the vehicle low on the screen (83% of its height upright, 73% across), the horizon
- *    visible;
+ *  - an even view at every speed: close (map zoom about 18.6), low over the road, the horizon a
+ *    fifth from the top (TomTom puts the vehicle low on the screen at 65–68°; here it is in the
+ *    middle, the same road at 78°);
  *  - at a roundabout, from about 120 m before it until just after the exit, the view rises over
  *    the roundabout (about 43°, zoom 17.6) and the map stops turning with the vehicle: it keeps the
  *    direction it had arriving, the vehicle goes round inside it; then it eases back;
@@ -33,8 +33,12 @@ internal object DriveCamera {
   /** The tilt asked of the tablet's map (the most its engine is built for). */
   const val ASK_TILT = 85.0
 
-  /** The most the settings and the buttons tilt the driving view and a junction's (3° more across). */
-  const val MAX_SETTING_TILT = 80
+  /** The most the settings and the buttons tilt the driving view and a junction's. */
+  const val MAX_SETTING_TILT = 82
+
+  /** TomTom GO's driving view with the vehicle in the middle of the screen. */
+  const val TOMTOM_TILT = 78
+  const val TOMTOM_ZOOM = 18.6
 
   /** Seconds to ease into and out of the view of a roundabout or a junction. */
   const val EASE_S = 1.4
@@ -101,13 +105,17 @@ internal object DriveCamera {
     return found
   }
 
-  /** The driving view's tilt and zoom for the screen's orientation, with the tilt the map allows. */
-  fun plainView(s: Settings, landscape: Boolean, maxTilt: Double): Pair<Double, Double> {
-    val wanted = s.driveTilt + (if (landscape) 3.0 else 0.0)
+  /**
+   * The driving view's tilt and zoom, with the tilt the map allows. With the vehicle in the middle
+   * of the screen TomTom GO's road (its horizon a fifth from the top, the same shape of the road
+   * ahead) is 78° and zoom 18.6 upright and across alike (fitted on its pictures).
+   */
+  fun plainView(s: Settings, @Suppress("UNUSED_PARAMETER") landscape: Boolean, maxTilt: Double): Pair<Double, Double> {
+    val wanted = s.driveTilt.toDouble()
     val tilt = min(wanted, maxTilt)
-    // a lower tilt than TomTom's: a little less close keeps the road of the first 100 m where
-    // TomTom has it (fitted on its pictures: 0.39 of zoom upright, 0.76 across for 5° and 8.5°)
-    val zoom = s.driveZoom - (if (landscape) 0.2 else 0.0) - max(0.0, wanted - tilt) * (if (landscape) 0.09 else 0.075)
+    // a lower tilt than asked (the map stops there): a little less close keeps the road of the first
+    // 100 m about where it would be
+    val zoom = s.driveZoom - max(0.0, wanted - tilt) * 0.08
     return tilt to zoom
   }
 
