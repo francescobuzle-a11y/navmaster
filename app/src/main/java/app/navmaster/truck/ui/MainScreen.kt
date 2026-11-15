@@ -73,6 +73,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -257,9 +258,16 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // 2D from above, as far as before (16) at the plain closeness, nearer or farther with it
   val zoom = if (is3d) plainView.second else settings.driveZoom - 2.6
   val tilt = if (is3d) plainView.first else 0.0
-  // the vehicle in the middle across, as high as chosen (above the bottom bar)
-  val vehicleAt = ((if (landscape) settings.vehicleAcrossPct else settings.vehicleUprightPct) / 100.0).coerceIn(0.5, 0.9)
-  val navPadding = PaddingValues(top = (h * (2 * vehicleAt - 1)).toFloat().dp)
+  // the vehicle in the middle across, as high as chosen; while the places' column (or, across,
+  // the junction view) is open at the right, the view glides aside to leave it room, and back
+  val vehicleAt = ((if (landscape) settings.vehicleAcrossPct else settings.vehicleUprightPct) / 100.0).coerceIn(0.3, 0.9)
+  var sideRoomTarget by remember { mutableStateOf(0.dp) }
+  val sideRoom by androidx.compose.animation.core.animateDpAsState(
+      if (navigating) sideRoomTarget else 0.dp, androidx.compose.animation.core.tween(700), label = "lato")
+  val navPadding = PaddingValues(
+      top = (h * (2 * vehicleAt - 1)).coerceAtLeast(0.0).toFloat().dp,
+      bottom = (h * (1 - 2 * vehicleAt)).coerceAtLeast(0.0).toFloat().dp,
+      end = sideRoom)
   val cameraOptions =
       NavigationCameraOptions(
           browsingZoom = 15.0,
@@ -685,7 +693,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           pendingReport = nav.pendingReport, onUndoReport = vm::undoReport, liveListening = nav.liveListening,
           stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true },
           destination = plan.stops.lastOrNull()?.coordinate, onPoiPins = { drivePins = it },
-          satellite = satellite, onSatellite = { satellite = !satellite }, smoothAlong = smoothAlong)
+          satellite = satellite, onSatellite = { satellite = !satellite }, smoothAlong = smoothAlong,
+          onSideRoom = { if (sideRoomTarget != it) sideRoomTarget = it })
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -972,6 +981,8 @@ private fun NavigatingOverlay(
     section: Triple<RouteLimit, Int?, Int?>? = null,
     destination: GeographicCoordinate? = null,
     onPoiPins: (List<PoiPin>) -> Unit = {},
+    /** How much room the right side takes now (the places' column, or across the junction view): the map's view moves aside. */
+    onSideRoom: (Dp) -> Unit = {},
     satellite: Boolean = false,
     onSatellite: () -> Unit = {},
 ) {
@@ -1007,6 +1018,11 @@ private fun NavigatingOverlay(
   var jvClosed by remember { mutableStateOf<Pair<Any, Long>?>(null) }
   val jvKey = scene?.let { it.route.key to Math.round(it.maneuverAtM / 60.0) }
   val jv = scene?.takeIf { jvKey != jvClosed }
+  // the room at the right for the map's view to keep clear: the junction view's column across, else the places' column while it is open
+  var poiRoom by remember { mutableStateOf(0.dp) }
+  val screenW = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+  val sideRoomNow = if (landscape && jv != null) (screenW * 0.42f).dp else poiRoom
+  SideEffect { onSideRoom(sideRoomNow) }
   // the roundabout of the next manoeuvre as it is in the graph (worked out once per roundabout, off the main thread)
   val nextType = ui.visualInstruction?.primaryContent?.maneuverType?.name?.uppercase() ?: ""
   val ringAt = if (analysis != null && (nextType.contains("ROUNDABOUT") || nextType.contains("ROTARY")))
@@ -1230,6 +1246,7 @@ private fun NavigatingOverlay(
                 onAll = onPois,
                 onPins = onPoiPins,
                 onOpen = { poiPanelOpen = it },
+                onShown = { shown -> poiRoom = if (shown) w + 12.dp else 0.dp },
                 onRemember = { text ->
                   AppGraph.settings.update { st -> st.copy(poiRecent = (listOf(text) + st.poiRecent.filter { !it.equals(text, true) }).take(5)) }
                 },

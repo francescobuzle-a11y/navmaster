@@ -448,9 +448,10 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     Stepper("Posizione del mezzo, tablet in orizzontale", s.vehicleAcrossPct.toDouble(), "% dall'alto", 1.0, 50.0, 90.0, 0) { v ->
       set { it.copy(vehicleAcrossPct = v.toInt()) }
     }
-    Caption("Il mezzo sta al centro, a questa altezza dello schermo. Più in alto si vede più strada dietro, più in basso più strada " +
-        "davanti. Zoom e inclinazione si cambiano anche in guida: tocca la mappa, poi Zoom +/− e Più/Meno incl.",
-        Modifier.padding(top = 2.dp), size = 13, lines = 4)
+    Caption("Il mezzo sta al centro dello schermo, a questa altezza; quando si apre la colonna dei posti a destra (o la vista dello " +
+        "svincolo in orizzontale) la vista scivola di lato per lasciarle spazio, finché resta aperta (Punti di interesse › dopo quanti " +
+        "secondi si richiude). Zoom e inclinazione si cambiano anche in guida: tocca la mappa, poi Zoom +/− e Più/Meno incl.",
+        Modifier.padding(top = 2.dp), size = 13, lines = 5)
   }
   Card("Zoom automatico") {
     ToggleRow("Rotonde", "La vista si alza sopra la rotonda e la mappa resta ferma mentre giri, poi torna com'era (come TomTom GO)",

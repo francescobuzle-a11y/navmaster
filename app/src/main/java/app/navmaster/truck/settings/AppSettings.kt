@@ -211,11 +211,12 @@ data class Settings(
     val driveTilt: Int = 65,
     val driveZoom: Double = 18.6,
     /**
-     * Where the vehicle sits on the screen, percent of its height from the top, upright and across
-     * (TomTom GO puts it at 83% and 73%, but its bottom is free: here it stays above the bottom bar).
+     * Where the vehicle sits on the screen, percent of its height from the top, upright and across:
+     * in the middle (TomTom GO puts it at 83% and 73%, over a free bottom; here the bottom has its bar).
+     * Across, the view moves aside while the places' column or the junction view is open.
      */
-    val vehicleUprightPct: Int = 72,
-    val vehicleAcrossPct: Int = 60,
+    val vehicleUprightPct: Int = 50,
+    val vehicleAcrossPct: Int = 50,
     /** At roundabouts the view rises over the roundabout and keeps its direction (as TomTom GO does). */
     val roundaboutView: Boolean = true,
     /** From how far before the roundabout, metres. */

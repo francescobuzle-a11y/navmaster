@@ -400,6 +400,8 @@ fun PoiColumn(
     onPins: (List<PoiPin>) -> Unit,
     onOpen: (Boolean) -> Unit = {},
     onRemember: (String) -> Unit = {},
+    /** Whether the column is open now (its list, or the magnifier's panels), not folded to its tab: the map makes room. */
+    onShown: (Boolean) -> Unit = {},
 ) {
   val panel = Nm.PanelSolid
   var mode by remember { mutableStateOf(startMode?.let { m -> PanelMode.entries.firstOrNull { it.name == m } } ?: PanelMode.LIST) }
@@ -492,7 +494,9 @@ fun PoiColumn(
       PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, tag, p)
     })
   }
-  DisposableEffect(Unit) { onDispose { onPins(emptyList()); onOpen(false) } }
+  val shown = mode != PanelMode.LIST || (!folded && ahead.isNotEmpty())
+  LaunchedEffect(shown) { onShown(shown) }
+  DisposableEffect(Unit) { onDispose { onPins(emptyList()); onOpen(false); onShown(false) } }
 
   val lensSize = 56.dp
   Column(modifier.width(width).heightIn(max = maxHeight), verticalArrangement = Arrangement.spacedBy(8.dp)) {
