@@ -392,8 +392,9 @@ internal fun signOf(s: JunctionScene): Sign {
  * the signs in a dark band at the top. By night a little darker still.
  */
 internal class Palette(night: Boolean) {
-  val back = if (night) Color(0xFF11151A) else Color(0xFF1B2128)
   val groundFar = if (night) Color(0xFF161B21) else Color(0xFF20272F)
+  /** Above the horizon the same as the far ground: no stripe under the signs' band. */
+  val back = groundFar
   val groundNear = if (night) Color(0xFF1A2027) else Color(0xFF262E37)
   val asphalt = if (night) Color(0xFF353B43) else Color(0xFF434A53)
   val asphaltFar = if (night) Color(0xFF2B3037) else Color(0xFF363C44)
@@ -671,49 +672,19 @@ private fun DrawScope.laneArrow(p: Persp, l: Layout, lane: Int, across: Double, 
   translate(c.x - cw / 2, c.y - ch / 2) {
     val old = drawContext.size
     drawContext.size = Size(cw, ch)
-    drawTurnArrow(angleDeg, color, 0.17f, cell * 1.6f)
+    drawTurnArrow(angleDeg, color, ARROW_STROKE, cell * 1.6f)
     drawContext.size = old
   }
 }
 
-/**
- * A thick arrow along a circle turning [deg] degrees from straight up (right positive), centred on
- * [c], about [size] across: how the branch goes on beyond the picture (a tight curve, a loop, a
- * ramp curving back the other way).
- */
-private fun DrawScope.curveArrow(c: Offset, deg: Double, size: Float, color: Color) {
-  val a = deg.coerceIn(-300.0, 300.0)
-  val sgn = if (a >= 0) 1.0 else -1.0
-  val total = Math.toRadians(abs(a))
-  val r = size * 0.32
-  // the line: a short straight lead, then the circle; the screen's y grows downwards
-  val pts = ArrayList<Offset>()
-  pts += Offset(0f, (r * 0.7).toFloat())
-  val steps = 28
-  for (k in 0..steps) {
-    val th = total * k / steps
-    pts += Offset((sgn * (r - r * cos(th))).toFloat(), (-r * sin(th)).toFloat())
+/** Draws in a cell [cw] by [ch] centred on [c] (the arrows draw in the current size). */
+private inline fun DrawScope.inCell(c: Offset, cw: Float, ch: Float, block: DrawScope.() -> Unit) {
+  translate(c.x - cw / 2, c.y - ch / 2) {
+    val old = drawContext.size
+    drawContext.size = Size(cw, ch)
+    block()
+    drawContext.size = old
   }
-  // the head along the circle's way at its end
-  val tx = (sgn * sin(total)).toFloat(); val ty = (-cos(total)).toFloat()
-  val hl = size * 0.24f; val hw = size * 0.2f
-  val e0 = pts.last()
-  val headPts = listOf(Offset(e0.x + tx * hl, e0.y + ty * hl), Offset(e0.x - ty * hw, e0.y + tx * hw), Offset(e0.x + ty * hw, e0.y - tx * hw))
-  // the whole arrow, head included, centred on [c]
-  val all = pts + headPts
-  val minX = all.minOf { it.x }; val maxX = all.maxOf { it.x }; val minY = all.minOf { it.y }; val maxY = all.maxOf { it.y }
-  val shift = Offset(c.x - (minX + maxX) / 2, c.y - (minY + maxY) / 2)
-  val path = Path().apply { pts.forEachIndexed { i, o -> val q = o + shift; if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) } }
-  val head = Path().apply {
-    headPts.forEachIndexed { i, o -> val q = o + shift; if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) }
-    close()
-  }
-  val sw = size * 0.13f
-  val outline = Color(0xAA000000)
-  drawPath(path, outline, style = androidx.compose.ui.graphics.drawscope.Stroke(width = sw + 4f * density, cap = androidx.compose.ui.graphics.StrokeCap.Round))
-  drawPath(head, outline, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f * density, join = androidx.compose.ui.graphics.StrokeJoin.Round))
-  drawPath(path, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = sw, cap = androidx.compose.ui.graphics.StrokeCap.Round))
-  drawPath(head, color)
 }
 
 /** The fixed picture of the junction, drawn once into a bitmap. */
@@ -766,7 +737,8 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
       val arrows = lane.arrows.distinct().take(2).sortedBy { directionAngle(it) }
       arrows.forEachIndexed { ai, ar ->
         val across = if (arrows.size == 1) 0.0 else if (ai == 0) -0.22 else 0.22
-        laneArrow(p, l, i, across, 1.5, directionAngle(ar), pal.paintDim, if (arrows.size == 1) 0.52f else 0.42f, false, rowRoom[0])
+        // on the near row, in line with the arrows of the lanes to take
+        laneArrow(p, l, i, across, litRows[0], directionAngle(ar), pal.paintDim, if (arrows.size == 1) 0.58f else 0.44f, false, rowRoom[0])
       }
     }
   } else if (l.branch) {
@@ -779,9 +751,9 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
     val ua = p.boundary(l.litA); val ub = p.boundary(l.litB)
     val zc = 3.4
     val a = pt(p, l, ua, zc, true); val b = pt(p, l, ub, zc, true)
-    val size0 = (abs(b.x - a.x) * 0.9f).coerceIn(44f * density, 72f * density)
+    val size0 = (abs(b.x - a.x) * 0.9f).coerceIn(40f * density, 68f * density)
     val cc = Offset(((a.x + b.x) / 2).coerceIn(size0 * 0.6f, w - size0 * 0.6f), a.y)
-    curveArrow(cc, l.turnAfter, size0, pal.paint)
+    inCell(cc, size0, size0) { drawCurveArrow(l.turnAfter.toFloat(), pal.paint) }
   }
   // ---- the signs, in their band at the top
   drawSignStatic(signOf(scene), l, pal)
@@ -1032,7 +1004,7 @@ private fun DrawScope.drawSignStatic(sign: Sign, l: Layout, pal: Palette) {
   val marginRight = 54f * dp
   val textMin = 18f * dp
   var textPx = (h * 0.05f).coerceIn(textMin, 30f * dp)
-  fun arrowSpace(t: Float) = t * 2.0f
+  fun arrowSpace(t: Float) = t * 2.6f
   fun pad(t: Float) = t * 0.55f
   fun paintOf(t: Float, color: Color) = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
     this.color = color.toArgb(); typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD); textSize = t
@@ -1138,16 +1110,11 @@ private fun DrawScope.drawSignStatic(sign: Sign, l: Layout, pal: Palette) {
       drawContext.canvas.nativeCanvas.drawText(t, textLeft, y, tp)
       y += lineH; drawn++
     }
-    // the arrow of the panel: where its lanes go
-    val cx = x1 - arrowSpace(textPx) * 0.5f - pad(textPx) * 0.3f
-    val cy = top + boxH * 0.5f
-    val s = textPx * 0.75f
-    val ang = Math.toRadians(pn.arrowDeg.toDouble())
-    val dxA = (sin(ang) * s).toFloat(); val dyA = (-cos(ang) * s).toFloat()
-    drawLine(fg, Offset(cx - dxA, cy - dyA), Offset(cx + dxA, cy + dyA), strokeWidth = s * 0.3f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-    val hx = cx + dxA; val hy = cy + dyA
-    val px = -dyA * 0.6f; val py = dxA * 0.6f
-    drawPath(Path().apply { moveTo(hx + dxA * 0.55f, hy + dyA * 0.55f); lineTo(hx + px, hy + py); lineTo(hx - px, hy - py); close() }, fg)
+    // the arrow of the panel, the same arrow as on the lanes: where its lanes go
+    val cell = min(arrowSpace(textPx) * 0.95f, boxH * 0.84f)
+    inCell(Offset(x1 - arrowSpace(textPx) * 0.5f - pad(textPx) * 0.3f, top + boxH * 0.5f), cell, cell) {
+      drawTurnArrow(pn.arrowDeg, fg, ARROW_STROKE, cell * 2)
+    }
   }
 }
 

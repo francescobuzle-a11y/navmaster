@@ -37,8 +37,8 @@ internal object DriveCamera {
   const val MAX_SETTING_TILT = 82
 
   /** TomTom GO's driving view with the vehicle in the middle of the screen. */
-  const val TOMTOM_TILT = 78
-  const val TOMTOM_ZOOM = 18.6
+  const val DEFAULT_TILT = 78
+  const val DEFAULT_ZOOM = 18.6
 
   /** Seconds to ease into and out of the view of a roundabout or a junction. */
   const val EASE_S = 1.4

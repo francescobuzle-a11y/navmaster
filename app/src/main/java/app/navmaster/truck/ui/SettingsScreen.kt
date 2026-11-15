@@ -447,16 +447,16 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       Spacer(Modifier.height(6.dp))
       Stepper("Inclinazione", s.driveTilt.toDouble(), "°", 1.0, 30.0, DriveCamera.MAX_SETTING_TILT.toDouble(), 0) { v -> set { it.copy(driveTilt = v.toInt()) } }
       Stepper("Vicinanza (zoom)", s.driveZoom, "", 0.1, 15.5, 19.5, 1) { v -> set { it.copy(driveZoom = v) } }
-      Caption("Come TomTom GO: 78° e 18,6 con il mezzo al centro dello schermo (l'orizzonte a un quinto dall'alto), la stessa vista " +
-          "a ogni velocità. Oltre 60° solo se la mappa del tablet lo permette, altrimenti un po' meno vicina.",
+      Caption("Valori consigliati: 78° e 18,6, con l'orizzonte a un quinto dall'alto; la stessa vista a ogni velocità. " +
+          "Oltre 60° solo se la mappa del tablet lo permette, altrimenti un po' meno vicina.",
           Modifier.padding(top = 2.dp), size = 13, lines = 5)
-      if (s.driveTilt != DriveCamera.TOMTOM_TILT || s.driveZoom != DriveCamera.TOMTOM_ZOOM) {
+      if (s.driveTilt != DriveCamera.DEFAULT_TILT || s.driveZoom != DriveCamera.DEFAULT_ZOOM) {
         Spacer(Modifier.height(6.dp))
-        Pills { Pill("Come TomTom GO", false) { set { it.copy(driveTilt = DriveCamera.TOMTOM_TILT, driveZoom = DriveCamera.TOMTOM_ZOOM) } } }
+        Pills { Pill("Valori consigliati", false) { set { it.copy(driveTilt = DriveCamera.DEFAULT_TILT, driveZoom = DriveCamera.DEFAULT_ZOOM) } } }
       }
     }
     ToggleRow("Mezzo sulla corsia di marcia", "La freccia e la linea del percorso sulla corsia di destra (di sinistra dove si guida " +
-        "a sinistra), come su TomTom GO, invece che in mezzo alla strada", s.driveLaneSide) { v -> set { it.copy(driveLaneSide = v) } }
+        "a sinistra), invece che in mezzo alla strada", s.driveLaneSide) { v -> set { it.copy(driveLaneSide = v) } }
     Caption("Il percorso già fatto", Modifier.padding(top = 6.dp), size = 14)
     Pills {
       Pill("Più chiaro", s.doneRoute == 1) { set { it.copy(doneRoute = 1) } }
@@ -475,7 +475,7 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         Modifier.padding(top = 2.dp), size = 13, lines = 5)
   }
   Card("Zoom automatico") {
-    ToggleRow("Rotonde", "La vista si alza sopra la rotonda e la mappa resta ferma mentre giri, poi torna com'era (come TomTom GO)",
+    ToggleRow("Rotonde", "La vista si alza sopra la rotonda e la mappa resta ferma mentre giri, poi torna com'era",
         s.roundaboutView) { v -> set { it.copy(roundaboutView = v) } }
     if (s.roundaboutView) {
       Stepper("Da quanti metri prima", s.roundaboutViewFromM.toDouble(), "m", 10.0, 40.0, 300.0, 0) { v -> set { it.copy(roundaboutViewFromM = v.toInt()) } }

@@ -594,7 +594,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           })
     }
     val puckStyleFixed = remember {
-      NavigationMapPuckStyle(dotFillColorCurrentLocation = Color(0xFF1E88E5), bearingColor = Color(0xFF0D47A1), dotRadius = 11.dp, dotStrokeWidth = 4.dp)
+      NavigationMapPuckStyle(dotFillColorCurrentLocation = Nm.Route, bearingColor = Nm.RouteBorder, dotRadius = 11.dp, dotStrokeWidth = 4.dp)
     }
     val smooth = smoothLoc.value
     NavigationMapView(

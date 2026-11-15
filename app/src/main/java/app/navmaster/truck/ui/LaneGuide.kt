@@ -60,9 +60,10 @@ fun laneGuideOf(instruction: VisualInstruction?, distanceM: Double?, a: RouteAna
   return LaneGuide(j.plan, distanceM, range)
 }
 
-private val LaneRoad = Color(0xFF30343A)
-private val LaneTake = Color(0xFF1E88E5)
-private val LaneTakeEdge = Color(0xFF90CAF9)
+// the same asphalt and the same blue as the junction view and the route on the map
+private val LaneRoad = Color(0xFF3A4048)
+private val LaneTake = Nm.Route
+private val LaneTakeEdge = Color(0xFF8DB8FA)
 
 /**
  * The lane guidance bar: on the left what to keep in words ("USCITA A DESTRA" / "Corsia di
@@ -102,7 +103,7 @@ fun LaneStrip(guide: LaneGuide, modifier: Modifier = Modifier, vehicleLane: Int?
           // the number of lanes is not known: just the side to keep
           Spacer(Modifier.width(8.dp))
           Canvas(Modifier.width(44.dp).height(48.dp)) {
-            drawTurnArrow(if (plan.side < 0) -35f else if (plan.side > 0) 35f else 0f, Color.White, 0.17f, size.width)
+            drawTurnArrow(if (plan.side < 0) -35f else if (plan.side > 0) 35f else 0f, Color.White, ARROW_STROKE, size.width)
           }
         }
       }
@@ -158,9 +159,15 @@ internal fun DrawScope.drawLanes(plan: LanePlan.Plan, vehicleLane: Int?) {
   // the arrows painted on each lane (all of them, the one of the route bright on the lanes to
   // take); lanes known from their number only get no arrows: none are painted on the map
   for (i in 0 until n) {
-    if (!lanes[i].painted) continue
     val cw = xs[i + 1] - xs[i]
     val cell = min(cw * 0.86f, h * 0.9f)
+    if (!lanes[i].painted) {
+      // known from the lane counts: on the lanes to take the way they go, as in the junction view
+      if (lanes[i].take && !lanes[i].merge && plan.kind != LanePlan.Kind.JUNCTION && plan.side != 0) {
+        translate(xs[i] + (cw - cell) / 2, (h - cell) / 2) { drawIntoCell(cell, if (plan.side > 0) 35f else -35f, Color.White, cw) }
+      }
+      continue
+    }
     translate(xs[i] + (cw - cell) / 2, (h - cell) / 2) {
       for (ar in lanes[i].arrows.distinct().sortedBy { if (it == lanes[i].arrow && lanes[i].take) 1 else 0 }) {
         val bright = lanes[i].take && ar == lanes[i].arrow
@@ -187,7 +194,7 @@ private fun DrawScope.drawIntoCell(cell: Float, angle: Float, color: Color, lane
   val s = Size(cell, cell)
   drawContext.size.let { old ->
     drawContext.size = s
-    drawTurnArrow(angle, color, 0.15f, laneW)
+    drawTurnArrow(angle, color, ARROW_STROKE, laneW)
     drawContext.size = old
   }
 }

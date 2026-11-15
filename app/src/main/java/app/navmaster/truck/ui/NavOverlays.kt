@@ -165,7 +165,7 @@ fun LaneAssist(lanes: List<LaneInfo>) {
         drawTurnArrow(
             directionAngle(dir),
             if (lane.active) Color.White else Color(0x59FFFFFF),
-            if (lane.active) 0.17f else 0.13f,
+            ARROW_STROKE,
             size.width,
         )
       }
