@@ -40,6 +40,8 @@ data class RouteLimit(
     /** Drivers whose latest answer about this camera is "it was there" / "it was not" (CameraVotes). */
     val driversYes: Int = 0,
     val driversNo: Int = 0,
+    /** Another list that has the same camera (the owner's alert pack: "Radarbot"), when the data put it aside. */
+    val confirmedBy: String? = null,
 ) {
   /** A section under average speed control (Tutor, trajectcontrole, ETVM sections). */
   val isSection: Boolean
@@ -69,6 +71,7 @@ data class RouteLimit(
         "doppio" -> if (camera) "confermato (elenco ufficiale o relazione)" else "confermato da due fonti"
         "ufficiale" -> "elenco ufficiale"
         CameraImport.VER -> "dal tuo elenco"
+        "radarbot" -> "da Radarbot"
         else -> null
       }
       val drivers = when {
@@ -76,7 +79,7 @@ data class RouteLimit(
         driversNo > 0 -> "non visto da " + (if (driversNo == 1) "un autista" else "$driversNo autisti")
         else -> null
       }
-      return listOfNotNull(base, drivers).joinToString(" · ").ifEmpty { null }
+      return listOfNotNull(base, confirmedBy?.let { "anche in $it" }, drivers).joinToString(" · ").ifEmpty { null }
     }
 
   /** Short text for the banner: "Altezza max", "Divieto mezzi pesanti" ... */
@@ -98,6 +101,7 @@ data class RouteLimit(
           "speed_camera_mobile" -> "Autovelox mobile"
           "average_speed" -> "Tutor"
           "low_emission_zone" -> "Zona ambientale"
+          "ztl" -> "Varco ZTL"
           "truck_control" -> "Controllo camion"
           "speed_bump" -> "Dosso"
           "danger" -> name ?: "Pericolo"
@@ -248,14 +252,19 @@ class LimitsIndex(regions: RegionManager) {
    */
   private fun cameras(m: RouteMatcher, a: RouteAnalysis): List<RouteLimit> {
     val settings = app.navmaster.truck.AppGraph.settings.settings.value
-    val graph = graphCameras(a)
-    val imported = if (settings.speedCamerasImported) CameraImport.db() else null
+    // the owner's pack of verified alerts (AlertPack: autovelox, Tutor, semafori, ZTL, pericoli…): when
+    // it is on the tablet it is the only source (the owner's choice: the cameras of OpenStreetMap, of
+    // the checked data, of Italy's census and of the imported list are left out)
+    val pack = AlertPack.db()
+    val packOnly = pack != null
+    val graph = if (packOnly) emptyList() else graphCameras(a)
+    val imported = if (!packOnly && settings.speedCamerasImported) CameraImport.db() else null
     val fromData = ArrayList<RouteLimit>()
     var otherSide = 0
     val rows: (android.database.sqlite.SQLiteDatabase, String) -> List<RouteLimit> = { db, inList ->
       val found = mutableListOf<RouteLimit>()
       db.rawQuery("SELECT DISTINCT l.id, l.value, l.raw, l.name, l.pts, l.osm, " + (if (hasCheck(db)) "l.ver" else "NULL") + ", l.kind" +
-          " FROM cells c JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList) AND l.kind IN ('speed_camera','speed_camera_mobile','low_emission_zone','truck_control','speed_bump','danger')", null).use { c ->
+          " FROM cells c JOIN limits l ON l.id = c.lid WHERE c.cell IN ($inList) AND l.kind IN ('speed_camera','speed_camera_mobile','ztl','low_emission_zone','truck_control','speed_bump','danger')", null).use { c ->
         while (c.moveToNext()) {
           val pts = RouteMatcher.parsePts(c.getString(4))
           // a camera stands beside the road
@@ -282,13 +291,23 @@ class LimitsIndex(regions: RegionManager) {
       for (chunk in m.cells.chunked(400)) fromData += runCatching { rows(imported, chunk.joinToString(",")) }
           .onFailure { Log.w("NavMasterLimits", "imported cameras: $it") }.getOrDefault(emptyList())
     }
-    fromData += dbs.perCells(m.cells, rows)
+    if (!packOnly) fromData += dbs.perCells(m.cells, rows)
+    if (pack != null) {
+      for (chunk in m.cells.chunked(400)) fromData += runCatching { rows(pack, chunk.joinToString(",")) }
+          .onFailure { Log.w("NavMasterLimits", "alert pack: $it") }.getOrDefault(emptyList())
+    }
     // the same camera from more sources: the first of the list wins (two cameras facing opposite
-    // ways at the same place are two: the screen keeps the one that faces the vehicle)
+    // ways at the same place are two: the screen keeps the one that faces the vehicle), completed
+    // with what the others know (the speed, what it checks); one the data put aside that the
+    // owner's pack has too is confirmed
     val merged = ArrayList<RouteLimit>()
     for (l in fromData + graph.filter { it.kind == "speed_camera" }) {
-      if (merged.any { it.kind == l.kind && abs(it.alongM - l.alongM) < 40 && (it.raw == null || l.raw == null || it.raw == l.raw) }) continue
-      merged += l
+      val k = merged.indexOfFirst { it.kind == l.kind && abs(it.alongM - l.alongM) < 40 && (it.raw == null || l.raw == null || it.raw == l.raw) }
+      if (k < 0) {
+        merged += l
+        continue
+      }
+      merged[k] = mergeCamera(merged[k], l)
     }
     val device = settings.deviceTag
     val out = mutableListOf<RouteLimit>()
@@ -301,8 +320,9 @@ class LimitsIndex(regions: RegionManager) {
         gone++
         continue
       }
-      if (imported != null && settings.speedCamerasImportedOnly && l.ver != CameraImport.VER) continue
-      if (l.ver == "dubbio" && !settings.speedCamerasUnverified && !st.confirmed) {
+      // "only my lists": the imported list and the owner's alert pack
+      if (imported != null && settings.speedCamerasImportedOnly && l.ver != CameraImport.VER && l.ver != "radarbot") continue
+      if (l.ver == "dubbio" && !settings.speedCamerasUnverified && !st.confirmed && l.confirmedBy == null) {
         putAside++
         continue
       }
@@ -310,7 +330,7 @@ class LimitsIndex(regions: RegionManager) {
     }
     // the Tutor sections: the graph's, and the data's ones the graph has not (Italy's census places
     // the motorway Tutor between their junctions); one that both have is confirmed by the data
-    val dataSections = runCatching { sections(m) }.getOrElse { Log.w("NavMasterLimits", "sections: $it"); emptyList() }
+    val dataSections = if (packOnly) emptyList() else runCatching { sections(m) }.getOrElse { Log.w("NavMasterLimits", "sections: $it"); emptyList() }
     val graphSections = graph.filter { it.isSection }
     val sections = ArrayList<RouteLimit>()
     for (g in graphSections) {
@@ -322,7 +342,8 @@ class LimitsIndex(regions: RegionManager) {
       if (d.ver == "dubbio" && !settings.speedCamerasUnverified) continue
       sections += d
     }
-    Log.i("NavMasterLimits", "cameras: ${graph.count { it.kind == "speed_camera" }} from the graph, ${fromData.size} from the data" +
+    Log.i("NavMasterLimits", (if (packOnly) "cameras from the alert pack only; " else "") +
+        "cameras: ${graph.count { it.kind == "speed_camera" }} from the graph, ${fromData.size} from the data" +
         (if (imported != null) " and the imported list" else "") + ", ${out.size} announced, $putAside put aside (unconfirmed), " +
         "$gone gone for the drivers, $otherSide on the other carriageway; Tutor ${graphSections.size} from the graph, " +
         "${dataSections.size} from the data, ${sections.size} announced")
@@ -472,9 +493,24 @@ class LimitsIndex(regions: RegionManager) {
         "maxlength" -> l.value - v.lengthM < 1.0
         "maxweight" -> l.value - weightT < 2.0
         "maxaxleload" -> l.value - v.axleLoadT < 1.0
-        "low_emission_zone", "truck_control", "speed_bump", "danger" -> true
+        "low_emission_zone", "truck_control", "speed_bump", "danger", "ztl" -> true
         else -> false
       }
+    }
+
+    /**
+     * The same camera found again in a later source ([b]) completes the one kept ([a]): the speed
+     * when [a] has none, what it checks ("semaforo rosso", "controllo della velocità media") when
+     * [a] says nothing, and, when [a] was put aside by the checks ("dubbio") and [b] comes from the
+     * owner's pack, the confirmation.
+     */
+    fun mergeCamera(a: RouteLimit, b: RouteLimit): RouteLimit {
+      val what = { l: RouteLimit -> l.name?.takeIf { it.startsWith("semaforo") || it.startsWith("controllo") || it.startsWith("passaggio") } }
+      return a.copy(
+          value = if (a.value > 0) a.value else b.value,
+          name = if (what(a) == null && a.ver != "dubbio" && what(b) != null) what(b) else a.name,
+          confirmedBy = a.confirmedBy ?: if (a.ver == "dubbio" && b.ver == "radarbot") "Radarbot" else null,
+      )
     }
 
     /** Countries where traffic keeps left. */

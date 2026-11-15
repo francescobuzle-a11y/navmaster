@@ -302,4 +302,12 @@ private fun reliabilityColor(r: app.navmaster.truck.photos.Reliability): Color =
 object UiHints {
   @Volatile var tab = 0
   fun take(count: Int): Int { val t = tab; tab = 0; return t.coerceIn(0, (count - 1).coerceAtLeast(0)) }
+
+  /** Tests on the tablet: `--es nm_view "lat,lon,zoom"` moves the map there (also with the app open). */
+  val view = kotlinx.coroutines.flow.MutableStateFlow<Triple<Double, Double, Double>?>(null)
+
+  fun takeView(extra: String?) {
+    val p = extra?.split(',')?.mapNotNull { it.trim().toDoubleOrNull() } ?: return
+    if (p.size == 3) view.value = Triple(p[0], p[1], p[2])
+  }
 }

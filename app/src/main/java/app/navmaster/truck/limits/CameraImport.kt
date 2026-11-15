@@ -29,6 +29,9 @@ object CameraImport {
 
   @Volatile private var open: SQLiteDatabase? = null
 
+  /** Changes when a list is imported or removed (the map of the alerts reads it again). */
+  val version = kotlinx.coroutines.flow.MutableStateFlow(0)
+
   /** The list as a read-only database, null when none was imported. */
   @Synchronized
   fun db(): SQLiteDatabase? {
@@ -55,6 +58,7 @@ object CameraImport {
     open?.close()
     open = null
     file().delete()
+    version.value++
   }
 
   /** Reads [input] (file [name]) and keeps its cameras; the number kept (0: nothing readable). */
@@ -105,6 +109,7 @@ object CameraImport {
     f.delete()
     tmp.renameTo(f)
     Log.i(TAG, "imported ${cams.size} cameras from $name")
+    version.value++
     return cams.size
   }
 

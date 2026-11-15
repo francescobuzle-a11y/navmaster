@@ -195,6 +195,10 @@ data class Settings(
     val speedCamerasImportedOnly: Boolean = false,
     /** After a fixed speed camera the tablet asks "c'era?" and shares the answer (CameraVotes). */
     val cameraQuestions: Boolean = true,
+    /** The alerts on the map (autovelox, Tutor, semafori, ZTL, pericoli…), always, not only while driving (AlertMapData). */
+    val alertsOnMap: Boolean = true,
+    /** The kinds of alert shown on the map (ids of limits.AlertGroup). */
+    val alertGroups: Set<String> = setOf("fisso", "tutor", "semaforo", "mobile", "ztl", "lez", "camion", "cinture", "dosso", "pericolo"),
     val nightMode: NightMode = NightMode.AUTO,
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,

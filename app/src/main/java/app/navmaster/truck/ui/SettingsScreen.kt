@@ -28,6 +28,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -121,7 +122,8 @@ private fun summary(p: SettingsPage, s: Settings): String =
           if (s.liveTraffic) "traffico" else null,
           if (s.liveTraffic && s.personalFeed) "Waze" else null,
       ).joinToString(" · ").ifBlank { "Spento" }.replaceFirstChar { it.uppercase() }
-      SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label
+      SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label +
+          (if (s.alertsOnMap) " · allerte" else "")
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
       SettingsPage.CAMPER -> "${PoiCategories.camper.count { it in s.poiCategories }} di ${PoiCategories.camper.size} tipi di sosta" +
@@ -278,20 +280,26 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     }
   }
   Card("Autovelox") {
-    ToggleRow("Avviso autovelox fissi", "Dai dati OpenStreetMap confermati (elenco ufficiale, censimento del ministero in Italia, relazione, " +
-        "velocità o nome), da quelli visti dagli altri autisti e dal tuo elenco. " +
+    // with the owner's Radarbot pack on the tablet, the pack is the only source (AlertPack)
+    val packVersion by app.navmaster.truck.limits.AlertPack.version.collectAsState()
+    val packOn = remember(packVersion) { runCatching { app.navmaster.truck.limits.AlertPack.db() != null }.getOrDefault(false) }
+    ToggleRow("Avviso autovelox fissi", (if (packOn) "Solo dal pacchetto Radarbot (Impostazioni › Mappa e vista › Allerte sulla mappa), " +
+        "con le risposte degli altri autisti. " else "Dai dati OpenStreetMap confermati (elenco ufficiale, censimento del ministero in Italia, relazione, " +
+        "velocità o nome), da quelli visti dagli altri autisti e dal tuo elenco. ") +
         (if (s.enforcementEverywhere) "In tutti i Paesi (scelta in Traffico e segnalazioni)." else "In Germania e Svizzera non compare, in Francia solo «zona di controllo»."),
         s.speedCameras) { v -> set { it.copy(speedCameras = v) } }
-    if (s.speedCameras) {
+    if (s.speedCameras && !packOn) {
       ToggleRow("Anche gli autovelox non confermati", "Punti di OpenStreetMap senza velocità, nome né direzione su autostrade e superstrade " +
           "(spesso vecchi errori, colonnine SOS o portali) e, in Italia, quelli dei comuni che non hanno nulla nel censimento del ministero " +
           "o che lo segna spento. Spento: non vengono annunciati, salvo se altri autisti li hanno visti.", s.speedCamerasUnverified) { v ->
         set { it.copy(speedCamerasUnverified = v) }
       }
+    }
+    if (s.speedCameras) {
       ToggleRow("Chiedi «c'era?» dopo un autovelox", "Una domanda con un tocco (o a voce) dopo l'autovelox, al massimo ogni 10 minuti. " +
           "La risposta va agli altri autisti NavMaster senza il tuo nome: un autovelox che due autisti non hanno visto non viene più annunciato.",
           s.cameraQuestions) { v -> set { it.copy(cameraQuestions = v) } }
-      CameraListRow(s, set)
+      if (!packOn) CameraListRow(s, set)
     }
   }
   Card("Velocità") {
@@ -430,6 +438,79 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Colori") {
     Pills { for (n in NightMode.entries) Pill(n.label, s.nightMode == n) { set { it.copy(nightMode = n) } } }
   }
+  Card("Allerte sulla mappa") {
+    ToggleRow("Mostra le allerte", "Autovelox, Tutor, semafori, varchi ZTL, zone ambientali, controlli camion, dossi e pericoli " +
+        "sempre sulla mappa, anche senza navigazione: da lontano gli autovelox sono raggruppati con il loro numero, da vicino " +
+        "ognuno ha la sua icona. Tocca un'icona per i dettagli.", s.alertsOnMap) { v -> set { it.copy(alertsOnMap = v) } }
+    if (s.alertsOnMap) {
+      Caption("Quali mostrare", Modifier.padding(top = 6.dp, bottom = 6.dp), size = 14)
+      Pills {
+        for (g in app.navmaster.truck.limits.AlertGroup.entries) {
+          SmallPill(g.label, g.id in s.alertGroups) {
+            set { st -> st.copy(alertGroups = if (g.id in st.alertGroups) st.alertGroups - g.id else st.alertGroups + g.id) }
+          }
+        }
+      }
+    }
+    AlertPackRow(s, set)
+  }
+}
+
+/**
+ * The owner's pack of verified alerts (AlertPack): what is on the tablet, a file to import (made on
+ * the computer by data/allerte.py from the folder «allerts»), whether it is announced while driving.
+ */
+@Composable
+private fun AlertPackRow(s: Settings, set: ((Settings) -> Settings) -> Unit) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val version by app.navmaster.truck.limits.AlertPack.version.collectAsState()
+  var info by remember { mutableStateOf<app.navmaster.truck.limits.AlertPack.Info?>(null) }
+  LaunchedEffect(version) {
+    info = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { app.navmaster.truck.limits.AlertPack.info() }.getOrNull() }
+  }
+  var message by remember { mutableStateOf<String?>(null) }
+  var busy by remember { mutableStateOf(false) }
+  val scope = androidx.compose.runtime.rememberCoroutineScope()
+  val pick = androidx.activity.compose.rememberLauncherForActivityResult(
+      androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+    if (uri == null) return@rememberLauncherForActivityResult
+    busy = true
+    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+      val name = runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+          val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+          if (c.moveToFirst() && i >= 0) c.getString(i) else null
+        }
+      }.getOrNull() ?: (uri.lastPathSegment ?: "allerte")
+      val n = runCatching { context.contentResolver.openInputStream(uri)?.use { app.navmaster.truck.limits.AlertPack.import(it, name) } ?: 0 }
+          .onFailure { android.util.Log.w("NavMasterAlerts", "import: $it") }.getOrDefault(0)
+      kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        busy = false
+        message = if (n > 0) "Caricate $n allerte da $name." else "$name non è un pacchetto di allerte NavMaster (file .sqlite fatto da data/allerte.py)."
+      }
+    }
+  }
+  Spacer(Modifier.height(10.dp))
+  val i = info
+  if (i != null) {
+    val it = i.countries["IT"]
+    Caption("Pacchetto allerte: ${i.count} allerte (${i.source}, ${i.countries.size} Paesi" + (if (it != null) ", Italia $it" else "") +
+        "), del ${i.built}. Uso personale: non viene condiviso.", color = Nm.Text, lines = 3)
+    Caption("Con il pacchetto caricato autovelox e allerte vengono solo da qui, sulla mappa e in guida: quelli di OpenStreetMap, " +
+        "del censimento del ministero e del tuo elenco non sono usati.", Modifier.padding(top = 4.dp), size = 13, lines = 3)
+  } else {
+    Caption("Pacchetto allerte: nessuno. Si carica qui il file allerte-navmaster.sqlite fatto sul computer, oppure lo si copia via cavo " +
+        "in Android/data/app.navmaster.truck/files/allerte/ (viene preso al prossimo avvio).", lines = 4)
+  }
+  Spacer(Modifier.height(6.dp))
+  Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    BigButton(if (i == null) "Carica il pacchetto" else "Sostituisci", Modifier.weight(1f), enabled = !busy) { pick.launch(arrayOf("*/*")) }
+    if (i != null) BigButton("Elimina", Modifier.weight(0.6f), style = BtnStyle.DANGER, enabled = !busy) {
+      app.navmaster.truck.limits.AlertPack.clear()
+      message = "Pacchetto eliminato."
+    }
+  }
+  message?.let { Spacer(Modifier.height(4.dp)); Caption(it, color = Nm.Text, lines = 3) }
 }
 
 @Composable

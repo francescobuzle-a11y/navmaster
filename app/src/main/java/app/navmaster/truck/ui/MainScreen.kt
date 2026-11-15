@@ -95,6 +95,8 @@ import com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraOptions
 import com.stadiamaps.ferrostar.maplibreui.runtime.rememberNavigationMapState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import org.maplibre.compose.expressions.dsl.const
 import org.maplibre.compose.layers.CircleLayer
 import org.maplibre.compose.map.MapOptions
@@ -183,6 +185,32 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
   var openPoi by remember { mutableStateOf<RoutePoi?>(null) }
+  // the alerts on the map (autovelox, Tutor, semafori, ZTL, pericoli…), always on: read when the data
+  // change, written for the map when the driver's choices change (AlertMapData), never per frame
+  val alertPackVersion by app.navmaster.truck.limits.AlertPack.version.collectAsState()
+  val cameraFilesVersion by app.navmaster.truck.live.CameraFiles.version.collectAsState()
+  val importedVersion by app.navmaster.truck.limits.CameraImport.version.collectAsState()
+  val alertsAll by androidx.compose.runtime.produceState<List<app.navmaster.truck.limits.AlertPoint>?>(null, installed,
+      alertPackVersion, cameraFilesVersion, importedVersion, settings.speedCamerasImported, settings.alertsOnMap) {
+    if (!settings.alertsOnMap) { value = null; return@produceState }
+    // after the work of the start (crossings snapped): reading thousands of alerts meanwhile made the
+    // Java heap be collected while the engine had the most memory mappings, and the app was killed
+    kotlinx.coroutines.withTimeoutOrNull(90_000) { AppGraph.backgroundDone.first { it } }
+    value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+      runCatching { app.navmaster.truck.limits.AlertMapData.load(AppGraph.regions.withData(), settings.speedCamerasImported) }
+          .onFailure { android.util.Log.w("NavMasterAlerts", "alerts: $it") }.getOrNull()
+    }
+  }
+  val alertLayer by androidx.compose.runtime.produceState<app.navmaster.truck.limits.AlertMapData.Layer?>(null, alertsAll,
+      settings.alertsOnMap, settings.alertGroups, settings.speedCamerasUnverified) {
+    val all = alertsAll
+    value = if (!settings.alertsOnMap || all == null) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+      runCatching { app.navmaster.truck.limits.AlertMapData.render(all, settings.alertGroups, settings.speedCamerasUnverified,
+          settings.deviceTag, context.cacheDir) }.onFailure { android.util.Log.w("NavMasterAlerts", "alerts map: $it") }.getOrNull()
+    }
+  }
+  var openAlert by remember { mutableStateOf<app.navmaster.truck.limits.AlertPoint?>(null) }
+  val alertScope = androidx.compose.runtime.rememberCoroutineScope()
   // the places of the driving panel shown on the map (DriveHud.PoiColumn → DrivePoiPins)
   var drivePins by remember { mutableStateOf<List<PoiPin>>(emptyList()) }
   var reportOpen by remember { mutableStateOf(initialSheet == "report") }
@@ -255,6 +283,19 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
   LaunchedEffect(plan.stops.isEmpty()) { if (plan.stops.isEmpty() && !navigating) mapState.recenter(false) }
+  // tests on the tablet: the map moved to a place and zoom (UiHints.view, extra nm_view)
+  val testView by UiHints.view.collectAsState()
+  LaunchedEffect(testView) {
+    val v = testView ?: return@LaunchedEffect
+    kotlinx.coroutines.delay(300)
+    runCatching {
+      mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FREE
+      val cam = mapState.cameraState.position
+      mapState.cameraState.animateTo(cam.copy(target = org.maplibre.spatialk.geojson.Position(v.second, v.first), zoom = v.third, tilt = 0.0, bearing = 0.0),
+          kotlin.time.Duration.parse("600ms"))
+    }
+    UiHints.view.value = null
+  }
   // the buttons show up when the map is touched and go away by themselves
   var lastMapTap by remember { mutableStateOf(System.currentTimeMillis()) }
   var mapMoved by remember { mutableLongStateOf(0L) }
@@ -497,15 +538,28 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           RouteFeaturePins(it.analysis)
         }
       }
+      // the alerts, always (under the markers of the route and the pins)
+      AlertLayers(alertLayer, onPick = { openAlert = it }, onCluster = { at ->
+        // a bubble: the map two steps closer, centred on it (the map stops following the vehicle)
+        alertScope.launch {
+          runCatching {
+            mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FREE
+            val cam = mapState.cameraState.position
+            mapState.cameraState.animateTo(cam.copy(target = at, zoom = (cam.zoom + 2.0).coerceAtMost(14.0)))
+          }
+        }
+      })
       // the markers change with the route, not at every position: worked out once (redoing them
       // each second rebuilt the map sources and made the map stutter)
       val crits = if (navigating) nav.criticalities else plan.current?.criticalities ?: emptyList()
       CritMarkers(crits)
       val limitsAll = if (navigating) nav.limits else plan.current?.limits ?: emptyList()
       // on the map too only what matters to this vehicle (a ban, or a limit passed only just)
-      LimitMarkers(remember(limitsAll, garage) {
+      LimitMarkers(remember(limitsAll, garage, alertLayer) {
         val w = garage.active.tripWeightT(garage.loadT)
-        limitsAll.filter { it.kind != "speed_camera" && it.kind != "speed_camera_mobile" && !it.isSection && app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, w) }
+        val alertKinds = if (alertLayer != null) setOf("ztl", "low_emission_zone", "truck_control", "speed_bump", "danger") else emptySet()
+        limitsAll.filter { it.kind != "speed_camera" && it.kind != "speed_camera_mobile" && it.kind !in alertKinds && !it.isSection &&
+            app.navmaster.truck.limits.LimitsIndex.relevant(it, garage.active, w) }
       })
       val stopPts = remember(plan.stops) { plan.stops.map { it.coordinate } }
       StopMarkers(stopPts)
@@ -520,8 +574,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         // pins on the road: speed cameras (where warning about them is allowed) and the events;
         // the ones left behind go away every 250 m
         val step = (traveled / 250).toInt()
-        val cams = remember(camerasOk, settings.speedCameras, step) {
-          if (!settings.speedCameras) emptyList() else camerasOk.filter { l ->
+        val alertCams = alertLayer != null && "fisso" in settings.alertGroups
+        val cams = remember(camerasOk, settings.speedCameras, step, alertCams) {
+          if (!settings.speedCameras || alertCams) emptyList() else camerasOk.filter { l ->
             l.alongM > traveled - 50 && (settings.enforcementEverywhere || nav.analysis?.edgeAt(l.alongM)?.country?.uppercase() !in CAMERA_ZONE_ONLY)
           }
         }
@@ -613,6 +668,17 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           Icon(Icons.Rounded.Close, "Chiudi", tint = Nm.Muted, modifier = Modifier.size(36.dp).clip(CircleShape).clickable { countryHintClosed = true }.padding(6.dp))
         }
       }
+    }
+
+    // the card of an alert touched on the map; it closes by itself after a while
+    openAlert?.let { a ->
+      LaunchedEffect(a) {
+        kotlinx.coroutines.delay(20_000)
+        openAlert = null
+      }
+      val me = location?.coordinates
+      AlertCard(a, me?.let { app.navmaster.truck.limits.Alerts.dist(it.lat, it.lng, a.lat, a.lon) },
+          Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 92.dp, start = 16.dp, end = 16.dp)) { openAlert = null }
     }
 
     // messages about a place shared from another app (Google Maps …)

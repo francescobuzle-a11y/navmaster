@@ -44,6 +44,7 @@ import uniffi.ferrostar.stepAdvanceDistanceFromStep
 import uniffi.ferrostar.stepAdvanceOr
 import uniffi.ferrostar.DeviationCalculationPolicy
 import uniffi.ferrostar.stepAdvanceDistanceToEndOfStep
+import app.navmaster.truck.limits.AlertPack
 
 /** The state of the start screen: what is being prepared, how far (0–1), whether it is over. */
 data class Startup(val label: String, val fraction: Float, val done: Boolean)
@@ -97,8 +98,16 @@ object AppGraph {
       // the weekly files of the checked speed cameras of the countries on the tablet (once a day)
       runCatching { CameraFiles.refreshIfDue(regions.withData().map { it.id }) }
       runCatching { engine.prepareBorders() }
+      // a pack of alerts copied by cable (Android/data/app.navmaster.truck/files/allerte/): taken in
+      // after the crossings (while they are snapped the process has the most memory mappings: a
+      // collection of the Java heap then failed, mremap out of memory)
+      runCatching { AlertPack.takeFromCable() }
+      backgroundDone.value = true
     }.apply { isDaemon = true; name = "valichi" }.start()
   }
+
+  /** The work after the start (warm-up, crossings, cable pack) is over: the alerts of the map are read after it. */
+  val backgroundDone = MutableStateFlow(false)
 
   /** What the start screen shows while the engine's graphs warm up (null before the start, done at the end). */
   val startup = MutableStateFlow<Startup?>(null)

@@ -202,6 +202,7 @@ fun LimitSign(limit: RouteLimit, modifier: Modifier) {
             "truck_control" -> "🚛"
             "speed_bump" -> "⛔"
             "danger" -> "⚠️"
+            "ztl" -> "ZTL"
             else -> "!"
           },
           fontSize = 18.sp,

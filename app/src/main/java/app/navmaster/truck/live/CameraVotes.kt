@@ -77,6 +77,18 @@ object CameraVotes {
   /** What the drivers say about the camera at [lat], [lon] (this tablet is [device]). */
   fun status(lat: Double, lon: Double, device: String): Status = statusOf(all(), lat, lon, device, System.currentTimeMillis())
 
+  /**
+   * The places of the cameras the drivers say are gone (the rules of [statusOf], for each place
+   * answered about), for the map: a camera within 30 m of one of them is not drawn.
+   */
+  fun goneSpots(device: String): List<Pair<Double, Double>> {
+    val list = all()
+    if (list.isEmpty()) return emptyList()
+    val now = System.currentTimeMillis()
+    // one check per place (answers are rounded to 5 decimals: the same camera has the same place)
+    return list.map { it.lat to it.lon }.distinct().filter { (la, lo) -> statusOf(list, la, lo, device, now).hidden }
+  }
+
   /** Whether this tablet answered about the camera in the last [days] days (then it is not asked again). */
   fun answeredRecently(lat: Double, lon: Double, device: String, days: Int = 60): Boolean {
     val since = System.currentTimeMillis() - days * 24 * 3600_000L

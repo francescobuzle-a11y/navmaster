@@ -1,0 +1,12 @@
+country,country_name,src_id,lat,lon,type,type_name,maxspeed_kmh,road,direction
+IT,Italia,1,45.150000,10.380000,FT,Autovelox fisso,50,"Via Prova, SS10",4
+IT,Italia,2,45.150050,10.380050,FT,Autovelox fisso,50,"Via Prova, SS10",4
+IT,Italia,3,45.160000,10.390000,S,Semaforo rosso,0,Via Semaforo,
+IT,Italia,4,45.170000,10.400000,SC,Tutor (velocità media),130,Autostrada A21,1
+IT,Italia,5,45.180000,10.410000,AR,Controllo accessi (ZTL),0,Centro storico,4
+IT,Italia,6,45.190000,10.420000,R,Dosso,30,,
+IT,Italia,7,45.200000,10.430000,CC,Curva pericolosa,524288,TÃºnel di prova,
+IT,Italia,8,45.210000,10.440000,IU,Ingresso zona urbana,0,,
+AE,Emirati,"x, E11",4.0,1.0,213,213,0,0,
+AT,Austria,9,47.260000,11.390000,F,Autovelox fisso,80,Inntal Autobahn A12,4
+AT,Austria,10,47.270000,11.400000,TT,Controllo camion,0,A12,

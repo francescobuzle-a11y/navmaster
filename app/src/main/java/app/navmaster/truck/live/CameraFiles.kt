@@ -39,6 +39,9 @@ object CameraFiles {
   }
   @Volatile private var lastAt = 0L
 
+  /** Changes when a newer file of a country was downloaded (the map of the alerts reads them again). */
+  val version = kotlinx.coroutines.flow.MutableStateFlow(0)
+
   private fun dir(): File = File(app.navmaster.truck.AppGraph.app.filesDir, "autovelox").apply { mkdirs() }
 
   /** The newest file of the country's cameras, or null when none was downloaded. */
@@ -79,6 +82,7 @@ object CameraFiles {
       // the older versions of the country (an open database keeps reading its own until closed)
       dir().listFiles { f -> f.name.startsWith("${e.country}-") && f.name.endsWith(".sqlite") && f.name != target.name }?.forEach { it.delete() }
       Log.i(TAG, "camera file ${e.name}: ${e.size / 1024} kB (${e.stamp})")
+      version.value++
     }
   }
 
