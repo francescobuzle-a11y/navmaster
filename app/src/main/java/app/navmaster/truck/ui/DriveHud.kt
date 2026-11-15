@@ -17,6 +17,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -402,6 +404,8 @@ fun PoiColumn(
     onRemember: (String) -> Unit = {},
     /** Whether the column is open now (its list, or the magnifier's panels), not folded to its tab: the map makes room. */
     onShown: (Boolean) -> Unit = {},
+    /** How far the bar reaches past the column to touch the screen's edge (the margin of the screen's overlay). */
+    edgeBleed: Dp = 10.dp,
 ) {
   val panel = Nm.PanelSolid
   var mode by remember { mutableStateOf(startMode?.let { m -> PanelMode.entries.firstOrNull { it.name == m } } ?: PanelMode.LIST) }
@@ -420,13 +424,17 @@ fun PoiColumn(
     pois.filter { it.alongM > traveledM + 50 && it.alongM < traveledM + 80_000 }.sortedBy { it.alongM }.take(40)
   }
 
-  // after a while the list folds to its first line (the setting of the side panel), opened again
-  // by new places ahead or a touch
-  var folded by remember { mutableStateOf(false) }
-  val keys = ahead.take(3).map { it.poi.key }
+  // the bar: the nearest place of each kind ahead (a fuel station, a parking, a service area…),
+  // nearest first, as many as the settings say
+  val perKind = remember(ahead, settings.poiRailCount) { ahead.distinctBy { it.poi.cat }.take(settings.poiRailCount.coerceAtLeast(1)) }
+
+  // after a while the bar slides away to its tab (the setting of the side panel), opened again by
+  // new places ahead or a touch on the tab; never by itself when the settings say 0 places
+  var folded by remember { mutableStateOf(settings.poiRailCount == 0) }
+  val keys = perKind.map { it.poi.key }
   var seen by remember { mutableStateOf(emptySet<String>()) }
   LaunchedEffect(keys) {
-    if (keys.any { it !in seen }) folded = false
+    if (keys.any { it !in seen } && settings.poiRailCount > 0) folded = false
     seen = seen + keys
   }
   LaunchedEffect(folded, keys, mode, settings.poiRailSeconds) {
@@ -494,63 +502,27 @@ fun PoiColumn(
       PoiPin(p.poi.key, p.poi.lat, p.poi.lon, g, c, tag, p)
     })
   }
-  val shown = mode != PanelMode.LIST || (!folded && ahead.isNotEmpty())
+  val shown = mode != PanelMode.LIST || (!folded && perKind.isNotEmpty())
   LaunchedEffect(shown) { onShown(shown) }
   DisposableEffect(Unit) { onDispose { onPins(emptyList()); onOpen(false); onShown(false) } }
 
   val lensSize = 56.dp
   Column(modifier.width(width).heightIn(max = maxHeight), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     when (mode) {
-      PanelMode.LIST -> if (folded && ahead.isNotEmpty()) {
-        // folded (nothing touched for a while): one small tab with the nearest place and the
-        // magnifier; a touch opens the list again
-        val first = ahead.first()
-        val (g, c) = PoiGlyphs.of(first.poi.cat)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-          Row(
-              Modifier.weight(1f).heightIn(min = 44.dp).clip(RoundedCornerShape(14.dp)).background(panel)
-                  .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp)).clickable { folded = false }
-                  .semantics { contentDescription = "Apri i punti di interesse" }.padding(horizontal = 8.dp, vertical = 5.dp),
-              verticalAlignment = Alignment.CenterVertically,
-          ) {
-            GlyphTile(g, c, 28.dp)
-            Spacer(Modifier.width(8.dp))
-            Text(distOf(first), color = Nm.Amber, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(6.dp))
-            Text(first.poi.title.ifBlank { PoiCategories.byId(first.poi.cat)?.label ?: "" }, color = Nm.Text, fontSize = 13.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text("▾", color = Nm.Muted, fontSize = 14.sp)
-          }
-          Spacer(Modifier.width(8.dp))
-          LensButton(44.dp) { mode = PanelMode.CHOOSE }
-        }
-      } else {
-        // the places ahead, one line each, scrolling in the room there is (the first lines fade
-        // out at the edges instead of being cut); the arrow folds the list to its tab
-        val listState = rememberScrollState()
-        Column(
-            Modifier.weight(1f, fill = false).fadeEdges(listState).verticalScroll(listState),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          for (p in ahead) PoiLine(p, distOf(p), eta(p), panel, highlight = null) { onPoi(p) }
-          if (ahead.isEmpty()) Text("Nessun posto in vista lungo il percorso.", color = Nm.Muted, fontSize = 13.sp,
-              modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(panel).padding(12.dp))
-        }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          if (ahead.isNotEmpty()) {
-            Box(
-                Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(panel).border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp))
-                    .clickable { folded = true }.semantics { contentDescription = "Riduci i punti di interesse" },
-                contentAlignment = Alignment.Center,
-            ) { Text("▴", color = Nm.Text, fontSize = 18.sp) }
-            Text("tutti ›", color = Nm.Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.heightIn(min = 44.dp).clip(RoundedCornerShape(14.dp)).background(panel).clickable(onClick = onAll)
-                    .padding(horizontal = 12.dp, vertical = 12.dp))
-          }
-          Spacer(Modifier.weight(1f))
-          LensButton(lensSize) { mode = PanelMode.CHOOSE }
-        }
-      }
+      PanelMode.LIST -> RailList(
+          places = perKind,
+          open = !folded && perKind.isNotEmpty(),
+          width = width,
+          bleed = edgeBleed,
+          opacity = settings.poiRailOpacity,
+          dist = { distOf(it) },
+          eta = { eta(it) },
+          onPoi = onPoi,
+          onAll = onAll,
+          onSearch = { mode = PanelMode.CHOOSE },
+          onOpen = { folded = false },
+          onClose = { folded = true },
+      )
       PanelMode.CHOOSE -> ChoosePanel(panel, maxHeight,
           onPick = { runQuick(it) }, onSearch = { mode = PanelMode.SEARCH }, onClose = { mode = PanelMode.LIST })
       PanelMode.SEARCH -> SearchPanel(panel, maxHeight, query, { query = it }, scope, { scope = it }, hasDestination, hasHere,
@@ -634,6 +606,117 @@ private fun LensButton(size: Dp, onClick: () -> Unit) {
 private fun IconButtonSmall(d: String, description: String, onClick: () -> Unit) {
   Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
     Glyph(d, Color(0xFFC9D1D9), 20.dp, description = description)
+  }
+}
+
+/**
+ * The places' bar while driving: a slim column against the screen's right edge, one line for the
+ * nearest place of each kind (its sign, the distance and the minutes big, the name small), «Tutti»
+ * and «Cerca» at the bottom and an arrow to put it away. It slides in from the edge and out again
+ * (the map's view moves aside with it, see MainScreen); put away, a small tab at the edge with how
+ * many places there are brings it back.
+ */
+@Composable
+private fun ColumnScope.RailList(
+    places: List<RoutePoi>,
+    open: Boolean,
+    width: Dp,
+    bleed: Dp,
+    opacity: Int,
+    dist: (RoutePoi) -> String,
+    eta: (RoutePoi) -> String?,
+    onPoi: (RoutePoi) -> Unit,
+    onAll: () -> Unit,
+    onSearch: () -> Unit,
+    onOpen: () -> Unit,
+    onClose: () -> Unit,
+) {
+  val bg = Color(0xFF141A21).copy(alpha = (opacity.coerceIn(20, 100) / 100f).coerceAtLeast(0.55f))
+  val edge = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
+  val line = Color(0x14FFFFFF)
+  val slide = androidx.compose.animation.core.tween<androidx.compose.ui.unit.IntOffset>(450, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+  val fade = androidx.compose.animation.core.tween<Float>(350)
+  Box(Modifier.align(Alignment.End).offset(x = bleed)) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = open,
+        enter = androidx.compose.animation.slideInHorizontally(slide) { it } + androidx.compose.animation.fadeIn(fade),
+        exit = androidx.compose.animation.slideOutHorizontally(slide) { it } + androidx.compose.animation.fadeOut(fade),
+    ) {
+      Column(Modifier.width(width + bleed).clip(edge).background(bg).border(1.dp, Color(0x1AFFFFFF), edge).padding(end = bleed)) {
+        for ((i, p) in places.withIndex()) {
+          RailRow(p, dist(p), eta(p)) { onPoi(p) }
+          if (i < places.size - 1) Box(Modifier.fillMaxWidth().padding(start = 52.dp).height(1.dp).background(line))
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(line))
+        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+          RailButton("Tutti", null, Color(0x1FFFFFFF), Modifier.weight(1f), onAll)
+          RailButton("Cerca", PoiGlyphs.SEARCH, Nm.AccentDark, Modifier.weight(1f), onSearch)
+          Box(
+              Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(Color(0x1FFFFFFF)).clickable(onClick = onClose)
+                  .semantics { contentDescription = "Metti via i punti di interesse" },
+              contentAlignment = Alignment.Center,
+          ) { Text("›", color = Nm.Text, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+        }
+      }
+    }
+    androidx.compose.animation.AnimatedVisibility(
+        visible = !open && places.isNotEmpty(),
+        modifier = Modifier.align(Alignment.TopEnd),
+        enter = androidx.compose.animation.fadeIn(fade) + androidx.compose.animation.slideInHorizontally(slide) { it / 2 },
+        exit = androidx.compose.animation.fadeOut(fade),
+    ) {
+      val first = places.firstOrNull()
+      Row(
+          Modifier.clip(RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp)).background(bg)
+              .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp)).clickable(onClick = onOpen)
+              .semantics { contentDescription = "Apri i punti di interesse" }
+              .padding(start = 8.dp, end = 8.dp + bleed, top = 6.dp, bottom = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text("‹", color = Nm.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(6.dp))
+        if (first != null) {
+          val (g, c) = PoiGlyphs.of(first.poi.cat)
+          GlyphTile(g, c, 26.dp)
+          Spacer(Modifier.width(6.dp))
+        }
+        Text("${places.size}", color = Nm.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+      }
+    }
+  }
+}
+
+/** One place of the bar: its sign, the distance and the minutes big, the name small. */
+@Composable
+private fun RailRow(p: RoutePoi, dist: String, eta: String?, onClick: () -> Unit) {
+  val (g, c) = PoiGlyphs.of(p.poi.cat)
+  val cat = PoiCategories.byId(p.poi.cat)
+  Row(
+      Modifier.fillMaxWidth().heightIn(min = 54.dp).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    GlyphTile(g, c, 32.dp)
+    Spacer(Modifier.width(10.dp))
+    Column(Modifier.weight(1f)) {
+      Text(if (eta != null) "$dist · $eta" else dist, color = Nm.Amber, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+          overflow = TextOverflow.Ellipsis)
+      Text(p.poi.title.ifBlank { cat?.label ?: "" }, color = Color(0xFFC9D1D9), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+  }
+}
+
+@Composable
+private fun RailButton(label: String, glyph: String?, color: Color, modifier: Modifier, onClick: () -> Unit) {
+  Row(
+      modifier.height(40.dp).clip(RoundedCornerShape(10.dp)).background(color).clickable(onClick = onClick),
+      horizontalArrangement = Arrangement.Center,
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    if (glyph != null) {
+      Glyph(glyph, Color.White, 16.dp)
+      Spacer(Modifier.width(5.dp))
+    }
+    Text(label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
   }
 }
 
