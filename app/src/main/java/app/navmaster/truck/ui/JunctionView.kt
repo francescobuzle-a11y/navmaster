@@ -68,7 +68,8 @@ import kotlinx.coroutines.withContext
 import uniffi.ferrostar.LaneInfo
 
 /**
- * The junction view, a fixed drawing as on the dedicated navigators: the road ahead in a set
+ * The junction view, a fixed drawing as on the dedicated navigators, dark and plain (the signs in
+ * a band at the top, white arrows on the blue lanes to take): the road ahead in a set
  * perspective with its lanes (the same lanes as in the lane strip and the voice: nav.LaneModel),
  * the lanes to take lit with the arrows painted on them, the sign over the lanes (the map's
  * direction signs when it has them, else a sign made from the road taken: its number, its name,
@@ -385,21 +386,25 @@ internal fun signOf(s: JunctionScene): Sign {
 
 // ---------------------------------------------------------------------------------- the picture
 
+/**
+ * The colours of the picture: a dark, plain perspective (the model the driver chose among four):
+ * dark ground, asphalt a little lighter, light markings, the lanes to take blue with white arrows,
+ * the signs in a dark band at the top. By night a little darker still.
+ */
 internal class Palette(night: Boolean) {
-  val skyTop = if (night) Color(0xFF0B1220) else Color(0xFF7FB0E4)
-  val skyLow = if (night) Color(0xFF1C2635) else Color(0xFFDCE9F6)
-  val groundFar = if (night) Color(0xFF1A2026) else Color(0xFFCBD6BE)
-  val groundNear = if (night) Color(0xFF151A1F) else Color(0xFFB9CBA3)
-  val asphalt = if (night) Color(0xFF3A3F47) else Color(0xFF596069)
-  val asphaltFar = if (night) Color(0xFF2E333B) else Color(0xFF7D848C)
-  val marking = if (night) Color(0xFFC9CED4) else Color(0xFFFFFFFF)
+  val back = if (night) Color(0xFF11151A) else Color(0xFF1B2128)
+  val groundFar = if (night) Color(0xFF161B21) else Color(0xFF20272F)
+  val groundNear = if (night) Color(0xFF1A2027) else Color(0xFF262E37)
+  val asphalt = if (night) Color(0xFF353B43) else Color(0xFF434A53)
+  val asphaltFar = if (night) Color(0xFF2B3037) else Color(0xFF363C44)
+  val marking = if (night) Color(0xFFC9CED4) else Color(0xFFE1E5EA)
   val lit = Color(0xFF2F7CF6)
-  val litFar = if (night) Color(0xFF2A5FB8) else Color(0xFF5B95F0)
-  /** The arrows painted on the lanes: bright on the lanes to take, dull on the others. */
+  val litFar = Color(0xFF2A5FB8)
+  /** The arrows on the lanes: white on the lanes to take, dull on the others. */
   val paint = if (night) Color(0xFFE6EAEE) else Color(0xFFFFFFFF)
-  val paintDim = if (night) Color(0xFF6E747C) else Color(0xFFA9AEB4)
-  val post = if (night) Color(0xFF6A7078) else Color(0xFF8D949C)
-  val beam = if (night) Color(0xFF4A5058) else Color(0xFF5C636B)
+  val paintDim = if (night) Color(0xFF6E747C) else Color(0xFF7A828B)
+  /** The band of the signs at the top. */
+  val band = if (night) Color(0xFF0B0F13) else Color(0xFF11161C)
 }
 
 /** Where the horizon is, as a fraction of the picture's height from the top. */
@@ -412,8 +417,6 @@ internal const val Z_SPLIT = 2.3
 internal const val Z_SPLIT2 = 4.4
 /** Depth of the middle of the junction in town. */
 private const val Z_CROSS = 3.4
-/** Depth of the sign's posts. */
-private const val Z_SIGN = 2.0
 /** Metres of ground per unit of depth (the bottom edge of the picture is about 12 m ahead). */
 internal const val M_PER_Z = 12.0
 /** The width of a lane, metres. */
@@ -542,7 +545,8 @@ private fun bend(z: Double, p: Persp, l: Layout, outward: Boolean): Double {
   // at its far end the branch reaches past the picture's edge
   val target = 1.15 * zEnd * (p.w / 2) / p.hw0
   val a = target / ((zEnd - Z_SPLIT) * (zEnd - Z_SPLIT))
-  val k = if (outward) 1.0 else if (l.j.kind == LanePlan.Kind.FORK) 0.22 else 0.0
+  // the road going on stays straight, unless at a fork it really leaves to the other side
+  val k = if (outward) 1.0 else if (l.j.kind == LanePlan.Kind.FORK && (l.j.other?.angle ?: 0.0) * l.side < -6.0) 0.22 else 0.0
   return k * a * (z - Z_SPLIT) * (z - Z_SPLIT)
 }
 
@@ -554,9 +558,13 @@ private fun bend2(z: Double): Double = if (z <= Z_SPLIT2) 0.0 else 0.075 * (z - 
  * going on; [sub] −1/1: on the left/right road of the branch's second division.
  */
 internal fun pt(p: Persp, l: Layout, u: Double, z: Double, onBranch: Boolean, sub: Int = 0): Offset {
-  val b = if (!l.branch) 0.0 else if (onBranch) l.side * bend(z, p, l, true) + sub * bend2(z)
-      else -l.side * bend(z, p, l, false)
-  return Offset(p.x(u + b, z), p.y(z))
+  if (!l.branch) return Offset(p.x(u, z), p.y(z))
+  if (!onBranch) return Offset(p.x(u - l.side * bend(z, p, l, false), z), p.y(z))
+  // the branch a little wider into the distance, outwards from where it leaves the road (in a true
+  // perspective it thinned to a thread before the picture's edge)
+  val us = p.boundary(l.splitB)
+  val wide = if (z > Z_SPLIT) 1.0 + 0.10 * (z - Z_SPLIT) else 1.0
+  return Offset(p.x(us + (u - us) * wide + l.side * bend(z, p, l, true) + sub * bend2(z), z), p.y(z))
 }
 
 /** Depths from [z0] to [z1], denser near the bottom (equal steps on the screen). */
@@ -652,29 +660,20 @@ private fun DrawScope.groundLine(p: Persp, pts: List<GP>, color: Color, dashed: 
  * (projected flat on the road they were squashed until a turn looked broken), as wide as part of
  * the lane there, [across] of the lane off its middle when two arrows share it.
  */
-private fun DrawScope.laneArrow(p: Persp, l: Layout, lane: Int, across: Double, z: Double, angleDeg: Float, color: Color, share: Float, onBranch: Boolean) {
+private fun DrawScope.laneArrow(p: Persp, l: Layout, lane: Int, across: Double, z: Double, angleDeg: Float, color: Color, share: Float, onBranch: Boolean,
+                                maxCell: Float = Float.MAX_VALUE) {
   val laneU = 2.0 / l.n
   val c = pt(p, l, p.boundary(lane) + laneU * (0.5 + across), z, onBranch)
   val laneW = abs(p.x(p.boundary(lane + 1), z) - p.x(p.boundary(lane), z))
-  val cell = laneW * share
+  // never taller than the room to the next row (a wide, low picture has wide lanes and close rows)
+  val cell = min(laneW * share, maxCell)
   val cw = cell; val ch = cell * 0.95f
   translate(c.x - cw / 2, c.y - ch / 2) {
     val old = drawContext.size
     drawContext.size = Size(cw, ch)
-    drawTurnArrow(angleDeg, color, 0.17f, laneW * share * 1.6f)
+    drawTurnArrow(angleDeg, color, 0.17f, cell * 1.6f)
     drawContext.size = old
   }
-}
-
-/** An upright chevron on lane [lane] at depth [z] (lanes known from their number only: no arrows are painted on the map). */
-private fun DrawScope.laneChevron(p: Persp, l: Layout, lane: Int, z: Double, color: Color, onBranch: Boolean) {
-  val laneU = 2.0 / l.n
-  val c = pt(p, l, p.boundary(lane) + laneU * 0.5, z, onBranch)
-  val laneW = abs(p.x(p.boundary(lane + 1), z) - p.x(p.boundary(lane), z))
-  val wd = laneW * 0.42f; val ht = wd * 0.62f
-  drawPath(Path().apply {
-    moveTo(c.x, c.y - ht / 2); lineTo(c.x + wd / 2, c.y + ht / 2); lineTo(c.x, c.y + ht * 0.12f); lineTo(c.x - wd / 2, c.y + ht / 2); close()
-  }, color)
 }
 
 /**
@@ -732,48 +731,60 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
   val pal = Palette(night)
   val w = size.width; val h = size.height
   val hy = p.hz
-  drawRect(Brush.verticalGradient(listOf(pal.skyTop, pal.skyLow), 0f, hy), Offset.Zero, Size(w, hy))
+  drawRect(pal.back, Offset.Zero, Size(w, h))
   drawRect(Brush.verticalGradient(listOf(pal.groundFar, pal.groundNear), hy, h), Offset(0f, hy), Size(w, h - hy))
-  // the road's colour, lighter into the distance
+  // the road's colour, darker into the distance
   val road = Brush.verticalGradient(listOf(pal.asphaltFar, pal.asphalt), hy, h)
   val litBrush = Brush.verticalGradient(listOf(pal.litFar, pal.lit), hy, h)
   if (l.turn) drawTown(l, p, pal, road, litBrush) else drawRoad(l, p, pal, road, litBrush)
-  // ---- the arrows painted on the lanes (the ones of the route bright on the lanes to take), or
-  // chevrons on lanes to take known from their number only
-  // two rows: near (big) and a little further; arrows of a lane with two side by side
-  val rows = if (l.turn) listOf(1.45, 2.3) else listOf(1.5, 2.6)
-  // how the branch goes on beyond the picture (a tight curve, a loop, a ramp curving back): a big
-  // arrow on the lit lanes in place of their far row of arrows
+  // ---- the arrows: white on the lanes to take, three rows of them (the lane's own arrow where
+  // the map has it, else the way the lane goes); dull and once on the other lanes, where painted
+  val litRows = if (l.turn) listOf(1.3, 1.8, 2.35) else listOf(1.35, 1.9, 2.6)
+  // how the branch goes on beyond the picture (a tight curve, a loop, a ramp curving back): a
+  // curved arrow on the branch well after it has left the road, in place of the far row
   val curveHere = l.branch && l.nextSide == null && l.curve != Curve.STRAIGHT
+  val sideWord = if (l.side > 0) "slight right" else "slight left"
+  // the room of each row on the screen: down to the row before it (the first: to the bottom edge)
+  val rowRoom = litRows.indices.map { k -> ((if (k == 0) h else p.y(litRows[k - 1])) - p.y(litRows[k])) * (if (k == 0) 1.6f else 0.92f) }
   if (l.known) for (i in 0 until l.n) {
     val lane = l.j.lanes[i]
     val onBranch = l.branch && i in l.active
-    for (z0 in rows) {
-      if (curveHere && onBranch && z0 == rows[1]) continue
-      if (!lane.painted) {
-        if (lane.take) laneChevron(p, l, i, z0, pal.paint, onBranch)
-        continue
+    if (lane.take) {
+      val word = if (lane.painted) lane.arrow else if (onBranch) sideWord else "straight"
+      // a lane painted with a second arrow too (straight on and the exit): both on the near row
+      val others = if (lane.painted) lane.arrows.distinct().filter { it != lane.arrow }.take(1) else emptyList()
+      for ((k, z0) in litRows.withIndex()) {
+        if (curveHere && onBranch && k == 2) continue
+        if (k == 0 && others.isNotEmpty()) {
+          val pair = (others + word).sortedBy { directionAngle(it) }
+          pair.forEachIndexed { ai, ar ->
+            laneArrow(p, l, i, if (ai == 0) -0.22 else 0.22, z0, directionAngle(ar), if (ar == word) pal.paint else pal.paintDim, 0.44f, onBranch, rowRoom[k])
+          }
+        } else laneArrow(p, l, i, 0.0, z0, directionAngle(word), pal.paint, 0.58f, onBranch, rowRoom[k])
       }
+    } else if (lane.painted) {
       val arrows = lane.arrows.distinct().take(2).sortedBy { directionAngle(it) }
       arrows.forEachIndexed { ai, ar ->
-        val bright = lane.take && ar == lane.arrow
         val across = if (arrows.size == 1) 0.0 else if (ai == 0) -0.22 else 0.22
-        laneArrow(p, l, i, across, z0, directionAngle(ar), if (bright) pal.paint else pal.paintDim, if (arrows.size == 1) 0.62f else 0.44f, onBranch)
+        laneArrow(p, l, i, across, 1.5, directionAngle(ar), pal.paintDim, if (arrows.size == 1) 0.52f else 0.42f, false, rowRoom[0])
       }
     }
   } else if (l.branch) {
-    for (z0 in rows) if (!(curveHere && z0 == rows[1])) laneChevron(p, l, l.active.first(), z0 + 0.2, pal.paint, true)
+    for ((k, z0) in litRows.withIndex()) {
+      if (curveHere && k == 2) continue
+      laneArrow(p, l, l.active.first(), 0.0, z0, directionAngle(sideWord), pal.paint, 0.58f, true, rowRoom[k])
+    }
   }
   if (curveHere) {
     val ua = p.boundary(l.litA); val ub = p.boundary(l.litB)
-    val zc = rows[1]
-    val c = pt(p, l, (ua + ub) / 2, zc, true)
-    val size0 = (abs(p.x(ub, zc) - p.x(ua, zc)) * 0.8f).coerceIn(56f * density, 76f * density)
-    val cc = Offset(c.x.coerceIn(size0 * 0.6f, w - size0 * 0.6f), c.y)
+    val zc = 3.4
+    val a = pt(p, l, ua, zc, true); val b = pt(p, l, ub, zc, true)
+    val size0 = (abs(b.x - a.x) * 0.9f).coerceIn(44f * density, 72f * density)
+    val cc = Offset(((a.x + b.x) / 2).coerceIn(size0 * 0.6f, w - size0 * 0.6f), a.y)
     curveArrow(cc, l.turnAfter, size0, pal.paint)
   }
-  // ---- the sign
-  drawSignStatic(signOf(scene), p, l, pal)
+  // ---- the signs, in their band at the top
+  drawSignStatic(signOf(scene), l, pal)
 }
 
 /**
@@ -1009,11 +1020,11 @@ private fun DrawScope.drawTown(l: Layout, p: Persp, pal: Palette, road: Brush, l
 private class PanelBox(val pn: SignPanel, var x0: Float, var x1: Float, val cx: Float)
 
 /**
- * The sign: its panels at the top of the picture, each over the lanes it is for, as wide as its
- * text needs, the text never smaller than readable from the driver's seat; under them the beam
- * and the posts standing at the road's edges.
+ * The signs: their panels in a dark band at the top of the picture, each over the lanes it is for
+ * (the lanes spread evenly across the band), as wide as its text needs, the text never smaller
+ * than readable from the driver's seat.
  */
-private fun DrawScope.drawSignStatic(sign: Sign, p: Persp, l: Layout, pal: Palette) {
+private fun DrawScope.drawSignStatic(sign: Sign, l: Layout, pal: Palette) {
   val dp = density
   val w = size.width; val h = size.height
   val margin = 10f * dp
@@ -1033,14 +1044,13 @@ private fun DrawScope.drawSignStatic(sign: Sign, p: Persp, l: Layout, pal: Palet
     val towns = pn.towns.maxOfOrNull { tp.measureText(it) } ?: 0f
     return max(refs, towns) + pad(t) * 2 + arrowSpace(t) + (if (pn.exit != null) t * 2.3f else 0f)
   }
-  // the lanes of each panel at the sign's depth (unknown lanes: the road's two halves)
+  // each panel over its lanes, the lanes spread evenly across the band (unknown lanes: two halves)
   val nSign = if (l.known) l.n else 2
-  fun ub(b: Int) = -1.0 + 2.0 * b / nSign
+  val spanW = w - margin - marginRight
+  fun xs(b: Int) = margin + spanW * b / nSign
   val boxes = sign.panels.map { pn ->
-    val onBranch = l.branch && l.known && pn.l0 >= l.litA && pn.l1 < l.litB
-    val xl = pt(p, l, ub(pn.l0), Z_SIGN, onBranch).x
-    val xr = pt(p, l, ub(pn.l1 + 1), Z_SIGN, onBranch).x
-    PanelBox(pn, min(xl, xr), max(xl, xr), (xl + xr) / 2)
+    val xl = xs(pn.l0); val xr = xs(pn.l1 + 1)
+    PanelBox(pn, xl, xr, (xl + xr) / 2)
   }.sortedBy { it.cx }
   if (boxes.isEmpty()) return
   val avail = w - margin - marginRight - (boxes.size - 1) * 6f * dp
@@ -1048,21 +1058,27 @@ private fun DrawScope.drawSignStatic(sign: Sign, p: Persp, l: Layout, pal: Palet
   // too much text for the width: smaller letters, down to the readable minimum
   if (minSum > avail && textPx > textMin) textPx = max(textMin, textPx * avail / minSum)
   val share = (avail / boxes.sumOf { minWidth(it.pn, textPx).toDouble() }.toFloat()).coerceAtMost(1f)
-  for (b in boxes) {
-    val mw = minWidth(b.pn, textPx) * share
-    if (b.x1 - b.x0 < mw) { b.x0 = b.cx - mw / 2; b.x1 = b.cx + mw / 2 }
-    b.x0 = b.x0.coerceAtLeast(margin); b.x1 = b.x1.coerceAtMost(w - marginRight)
-    if (b.x1 - b.x0 < mw) { if (b.x0 <= margin + 0.5f) b.x1 = b.x0 + mw else b.x0 = b.x1 - mw }
-  }
+  // each panel as wide as its lanes, at least as its text; together never wider than the band
+  // (the ones with room to spare give it up), then placed left to right over their lanes
   val gap = 6f * dp
-  for (i in 1 until boxes.size) {
-    val prev = boxes[i - 1]; val cur = boxes[i]
-    if (cur.x0 < prev.x1 + gap) { val d = prev.x1 + gap - cur.x0; cur.x0 += d; cur.x1 += d }
+  val mins = boxes.map { minWidth(it.pn, textPx) * share }
+  val widths = boxes.mapIndexed { k, b -> max(b.x1 - b.x0, mins[k]) }.toFloatArray()
+  val excess = widths.sum() - avail
+  if (excess > 0f) {
+    val slack = widths.indices.sumOf { (widths[it] - mins[it]).toDouble() }.toFloat()
+    if (slack > 0f) for (k in widths.indices) widths[k] -= (widths[k] - mins[k]) * min(1f, excess / slack)
   }
-  for (i in boxes.indices.reversed()) {
-    val b = boxes[i]
-    if (b.x1 > w - marginRight) { val d = b.x1 - (w - marginRight); b.x0 -= d; b.x1 -= d }
-    if (i > 0) { val prev = boxes[i - 1]; if (prev.x1 + gap > b.x0) { val d = prev.x1 + gap - b.x0; prev.x0 -= d; prev.x1 -= d } }
+  var left = margin
+  for ((k, b) in boxes.withIndex()) {
+    b.x0 = max(b.cx - widths[k] / 2, left)
+    b.x1 = b.x0 + widths[k]
+    left = b.x1 + gap
+  }
+  var right = w - marginRight
+  for (k in boxes.indices.reversed()) {
+    val b = boxes[k]
+    if (b.x1 > right) { b.x0 -= b.x1 - right; b.x1 = right }
+    right = b.x0 - gap
   }
   // the height: the lines at the text size, at most a third of the picture
   val maxLines = boxes.maxOf { (if (it.pn.refs.isEmpty()) 0 else 1) + it.pn.towns.size }.coerceAtLeast(1)
@@ -1072,17 +1088,9 @@ private fun DrawScope.drawSignStatic(sign: Sign, p: Persp, l: Layout, pal: Palet
   while (boxH > h * 0.30f && lines > 1) { lines--; boxH = lineH * lines + pad(textPx) * 1.6f }
   val top = margin
   val bottom = top + boxH
-  // the posts at the road's edges, upright, and the beam reaching them
-  val postW = 4f * dp
-  val spanL = boxes.first().x0; val spanR = boxes.last().x1
-  val reach = (spanR - spanL) * 0.6f
-  val yPost = p.y(Z_SIGN)
-  var posts = listOf(p.x(-1.12, Z_SIGN), p.x(1.12, Z_SIGN)).filter { it in 2f..(w - 2f) && it in (spanL - reach)..(spanR + reach) }
-  if (posts.isEmpty()) posts = listOf(((spanL + spanR) / 2))
-  val beamL = (posts.map { it - postW } + (spanL - 4f * dp)).min().coerceAtLeast(0f)
-  val beamR = (posts.map { it + postW } + (spanR + 4f * dp)).max().coerceAtMost(w)
-  for (x in posts) drawLine(pal.post, Offset(x, bottom), Offset(x, yPost), postW)
-  drawRect(pal.beam, Offset(beamL, bottom), Size(beamR - beamL, 5f * dp))
+  // the band behind the panels, with a thin line under it
+  drawRect(pal.band, Offset.Zero, Size(w, bottom + margin * 0.8f))
+  drawRect(Color(0x33FFFFFF), Offset(0f, bottom + margin * 0.8f), Size(w, 1f * dp))
   for (b in boxes) {
     val pn = b.pn
     val x0 = b.x0; val x1 = b.x1
@@ -1144,7 +1152,7 @@ private fun DrawScope.drawSignStatic(sign: Sign, p: Persp, l: Layout, pal: Palet
 }
 
 /**
- * The vehicle's mark at the bottom of the picture in the lane the satellites put it in: blue in a
+ * The vehicle's mark at the bottom of the picture in the lane the satellites put it in: white in a
  * lane to take, amber in one that does not go the route's way. Nothing when the lane is not known.
  */
 internal fun DrawScope.drawVehicleLane(scene: JunctionScene) {
@@ -1162,8 +1170,9 @@ internal fun DrawScope.drawVehicleLane(scene: JunctionScene) {
     moveTo(c.x, c.y - ht / 2); lineTo(c.x + wd / 2, c.y + ht / 2); lineTo(c.x, c.y + ht * 0.22f); lineTo(c.x - wd / 2, c.y + ht / 2); close()
   }
   drawPath(shape, Color(0x66000000), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.5f * density))
-  drawPath(shape, if (ok) Color(0xFF0B2A5C) else NmAmber)
-  drawPath(shape, Color.White, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f * density))
+  // white on the blue of a lane to take, amber in a lane that does not go the route's way
+  drawPath(shape, if (ok) Color.White else NmAmber)
+  drawPath(shape, if (ok) Color(0xFF0B2A5C) else Color.White, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f * density))
 }
 
 /**
