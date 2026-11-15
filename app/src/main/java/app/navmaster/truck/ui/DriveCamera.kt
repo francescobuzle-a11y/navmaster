@@ -30,6 +30,12 @@ internal object DriveCamera {
   /** The map's own limit of tilt, unless the tablet's map allows more (see [allowTilt]). */
   const val MAP_MAX_TILT = 60.0
 
+  /** The tilt asked of the tablet's map (the most its engine is built for). */
+  const val ASK_TILT = 85.0
+
+  /** The most the settings and the buttons tilt the driving view and a junction's (3° more across). */
+  const val MAX_SETTING_TILT = 80
+
   /** Seconds to ease into and out of the view of a roundabout or a junction. */
   const val EASE_S = 1.4
 

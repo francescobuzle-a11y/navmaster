@@ -549,13 +549,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       }
     }
   }
-  // the tilt over 60° asked of the tablet's map while driving in 3D (again now and then: the map's
-  // library sets its own limit back when it redraws its options)
-  val camWantTilt = androidx.compose.runtime.rememberUpdatedState(settings.driveTilt + 3.0)
+  // the tilt over 60° asked of the tablet's map while driving in 3D, as much as its map allows
+  // (again now and then: the map's library sets its own limit back when it redraws its options)
   LaunchedEffect(navigating, is3d) {
     if (!navigating || !is3d) return@LaunchedEffect
     while (true) {
-      mapMaxTilt = DriveCamera.allowTilt(mapState.cameraState, maxOf(DriveCamera.MAP_MAX_TILT, camWantTilt.value))
+      mapMaxTilt = DriveCamera.allowTilt(mapState.cameraState, DriveCamera.ASK_TILT)
       kotlinx.coroutines.delay(2000)
     }
   }
@@ -1187,8 +1186,8 @@ private fun NavigatingOverlay(
       fun tilted(by: Int) {
         barTouch = System.currentTimeMillis()
         AppGraph.settings.update {
-          it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, 70), roundaboutTilt = (it.roundaboutTilt + by).coerceIn(0, 60),
-              junctionTilt = (it.junctionTilt + by).coerceIn(0, 70))
+          it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, DriveCamera.MAX_SETTING_TILT), roundaboutTilt = (it.roundaboutTilt + by).coerceIn(0, 70),
+              junctionTilt = (it.junctionTilt + by).coerceIn(0, DriveCamera.MAX_SETTING_TILT))
         }
       }
       val bar = listOf(
