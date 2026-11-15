@@ -479,6 +479,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     trackAnalysis?.let { DriveCamera.windows(it, settings) } ?: emptyList()
   }
   val camDriver = remember { DriveCamera.Driver() }
+  // the vehicle on the lane of the driving side (its arrow, the route's line, the camera), as TomTom GO
+  val laneLht = (nav.analysis?.edgeAt(traveled)?.country ?: here?.iso)?.uppercase() in setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE")
+  val laneShiftM = if (settings.driveLaneSide) (if (laneLht) -DriveCamera.LANE_SHIFT_M else DriveCamera.LANE_SHIFT_M) else 0.0
+  val camShift = androidx.compose.runtime.rememberUpdatedState(laneShiftM)
+  val routeDone = androidx.compose.runtime.rememberUpdatedState(settings.doneRoute)
+  val routeTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
   val camPlain = androidx.compose.runtime.rememberUpdatedState(Triple(zoom, tilt, navPadding))
   val camTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
   val camUiLoc = androidx.compose.runtime.rememberUpdatedState(ui.location)
@@ -490,7 +496,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     if (!navigating || camWindows.isEmpty()) return@LaunchedEffect
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
-        val loc = smoothLoc.value ?: camUiLoc.value ?: return@withFrameNanos
+        val loc = smoothLoc.value?.let { DriveCamera.laneShift(it, camShift.value) } ?: camUiLoc.value ?: return@withFrameNanos
         val along = smoothAlong.value.takeIf { it >= 0 } ?: camTraveled.value
         val win = DriveCamera.windowAt(camWindows, along)
         val cs = mapState.cameraState
@@ -577,7 +583,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           navigationPath = { state ->
             // under the names of roads, towns and motorways (the style's slot), over the roads
             org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
-              NmRouteLine(state.routeGeometry, "nm-route", Nm.Route, 13f, 3f)
+              // ahead in blue, behind lighter (or hidden), on the lane of the driving side as the arrow
+              val g = state.routeGeometry
+              NmDrivenRoute(g, smoothAlong.value.takeIf { it >= 0 } ?: routeTraveled.value, camShift.value, g?.firstOrNull()?.lat ?: 45.0,
+                  routeDone.value, "nm-route", Nm.Route, 13f, 3f)
             }
           })
     }
@@ -591,7 +600,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         // the arrow and the camera follow the position worked out here along the route (see
         // SmoothTrack); "off route" only tells the map to use it as it is, without its own snapping
         uiState = when {
-          smooth != null -> ui.copy(location = smooth, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
+          smooth != null -> ui.copy(location = DriveCamera.laneShift(smooth, laneShiftM),
+              routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
           // off the route while guided: the real position, drawn as it is (no snapping by the map)
           navigating && !simulatingTrack && rawLoc != null -> ui.copy(location = rawLoc, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
           else -> ui

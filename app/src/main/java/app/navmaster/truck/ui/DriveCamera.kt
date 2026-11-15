@@ -105,6 +105,19 @@ internal object DriveCamera {
     return tilt to zoom
   }
 
+  /** How far right of the road's middle the vehicle drives, metres: the middle of a lane of the driving side. */
+  const val LANE_SHIFT_M = 2.0
+
+  /** [l] moved [metres] to the right of its course (negative: to the left); as it is without a course. */
+  fun laneShift(l: uniffi.ferrostar.UserLocation, metres: Double): uniffi.ferrostar.UserLocation {
+    if (metres == 0.0) return l
+    val course = l.courseOverGround?.degrees?.toDouble() ?: return l
+    val b = Math.toRadians(course + 90.0)
+    val lat = l.coordinates.lat + metres * kotlin.math.cos(b) / 110_540.0
+    val lng = l.coordinates.lng + metres * kotlin.math.sin(b) / (111_320.0 * kotlin.math.cos(Math.toRadians(l.coordinates.lat)))
+    return l.copy(coordinates = uniffi.ferrostar.GeographicCoordinate(lat, lng))
+  }
+
   /** The angle from [a] to [b] by the short way, eased by [t] (degrees). */
   fun lerpAngle(a: Double, b: Double, t: Double): Double {
     val d = ((b - a + 540.0) % 360.0) - 180.0

@@ -217,6 +217,10 @@ data class Settings(
      */
     val vehicleUprightPct: Int = 50,
     val vehicleAcrossPct: Int = 50,
+    /** The vehicle's arrow and the route's line on the lane of the driving side (as TomTom GO), not on the road's middle. */
+    val driveLaneSide: Boolean = true,
+    /** The route already driven: 0 like the rest, 1 lighter and see-through, 2 hidden. */
+    val doneRoute: Int = 1,
     /** At roundabouts the view rises over the roundabout and keeps its direction (as TomTom GO does). */
     val roundaboutView: Boolean = true,
     /** From how far before the roundabout, metres. */

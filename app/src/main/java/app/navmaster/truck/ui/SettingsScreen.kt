@@ -442,6 +442,14 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         Pills { Pill("Come TomTom GO", false) { set { it.copy(driveTilt = 65, driveZoom = 18.6) } } }
       }
     }
+    ToggleRow("Mezzo sulla corsia di marcia", "La freccia e la linea del percorso sulla corsia di destra (di sinistra dove si guida " +
+        "a sinistra), come su TomTom GO, invece che in mezzo alla strada", s.driveLaneSide) { v -> set { it.copy(driveLaneSide = v) } }
+    Caption("Il percorso già fatto", Modifier.padding(top = 6.dp), size = 14)
+    Pills {
+      Pill("Più chiaro", s.doneRoute == 1) { set { it.copy(doneRoute = 1) } }
+      Pill("Nascosto", s.doneRoute == 2) { set { it.copy(doneRoute = 2) } }
+      Pill("Come il resto", s.doneRoute == 0) { set { it.copy(doneRoute = 0) } }
+    }
     Stepper("Posizione del mezzo, tablet in verticale", s.vehicleUprightPct.toDouble(), "% dall'alto", 1.0, 50.0, 90.0, 0) { v ->
       set { it.copy(vehicleUprightPct = v.toInt()) }
     }

@@ -79,6 +79,28 @@ class DriveCameraTest {
   }
 
   @Test
+  fun laneAndDrivenRoute() {
+    // heading east, 2 m to the right is 2 m south
+    val l = uniffi.ferrostar.UserLocation(JvCases.at(0.0, 0.0), 5.0, uniffi.ferrostar.CourseOverGround(90u.toUShort(), 5u.toUShort()),
+        java.time.Instant.EPOCH, null)
+    val r = DriveCamera.laneShift(l, 2.0)
+    assertEquals(-2.0, (r.coordinates.lat - JvCases.lat0) * 110_540.0, 0.05)
+    assertEquals(0.0, (r.coordinates.lng - JvCases.lon0) * JvCases.kx, 0.05)
+    // a route of 3 km east cut in stretches of 800 m; at 1000 m the second stretch is split under the vehicle
+    val pts = (0..30).map { JvCases.at(it * 100.0, 0.0) }
+    val c = RouteChunks(pts)
+    assertEquals(4, c.starts.size)
+    assertEquals(1, c.chunkAt(1000.0))
+    assertEquals(0, c.chunkAt(10.0))
+    val (behind, ahead) = c.split(1050.0)
+    val cut = JvCases.at(1050.0, 0.0)
+    val lng = String.format(java.util.Locale.ROOT, "%.5f", cut.lng)
+    assertTrue(behind, behind.contains(lng.dropLast(1)))
+    assertTrue(ahead, ahead.contains(lng.dropLast(1)))
+    assertTrue(c.json.contains("\"i\":3"))
+  }
+
+  @Test
   fun plainViewAndEasing() {
     val s = Settings()
     // TomTom GO's view where the map allows it
