@@ -442,6 +442,15 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
         Pills { Pill("Come TomTom GO", false) { set { it.copy(driveTilt = 65, driveZoom = 18.6) } } }
       }
     }
+    Stepper("Posizione del mezzo, tablet in verticale", s.vehicleUprightPct.toDouble(), "% dall'alto", 1.0, 50.0, 90.0, 0) { v ->
+      set { it.copy(vehicleUprightPct = v.toInt()) }
+    }
+    Stepper("Posizione del mezzo, tablet in orizzontale", s.vehicleAcrossPct.toDouble(), "% dall'alto", 1.0, 50.0, 90.0, 0) { v ->
+      set { it.copy(vehicleAcrossPct = v.toInt()) }
+    }
+    Caption("Il mezzo sta al centro, a questa altezza dello schermo. Più in alto si vede più strada dietro, più in basso più strada " +
+        "davanti. Zoom e inclinazione si cambiano anche in guida: tocca la mappa, poi Zoom +/− e Più/Meno incl.",
+        Modifier.padding(top = 2.dp), size = 13, lines = 4)
   }
   Card("Zoom automatico") {
     ToggleRow("Rotonde", "La vista si alza sopra la rotonda e la mappa resta ferma mentre giri, poi torna com'era (come TomTom GO)",

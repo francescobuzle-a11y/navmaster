@@ -254,13 +254,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // the tilt the tablet's map allows (60°, more if its map underneath accepts it: asked below)
   var mapMaxTilt by remember { mutableStateOf(DriveCamera.MAP_MAX_TILT) }
   val plainView = DriveCamera.plainView(settings, landscape, mapMaxTilt)
-  val zoom = if (is3d) plainView.second else 16.0
+  // 2D from above, as far as before (16) at the plain closeness, nearer or farther with it
+  val zoom = if (is3d) plainView.second else settings.driveZoom - 2.6
   val tilt = if (is3d) plainView.first else 0.0
-  // the vehicle where TomTom GO puts it (2D: a little higher, more to see around it)
-  val vehicleAt = if (!is3d) (if (landscape) 0.65 else 0.70) else if (landscape) DriveCamera.VEHICLE_ACROSS else DriveCamera.VEHICLE_UPRIGHT
-  val navPadding =
-      if (landscape) PaddingValues(top = (h * (2 * vehicleAt - 1)).toFloat().dp, end = (w * 0.42f).dp)
-      else PaddingValues(top = (h * (2 * vehicleAt - 1)).toFloat().dp)
+  // the vehicle in the middle across, as high as chosen (above the bottom bar)
+  val vehicleAt = ((if (landscape) settings.vehicleAcrossPct else settings.vehicleUprightPct) / 100.0).coerceIn(0.5, 0.9)
+  val navPadding = PaddingValues(top = (h * (2 * vehicleAt - 1)).toFloat().dp)
   val cameraOptions =
       NavigationCameraOptions(
           browsingZoom = 15.0,
@@ -1142,6 +1141,20 @@ private fun NavigatingOverlay(
       val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
       val nightMode = settings.nightMode
       // the controls needed now and then: in one bar that a touch on the map brings up
+      // nearer, farther, more or less tilted: kept in the settings (Mappa e vista), the map
+      // following at once (while the view of a roundabout or a junction is on, after it)
+      fun closer(by: Double) {
+        barTouch = System.currentTimeMillis()
+        val now = AppGraph.settings.settings.value.driveZoom
+        val next = (now + by).coerceIn(15.5, 19.5)
+        if (next == now) return
+        AppGraph.settings.update { it.copy(driveZoom = Math.round(next * 10) / 10.0) }
+        if (mapState.isTrackingUser) runCatching { if (by > 0) mapState.zoomIn(next - now) else mapState.zoomOut(now - next) }
+      }
+      fun tilted(by: Int) {
+        barTouch = System.currentTimeMillis()
+        AppGraph.settings.update { it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, 70)) }
+      }
       val bar = listOf(
           BarButton("Vista", null, if (is3d) "2D" else "3D", Nm.Raised) {
             barTouch = System.currentTimeMillis()
@@ -1150,6 +1163,12 @@ private fun NavigatingOverlay(
             }
             mapState.recenter(true)
           },
+          BarButton("Zoom +", null, "+", Nm.Raised) { closer(0.2) },
+          BarButton("Zoom −", null, "−", Nm.Raised) { closer(-0.2) },
+      ) + (if (is3d) listOf(
+          BarButton("Più incl.", null, "+°", Nm.Raised) { tilted(3) },
+          BarButton("Meno incl.", null, "−°", Nm.Raised) { tilted(-3) },
+      ) else emptyList()) + listOf(
           BarButton(if (satellite) "Mappa" else "Satellite", Icons.Rounded.Layers, null, if (satellite) Nm.Accent else Nm.Raised) {
             barTouch = System.currentTimeMillis()
             onSatellite()
