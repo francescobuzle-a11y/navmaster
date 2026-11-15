@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.Canvas
@@ -65,10 +66,13 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.navmaster.truck.AppGraph
@@ -166,6 +170,18 @@ fun GlyphTile(d: String, color: Color, size: Dp, modifier: Modifier = Modifier) 
 
 /** How the vehicle's speed stands against its limit. */
 enum class SpeedState { OK, OVER, FAR, SECTION }
+
+/**
+ * A small text of a gauge or a sign. The theme's body style has a 24 sp line and a letter spacing
+ * (so every Text that only sets its size inherits them): in a sign of 20 px or under a number that
+ * is already there they push the letters off their place and over the next ones. Here the line is as
+ * tall as the letters and they sit in the middle of it.
+ */
+@Composable
+private fun GaugeText(text: String, size: TextUnit, color: Color, weight: FontWeight = FontWeight.Normal, modifier: Modifier = Modifier) {
+  Text(text, modifier, color = color, fontSize = size, fontWeight = weight, letterSpacing = 0.sp, lineHeight = size * 1.15f, maxLines = 1,
+      style = TextStyle(lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both)))
+}
 
 /**
  * The speedometer at the top right while driving: half a dial of lit segments (5 km/h each, up to
@@ -272,7 +288,7 @@ fun SpeedArc(
     Column(Modifier.fillMaxWidth().padding(top = height * 0.30f), horizontalAlignment = Alignment.CenterHorizontally) {
       Text(speedKmh?.toString() ?: "–", color = numberColor, fontSize = (w * 0.235f).sp, fontWeight = FontWeight.Bold,
           lineHeight = (w * 0.235f).sp)
-      Text("km/h", color = if (state == SpeedState.FAR) Color(0xDDFFFFFF) else Nm.Muted, fontSize = (w * 0.055f).sp, fontWeight = FontWeight.SemiBold)
+      GaugeText("km/h", (w * 0.055f).sp, if (state == SpeedState.FAR) Color(0xDDFFFFFF) else Nm.Muted, FontWeight.SemiBold)
     }
     Row(
         Modifier.align(Alignment.BottomCenter).padding(bottom = height * 0.05f),
@@ -282,9 +298,9 @@ fun SpeedArc(
       if (effective != null) {
         val sign = width * 0.13f
         Box(
-            Modifier.size(sign).clip(CircleShape).background(Color.White).border(sign * 0.13f, NmRed, CircleShape),
+            Modifier.size(sign).testTag("arcSign").clip(CircleShape).background(Color.White).border(sign * 0.13f, NmRed, CircleShape),
             contentAlignment = Alignment.Center,
-        ) { Text(effective.toString(), color = Color.Black, fontSize = (w * 0.052f).sp, fontWeight = FontWeight.Bold) }
+        ) { GaugeText(effective.toString(), (w * (if (effective >= 100) 0.043f else 0.052f)).sp, Color.Black, FontWeight.Bold) }
       }
       val label = when {
         sectionAvg != null -> "media $sectionAvg" + (sectionLimit?.let { " / $it" } ?: "")
@@ -293,8 +309,8 @@ fun SpeedArc(
         else -> null
       }
       if (label != null) {
-        Text(label, color = if (state == SpeedState.FAR) Color.White else if (sectionAvg != null) Color(0xFF8DB8FF) else Nm.Muted,
-            fontSize = (w * 0.052f).sp, fontWeight = if (sectionAvg != null) FontWeight.Bold else FontWeight.Normal)
+        GaugeText(label, (w * 0.052f).sp, if (state == SpeedState.FAR) Color.White else if (sectionAvg != null) Color(0xFF8DB8FF) else Nm.Muted,
+            if (sectionAvg != null) FontWeight.Bold else FontWeight.Normal)
       }
     }
   }
