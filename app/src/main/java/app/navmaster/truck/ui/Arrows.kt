@@ -50,10 +50,49 @@ private fun DrawScope.arrowHead(tip: Offset, dx: Float, dy: Float, len: Float, h
   drawPath(path, color, style = Stroke(width = half * 0.2f, join = StrokeJoin.Round))
 }
 
-/** Stem up, a soft bend towards the direction and the head: the arrow of a lane, a sign, a manoeuvre. */
-fun DrawScope.drawTurnArrow(angleDeg: Float, color: Color, strokeFrac: Float = ARROW_STROKE, cell: Float = size.width) {
-  val w = size.width
-  val h = size.height
+/**
+ * The shape of the arrow in a [w] by [h] cell, before it is drawn: the stem's points (its start,
+ * where the bend begins and ends and the bend's corner, the end where the head starts), its
+ * thickness and the head. One place makes it, so what is drawn and what is measured (does it fit
+ * the lane?) are the same.
+ */
+internal class ArrowGeom(
+    val start: Offset,
+    val bendFrom: Offset,
+    val corner: Offset,
+    val bendTo: Offset,
+    val tip: Offset,
+    val curved: Boolean,
+    val strokeW: Float,
+    val dx: Float,
+    val dy: Float,
+    val headLen: Float,
+    val headHalf: Float,
+) {
+  /** Points covering everything the arrow paints (the stem's thickness round its line, the head's corners and apex). */
+  fun outline(): List<Offset> {
+    val line = ArrayList<Offset>()
+    line += start
+    if (curved) {
+      line += bendFrom
+      for (k in 1..6) {
+        val t = k / 6f; val u = 1 - t
+        line += Offset(u * u * bendFrom.x + 2 * u * t * corner.x + t * t * bendTo.x, u * u * bendFrom.y + 2 * u * t * corner.y + t * t * bendTo.y)
+      }
+    }
+    line += tip
+    val r = strokeW / 2
+    val out = ArrayList<Offset>()
+    for (q in line) { out += Offset(q.x - r, q.y); out += Offset(q.x + r, q.y); out += Offset(q.x, q.y - r); out += Offset(q.x, q.y + r) }
+    out += Offset(tip.x + dx * headLen, tip.y + dy * headLen)
+    out += Offset(tip.x - dy * headHalf, tip.y + dx * headHalf)
+    out += Offset(tip.x + dy * headHalf, tip.y - dx * headHalf)
+    return out
+  }
+}
+
+/** The arrow's shape for a manoeuvre of [angleDeg] in a [w] by [h] cell, kept within [cell] across. */
+internal fun turnArrowGeom(angleDeg: Float, w: Float, h: Float, strokeFrac: Float, cell: Float): ArrowGeom {
   val s = minOf(w, h)
   val rad = Math.toRadians(angleDeg.toDouble())
   val straight = abs(angleDeg) < 5f
@@ -76,74 +115,26 @@ fun DrawScope.drawTurnArrow(angleDeg: Float, color: Color, strokeFrac: Float = A
   val dy = -cos(rad).toFloat()
   val tipX = cx + dx * reach
   val tipY = if (straight) h * 0.40f else bendY + dy * reach
-  val stroke = Stroke(width = s * strokeFrac, cap = StrokeCap.Round, join = StrokeJoin.Round)
-  val shaft = Path().apply {
-    moveTo(cx, bottom)
-    if (straight) lineTo(cx, tipY) else {
-      // the bend rounded, as wide as the room there is
-      val r = minOf(s * 0.16f, reach * 0.7f, (bottom - bendY) * 0.6f)
-      lineTo(cx, bendY + r)
-      quadraticTo(cx, bendY, cx + dx * r, bendY + dy * r)
-      lineTo(tipX, tipY)
-    }
-  }
-  drawPath(shaft, color, style = stroke)
-  arrowHead(Offset(tipX, tipY), dx, dy, head, hw, color)
+  // the bend rounded, as wide as the room there is
+  val r = if (straight) 0f else minOf(s * 0.16f, reach * 0.7f, (bottom - bendY) * 0.6f)
+  return ArrowGeom(
+      start = Offset(cx, bottom), bendFrom = Offset(cx, bendY + r), corner = Offset(cx, bendY), bendTo = Offset(cx + dx * r, bendY + dy * r),
+      tip = Offset(tipX, tipY), curved = !straight, strokeW = s * strokeFrac, dx = dx, dy = dy, headLen = head, headHalf = hw)
 }
 
-/**
- * The same arrow laid along a course on the screen (a lane of the junction view, flat on the road):
- * the stem along [centre], as thick at each point as [widths] says (it thins into the distance
- * with the road), a round end at its start, and the same head in the arrow's own proportions. The
- * head is the END of the course, not beyond it: its tip on the last point, its base back along
- * the course, so the whole arrow lies on the course it was given.
- */
-fun DrawScope.drawPathArrow(centre: List<Offset>, widths: List<Float>, color: Color) {
-  val n = centre.size
-  if (n < 2 || widths.size != n) return
-  fun dist(a: Offset, b: Offset) = kotlin.math.hypot(b.x - a.x, b.y - a.y)
-  var total = 0f
-  for (i in 1 until n) total += dist(centre[i - 1], centre[i])
-  if (total < 1f) return
-  // the head's length from the stem where it starts, never more than half the course
-  val headLen = minOf(widths[n - 1] * (0.28f / ARROW_STROKE) * 1.15f, total * 0.5f)
-  // the base of the head: back along the course from its end
-  var back = 0f
-  var j = n - 1
-  while (j > 0 && back + dist(centre[j - 1], centre[j]) < headLen) { back += dist(centre[j - 1], centre[j]); j-- }
-  val seg = dist(centre[maxOf(j - 1, 0)], centre[j]).coerceAtLeast(1e-3f)
-  val f = ((headLen - back) / seg).coerceIn(0f, 1f)
-  val a0 = centre[maxOf(j - 1, 0)]
-  val base = Offset(centre[j].x + (a0.x - centre[j].x) * f, centre[j].y + (a0.y - centre[j].y) * f)
-  val baseW = widths[j] + (widths[maxOf(j - 1, 0)] - widths[j]) * f
-  // the stem up to the head's base
-  val pts = ArrayList<Offset>(j + 1)
-  val ws = ArrayList<Float>(j + 1)
-  for (i in 0 until j) { pts += centre[i]; ws += widths[i] }
-  pts += base; ws += baseW
-  if (pts.size >= 2) {
-    val m = pts.size
-    val left = ArrayList<Offset>(m)
-    val right = ArrayList<Offset>(m)
-    for (i in 0 until m) {
-      val a = pts[maxOf(i - 1, 0)]
-      val b = pts[minOf(i + 1, m - 1)]
-      val len = dist(a, b).coerceAtLeast(1e-3f)
-      val hw = ws[i] / 2
-      left += Offset(pts[i].x + (b.y - a.y) / len * hw, pts[i].y - (b.x - a.x) / len * hw)
-      right += Offset(pts[i].x - (b.y - a.y) / len * hw, pts[i].y + (b.x - a.x) / len * hw)
+/** Stem up, a soft bend towards the direction and the head: the arrow of a lane, a sign, a manoeuvre. */
+fun DrawScope.drawTurnArrow(angleDeg: Float, color: Color, strokeFrac: Float = ARROW_STROKE, cell: Float = size.width) {
+  val g = turnArrowGeom(angleDeg, size.width, size.height, strokeFrac, cell)
+  val shaft = Path().apply {
+    moveTo(g.start.x, g.start.y)
+    if (g.curved) {
+      lineTo(g.bendFrom.x, g.bendFrom.y)
+      quadraticTo(g.corner.x, g.corner.y, g.bendTo.x, g.bendTo.y)
     }
-    drawPath(Path().apply {
-      left.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
-      right.asReversed().forEach { lineTo(it.x, it.y) }
-      close()
-    }, color)
-    drawCircle(color, ws[0] / 2, pts[0])
+    lineTo(g.tip.x, g.tip.y)
   }
-  val tip = centre[n - 1]
-  val len = dist(base, tip).coerceAtLeast(1e-3f)
-  // as wide as the arrow's head is for the stem at its base, never squatter than the arrow's own shape
-  arrowHead(base, (tip.x - base.x) / len, (tip.y - base.y) / len, len, minOf(baseW * (0.22f / ARROW_STROKE), len * (0.22f / 0.28f)), color)
+  drawPath(shaft, color, style = Stroke(width = g.strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+  arrowHead(g.tip, g.dx, g.dy, g.headLen, g.headHalf, color)
 }
 
 /** Maneuver glyph for the green bar: modifier gives the direction, roundabouts get a ring. */
