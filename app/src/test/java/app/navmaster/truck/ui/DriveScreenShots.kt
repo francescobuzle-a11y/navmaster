@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -86,7 +87,11 @@ class DriveScreenShots {
   )
 
   /** The modes of the panel, and what is done to reach them. */
-  private enum class Case(val start: String?, val click: String?, val bar: Boolean, val fold: Boolean = false) {
+  private enum class Case(val start: String?, val click: String?, val bar: Boolean, val fold: Boolean = false,
+                         /** The simulation's buttons at the bottom and its label at the top left. */
+                         val sim: Boolean = false,
+                         /** A banner under the manoeuvre bar (the toll booth, a camera): less room for the side. */
+                         val banner: Boolean = false) {
     LISTA(null, null, true),
     LISTA_SENZA_BARRA(null, null, false),
     LISTA_CHIUSA(null, null, false, fold = true),
@@ -94,6 +99,10 @@ class DriveScreenShots {
     CERCA("SEARCH", null, false),
     GASOLIO("CHOOSE", "Gasolio", false),
     POSTI_TIR("CHOOSE", "Posti TIR", false),
+    // the speed limit's sign at the top left with the round buttons at the bottom left: they must not meet
+    SIMULAZIONE(null, null, false, sim = true),
+    SIMULAZIONE_BANNER(null, null, false, sim = true, banner = true),
+    BANNER(null, null, false, banner = true),
   }
 
   private fun poi(id: Int, cat: String, name: String, along: Double, off: Double, flags: Set<String> = emptySet()) =
@@ -119,6 +128,9 @@ class DriveScreenShots {
   }
 
   private val settings = Settings().copy(poiRailSeconds = 0, poiRailCount = 4)
+
+  /** The tallest sign: 80 for the lorry, its chip, and the road's 130 under it. */
+  private val signLimit = app.navmaster.truck.vehicle.SpeedRules.Limit(80, app.navmaster.truck.vehicle.SpeedRules.Why.LEGAL, 130, 80, 80)
 
   @Composable
   private fun Screen(d: Device, case: Case, pins: MutableList<PoiPin>) {
@@ -148,6 +160,7 @@ class DriveScreenShots {
             maneuver(Modifier.fillMaxWidth())
           }
           Spacer(Modifier.height(8.dp))
+          if (case.banner) Box(Modifier.fillMaxWidth().height(84.dp).background(Nm.Raised).testTag("banner"))
           Box(Modifier.weight(1f).fillMaxWidth()) {
             DriveSide(
                 landscape = d.landscape,
@@ -165,7 +178,9 @@ class DriveScreenShots {
                     BarButton("Voce", Icons.Rounded.VolumeUp, null, Nm.Raised) {},
                     BarButton("Termina", Icons.Rounded.Close, null, Nm.Red) {},
                 ),
-                barBottom = 6.dp,
+                barBottom = if (case.sim) 84.dp else 6.dp,
+                leftTopReserve = (if (case.sim) 40.dp else 6.dp) + speedLimitSignHeight(signLimit),
+                leftTopWidth = maxOf(speedLimitSignWidth(signLimit), if (case.sim) 124.dp else 0.dp),
                 arc = arc,
                 poi = { w, h ->
                   Box(Modifier.testTag("poi")) {
@@ -194,6 +209,9 @@ class DriveScreenShots {
                   }
                 },
             )
+            // the speed limit's sign at the top left (under the simulation's label), as the app puts it
+            SpeedLimitSign(signLimit, 62, 5, Modifier.align(Alignment.TopStart).padding(top = if (case.sim) 40.dp else 6.dp).testTag("cartello"))
+            if (case.sim) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp).size(430.dp, 70.dp).background(Nm.Raised).testTag("simbar"))
           }
         }
         Box(Modifier.fillMaxWidth().height(64.dp).background(Nm.PanelSolid).testTag("barra-sotto"))
@@ -242,6 +260,8 @@ class DriveScreenShots {
         val parts = linkedMapOf(
             "tachimetro" to bounds("arc"),
             "manovra" to bounds("manovra"),
+            "cartello" to bounds("cartello"),
+            "simbar" to bounds("simbar"),
             "pannello" to bounds("poi"),
             "segnala" to bounds(description = "Segnala"),
             "impostazioni" to bounds(description = "Impostazioni"),
@@ -264,7 +284,8 @@ class DriveScreenShots {
             if (r.right > screen.right + 1.dp || r.left < screen.left - 1.dp) problems += "$name: $k esce dallo schermo ai lati ($r)"
           }
         }
-        if (shown["pannello"] == null) problems += "$name: il pannello dei posti non c'è"
+        // (a phone lying down with the simulation's buttons and a banner has no room left for the column)
+        if (shown["pannello"] == null && !(case.sim && case.banner)) problems += "$name: il pannello dei posti non c'è"
         // folded after the seconds of the setting: only the small tab is left
         if (case.fold) {
           runCatching { compose.onNodeWithContentDescription("Apri i punti di interesse").assertExists() }
@@ -272,7 +293,7 @@ class DriveScreenShots {
           shown["pannello"]?.let { r -> if (r.bottom - r.top > 70.dp) problems += "$name: linguetta troppo alta (${r.bottom - r.top})" }
         }
         // the buttons are big enough to be touched (the volume button was squeezed before)
-        for ((k, r) in shown) if (k != "tachimetro" && k != "manovra" && k != "pannello" && (r.right - r.left < 40.dp || r.bottom - r.top < 40.dp)) {
+        for ((k, r) in shown) if (k != "tachimetro" && k != "manovra" && k != "pannello" && k != "cartello" && k != "simbar" && (r.right - r.left < 40.dp || r.bottom - r.top < 40.dp)) {
           problems += "$name: $k troppo piccolo (${r.right - r.left} × ${r.bottom - r.top})"
         }
         // the quick choices find places and put them on the map

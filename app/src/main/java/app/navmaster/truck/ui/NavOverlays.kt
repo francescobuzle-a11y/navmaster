@@ -391,8 +391,8 @@ fun SpeedLimitSign(limit: SpeedRules.Limit, speedKmh: Int?, toleranceKmh: Int, m
       if (why != SpeedRules.Why.SIGNED) TruckBadge(size * 0.46f, Modifier.align(Alignment.BottomEnd).offset(x = size * 0.1f, y = size * 0.02f))
     }
     if (why != SpeedRules.Why.SIGNED) {
-      Text(if (why == SpeedRules.Why.LEGAL) "per il mezzo" else "tuo limite", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-          modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 7.dp, vertical = 2.dp))
+      GaugeText(if (why == SpeedRules.Why.LEGAL) "per il mezzo" else "tuo limite", 12.sp, Color.White, FontWeight.Bold,
+          Modifier.padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 7.dp, vertical = 2.dp))
     }
     limit.signedAbove?.let { signed ->
       Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -401,12 +401,24 @@ fun SpeedLimitSign(limit: SpeedRules.Limit, speedKmh: Int?, toleranceKmh: Int, m
                 .semantics { contentDescription = "Cartello $signed km/h" },
             contentAlignment = Alignment.Center,
         ) { Text("$signed", color = Color.Black, fontSize = (size.value * (if (signed >= 100) 0.17f else 0.2f)).sp, fontWeight = FontWeight.Bold) }
-        Text("cartello", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 2.dp))
+        GaugeText("cartello", 12.sp, Color.White, FontWeight.SemiBold,
+            Modifier.padding(start = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 2.dp))
       }
     }
   }
 }
+
+/**
+ * The height [SpeedLimitSign] takes (a little more than it does, in the app's own scale of text): the
+ * sign, under it the chip that says the limit is the vehicle's, the road's sign beside a smaller one.
+ * What the layout keeps free at the top left for it.
+ */
+fun speedLimitSignHeight(limit: SpeedRules.Limit, size: Dp = 72.dp): Dp =
+    size + (if (limit.why != SpeedRules.Why.SIGNED) 24.dp else 0.dp) + (if (limit.signedAbove != null) 5.dp + size * 0.5f else 0.dp)
+
+/** The width [SpeedLimitSign] takes (a little more than it does): the chips are wider than the sign. */
+fun speedLimitSignWidth(limit: SpeedRules.Limit, size: Dp = 72.dp): Dp =
+    if (limit.why != SpeedRules.Why.SIGNED || limit.signedAbove != null) maxOf(size, 100.dp) else size
 
 /** A small round badge with a lorry's silhouette: what a limit for lorries carries on a sign. */
 @Composable

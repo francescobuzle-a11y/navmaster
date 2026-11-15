@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowColumn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -178,7 +180,7 @@ enum class SpeedState { OK, OVER, FAR, SECTION }
  * tall as the letters and they sit in the middle of it.
  */
 @Composable
-private fun GaugeText(text: String, size: TextUnit, color: Color, weight: FontWeight = FontWeight.Normal, modifier: Modifier = Modifier) {
+internal fun GaugeText(text: String, size: TextUnit, color: Color, weight: FontWeight = FontWeight.Normal, modifier: Modifier = Modifier) {
   Text(text, modifier, color = color, fontSize = size, fontWeight = weight, letterSpacing = 0.sp, lineHeight = size * 1.15f, maxLines = 1,
       style = TextStyle(lineHeightStyle = LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.Both)))
 }
@@ -1048,10 +1050,13 @@ fun ControlsBar(visible: Boolean, items: List<BarButton>, maxWidth: Dp, modifier
 /**
  * The driving screen under the manoeuvre bar, laid out so nothing overlaps: the speedometer at
  * the top right (when it is not beside the manoeuvre bar), the places' column under it at the
- * right, the round buttons ([rail], each told its size) at the bottom LEFT, and the bar of
+ * right, the round buttons ([rail], each told its size) at the bottom LEFT (under [leftTopReserve], the
+ * sign of the speed limit and the like at the top left; a second column beside them when they do not fit, or beside
+ * that sign when there is no room under it), and the bar of
  * [ControlsBar] at the bottom right, under the places' column (which stops above it while it is
  * shown). The bar and most buttons come with a touch on the map.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DriveSide(
     landscape: Boolean,
@@ -1065,6 +1070,10 @@ fun DriveSide(
     bar: List<BarButton>,
     barBottom: Dp,
     modifier: Modifier = Modifier,
+    /** The height the left side holds at its top (the speed limit's sign, the simulation's label): the round buttons stay under it. */
+    leftTopReserve: Dp = 0.dp,
+    /** Its width: where there is no room under it the round buttons go beside it. */
+    leftTopWidth: Dp = 0.dp,
     arc: @Composable () -> Unit,
     poi: @Composable (width: Dp, maxHeight: Dp) -> Unit,
     rail: @Composable (size: Dp) -> Unit,
@@ -1085,7 +1094,17 @@ fun DriveSide(
     val barH = if (barVisible) controlsBarHeight(bar.size, barW) + 8.dp else 0.dp
     val room = (boxH - top - barBottom - barH - 4.dp).coerceAtLeast(0.dp)
     if (showPoi && room >= 64.dp) Box(Modifier.align(Alignment.TopEnd).padding(top = top)) { poi(colW, room) }
-    Column(Modifier.align(Alignment.BottomStart).padding(bottom = barBottom), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    // the round buttons go up from the bottom left; where they would reach what the left side holds at
+    // its top (the sign of the speed limit) they go on in a second column beside the first, never under the sign
+    val under = boxH - barBottom - leftTopReserve - 8.dp
+    // (not even one button fits under it: beside it, where the column may be as tall as the side)
+    val beside = under < railFit
+    val leftRoom = if (beside) (boxH - barBottom - 4.dp).coerceAtLeast(railFit) else under
+    FlowColumn(
+        Modifier.align(Alignment.BottomStart).padding(start = if (beside) leftTopWidth + 8.dp else 0.dp, bottom = barBottom).heightIn(max = leftRoom),
+        verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
       rail(railFit)
     }
     ControlsBar(barVisible, bar, barW, Modifier.align(Alignment.BottomEnd).padding(bottom = barBottom))

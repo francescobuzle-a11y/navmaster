@@ -1280,6 +1280,9 @@ private fun NavigatingOverlay(
           barVisible = false,
           bar = bar,
           barBottom = if (simulating) 84.dp else 6.dp,
+          // the simulation's label and the speed limit's sign at the top left: the round buttons stay under them
+          leftTopReserve = (if (simulating) 40.dp else 6.dp) + (if (settings.speedLimitSide && limit != null) speedLimitSignHeight(limit) else 0.dp),
+          leftTopWidth = maxOf(if (settings.speedLimitSide && limit != null) speedLimitSignWidth(limit) else 0.dp, if (simulating) 124.dp else 0.dp),
           arc = { speedArc(Modifier) },
           poi = { w, h ->
             PoiColumn(
