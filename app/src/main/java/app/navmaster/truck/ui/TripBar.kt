@@ -64,6 +64,8 @@ data class TripData(
     val drivenS: Long,
     val headingDeg: Double?,
     val road: String?,
+    /** The town, village or hamlet the vehicle is in (the address book), shown first above the fields. */
+    val place: String? = null,
 )
 
 private fun hm(s: Double): String {
@@ -113,8 +115,19 @@ fun TripBar(fields: List<TripField>, data: TripData, onChange: (Int, TripField) 
             .padding(horizontal = 6.dp, vertical = 6.dp),
     ) {
       val road = data.road?.takeIf { it.isNotBlank() && TripField.ROAD !in shown }
-      if (road != null) {
-        Text(road, color = Color(0xCCFFFFFF), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+      val place = data.place?.takeIf { it.isNotBlank() }
+      if (road != null || place != null) {
+        // where the vehicle is: the town in white, then the road
+        val line = androidx.compose.ui.text.buildAnnotatedString {
+          if (place != null) {
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.White, fontWeight = FontWeight.Bold))
+            append(place)
+            pop()
+            if (road != null) append("  ·  ")
+          }
+          if (road != null) append(road)
+        }
+        Text(line, color = Color(0xCCFFFFFF), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
       }
       Row(Modifier.fillMaxWidth().height(58.dp), verticalAlignment = Alignment.CenterVertically) {

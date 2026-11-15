@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1139,6 +1140,85 @@ private fun NavigatingOverlay(
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
   }
+  val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
+  val nightMode = settings.nightMode
+  // the controls needed now and then: in one bar that a touch on the map brings up
+  // nearer, farther, more or less tilted: the plain view and the views of roundabouts and
+  // junctions together (one of these is often on near a junction), kept in the settings
+  // (Mappa e vista), the map following at once
+  fun closer(by: Double) {
+    barTouch = System.currentTimeMillis()
+    val now = AppGraph.settings.settings.value.driveZoom
+    val next = (now + by).coerceIn(15.5, 19.5)
+    fun r(v: Double) = Math.round(v * 10) / 10.0
+    AppGraph.settings.update {
+      it.copy(driveZoom = r(next), roundaboutZoom = r((it.roundaboutZoom + by).coerceIn(15.0, 19.5)),
+          junctionZoom = r((it.junctionZoom + by).coerceIn(15.0, 19.5)))
+    }
+    if (next != now && mapState.isTrackingUser) runCatching { if (by > 0) mapState.zoomIn(next - now) else mapState.zoomOut(now - next) }
+  }
+  fun tilted(by: Int) {
+    barTouch = System.currentTimeMillis()
+    AppGraph.settings.update {
+      it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, DriveCamera.MAX_SETTING_TILT), roundaboutTilt = (it.roundaboutTilt + by).coerceIn(0, 70),
+          junctionTilt = (it.junctionTilt + by).coerceIn(0, DriveCamera.MAX_SETTING_TILT))
+    }
+  }
+  val bar = listOf(
+      BarButton("Vista", null, if (is3d) "2D" else "3D", Nm.Raised) {
+        barTouch = System.currentTimeMillis()
+        AppGraph.settings.update {
+          it.copy(driveView = if (is3d) app.navmaster.truck.settings.DriveView.VIEW_2D else app.navmaster.truck.settings.DriveView.VIEW_3D)
+        }
+        mapState.recenter(true)
+      },
+      BarButton("Zoom +", null, "+", Nm.Raised) { closer(0.2) },
+      BarButton("Zoom −", null, "−", Nm.Raised) { closer(-0.2) },
+  ) + (if (is3d) listOf(
+      BarButton("Più incl.", null, "+°", Nm.Raised) { tilted(5) },
+      BarButton("Meno incl.", null, "−°", Nm.Raised) { tilted(-5) },
+  ) else emptyList()) + listOf(
+      BarButton(if (satellite) "Mappa" else "Satellite", Icons.Rounded.Layers, null, if (satellite) Nm.Accent else Nm.Raised) {
+        barTouch = System.currentTimeMillis()
+        onSatellite()
+      },
+      BarButton(
+          when (nightMode) {
+            app.navmaster.truck.settings.NightMode.AUTO -> "Auto"
+            app.navmaster.truck.settings.NightMode.DAY -> "Giorno"
+            app.navmaster.truck.settings.NightMode.NIGHT -> "Notte"
+          },
+          when (nightMode) {
+            app.navmaster.truck.settings.NightMode.AUTO -> Icons.Rounded.BrightnessAuto
+            app.navmaster.truck.settings.NightMode.DAY -> Icons.Rounded.LightMode
+            app.navmaster.truck.settings.NightMode.NIGHT -> Icons.Rounded.DarkMode
+          },
+          null, Nm.Raised,
+      ) {
+        barTouch = System.currentTimeMillis()
+        AppGraph.settings.update {
+          it.copy(nightMode = when (it.nightMode) {
+            app.navmaster.truck.settings.NightMode.AUTO -> app.navmaster.truck.settings.NightMode.DAY
+            app.navmaster.truck.settings.NightMode.DAY -> app.navmaster.truck.settings.NightMode.NIGHT
+            app.navmaster.truck.settings.NightMode.NIGHT -> app.navmaster.truck.settings.NightMode.AUTO
+          })
+        }
+      },
+      BarButton(if (muted) "Muto" else "Voce", if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, null,
+          if (muted) Nm.Red else Nm.Raised) {
+        barTouch = System.currentTimeMillis()
+        vm.toggleMute()
+      },
+      BarButton("Termina", Icons.Rounded.Close, null, Nm.Red) { vm.stopNavigation() },
+  )
+  // the manoeuvre bar small far from the manoeuvre (its sign and the distance), whole near it
+  // (the seconds chosen at the present speed, at least 250 m) or for a while after a touch
+  var barPeek by remember { mutableStateOf(false) }
+  LaunchedEffect(barPeek) { if (barPeek) { delay(8_000); barPeek = false } }
+  val toManeuverM = ui.progress?.distanceToNextManeuver
+  val openAtM = maxOf(250.0, (speedKmh ?: 0) / 3.6 * settings.maneuverOpenS)
+  val compactBar = settings.maneuverCompact && !barPeek && toManeuverM != null && toManeuverM > openAtM && laneGuide == null && jv == null
+  val maneuverMod = Modifier.animateContentSize().then(if (compactBar) Modifier else Modifier.fillMaxWidth())
   Column(Modifier.fillMaxSize()) {
   Row(Modifier.weight(1f).fillMaxWidth()) {
   Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -1146,14 +1226,16 @@ private fun NavigatingOverlay(
       // lying down: the speedometer beside the manoeuvre bar, the lanes and banners under the bar
       Row(Modifier.fillMaxWidth()) {
         Column(Modifier.weight(1f)) {
-          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false, roundabout = roundabout)
+          TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, maneuverMod, showLanes = false, roundabout = roundabout,
+              compact = compactBar, onTap = { barPeek = true })
           underManeuver()
         }
         Spacer(Modifier.width(10.dp))
         speedArc(Modifier)
       }
     } else {
-      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, Modifier.fillMaxWidth(), showLanes = false, roundabout = roundabout)
+      TopManeuverBar(ui.visualInstruction, ui.progress?.distanceToNextManeuver, maneuverMod, showLanes = false, roundabout = roundabout,
+          compact = compactBar, onTap = { barPeek = true })
       underManeuver()
     }
     Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -1166,77 +1248,6 @@ private fun NavigatingOverlay(
       // stops; always "centre" when the map was moved and the reminder when muted
       val railCount = (if (controls) (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) else 0) +
           (if (!tracking) 1 else 0) + (if (!controls && muted) 1 else 0)
-      val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
-      val nightMode = settings.nightMode
-      // the controls needed now and then: in one bar that a touch on the map brings up
-      // nearer, farther, more or less tilted: the plain view and the views of roundabouts and
-      // junctions together (one of these is often on near a junction), kept in the settings
-      // (Mappa e vista), the map following at once
-      fun closer(by: Double) {
-        barTouch = System.currentTimeMillis()
-        val now = AppGraph.settings.settings.value.driveZoom
-        val next = (now + by).coerceIn(15.5, 19.5)
-        fun r(v: Double) = Math.round(v * 10) / 10.0
-        AppGraph.settings.update {
-          it.copy(driveZoom = r(next), roundaboutZoom = r((it.roundaboutZoom + by).coerceIn(15.0, 19.5)),
-              junctionZoom = r((it.junctionZoom + by).coerceIn(15.0, 19.5)))
-        }
-        if (next != now && mapState.isTrackingUser) runCatching { if (by > 0) mapState.zoomIn(next - now) else mapState.zoomOut(now - next) }
-      }
-      fun tilted(by: Int) {
-        barTouch = System.currentTimeMillis()
-        AppGraph.settings.update {
-          it.copy(driveTilt = (it.driveTilt + by).coerceIn(30, DriveCamera.MAX_SETTING_TILT), roundaboutTilt = (it.roundaboutTilt + by).coerceIn(0, 70),
-              junctionTilt = (it.junctionTilt + by).coerceIn(0, DriveCamera.MAX_SETTING_TILT))
-        }
-      }
-      val bar = listOf(
-          BarButton("Vista", null, if (is3d) "2D" else "3D", Nm.Raised) {
-            barTouch = System.currentTimeMillis()
-            AppGraph.settings.update {
-              it.copy(driveView = if (is3d) app.navmaster.truck.settings.DriveView.VIEW_2D else app.navmaster.truck.settings.DriveView.VIEW_3D)
-            }
-            mapState.recenter(true)
-          },
-          BarButton("Zoom +", null, "+", Nm.Raised) { closer(0.2) },
-          BarButton("Zoom −", null, "−", Nm.Raised) { closer(-0.2) },
-      ) + (if (is3d) listOf(
-          BarButton("Più incl.", null, "+°", Nm.Raised) { tilted(5) },
-          BarButton("Meno incl.", null, "−°", Nm.Raised) { tilted(-5) },
-      ) else emptyList()) + listOf(
-          BarButton(if (satellite) "Mappa" else "Satellite", Icons.Rounded.Layers, null, if (satellite) Nm.Accent else Nm.Raised) {
-            barTouch = System.currentTimeMillis()
-            onSatellite()
-          },
-          BarButton(
-              when (nightMode) {
-                app.navmaster.truck.settings.NightMode.AUTO -> "Auto"
-                app.navmaster.truck.settings.NightMode.DAY -> "Giorno"
-                app.navmaster.truck.settings.NightMode.NIGHT -> "Notte"
-              },
-              when (nightMode) {
-                app.navmaster.truck.settings.NightMode.AUTO -> Icons.Rounded.BrightnessAuto
-                app.navmaster.truck.settings.NightMode.DAY -> Icons.Rounded.LightMode
-                app.navmaster.truck.settings.NightMode.NIGHT -> Icons.Rounded.DarkMode
-              },
-              null, Nm.Raised,
-          ) {
-            barTouch = System.currentTimeMillis()
-            AppGraph.settings.update {
-              it.copy(nightMode = when (it.nightMode) {
-                app.navmaster.truck.settings.NightMode.AUTO -> app.navmaster.truck.settings.NightMode.DAY
-                app.navmaster.truck.settings.NightMode.DAY -> app.navmaster.truck.settings.NightMode.NIGHT
-                app.navmaster.truck.settings.NightMode.NIGHT -> app.navmaster.truck.settings.NightMode.AUTO
-              })
-            }
-          },
-          BarButton(if (muted) "Muto" else "Voce", if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp, null,
-              if (muted) Nm.Red else Nm.Raised) {
-            barTouch = System.currentTimeMillis()
-            vm.toggleMute()
-          },
-          BarButton("Termina", Icons.Rounded.Close, null, Nm.Red) { vm.stopNavigation() },
-      )
       DriveSide(
           landscape = landscape,
           arcInside = !arcBeside,
@@ -1245,7 +1256,8 @@ private fun NavigatingOverlay(
           showPoi = jv == null,
           railCount = railCount,
           railSize = if (poiPanelOpen) 46.dp else 56.dp,
-          barVisible = controls,
+          // the bar of the controls is at the bottom of the screen, over the trip bar (never over the vehicle)
+          barVisible = false,
           bar = bar,
           barBottom = if (simulating) 84.dp else 6.dp,
           arc = { speedArc(Modifier) },
@@ -1299,6 +1311,11 @@ private fun NavigatingOverlay(
           },
       )
       if (jv != null) LaunchedEffect(Unit) { onPoiPins(emptyList()) }
+      // the speed limit always in sight at the left, under the simulation's label
+      if (settings.speedLimitSide && limitKmh != null) {
+        SpeedLimitSign(limitKmh, vehicle.topSpeedKmh, speedKmh, settings.speedWarningKmh,
+            Modifier.align(Alignment.TopStart).padding(top = if (simulating) 40.dp else 6.dp))
+      }
       if (simulating) {
         SimControls(simSpeed, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             onPrevManeuver = { vm.simManeuver(false) }, onBack = { vm.simJump(-500.0) }, onSlower = vm::simSlower,
@@ -1328,6 +1345,14 @@ private fun NavigatingOverlay(
   }
   }
     val drivenS = vm.nav.collectAsState().value.drivenS
+    // the town the vehicle is in, looked up every few hundred metres off the main thread
+    var locality by remember { mutableStateOf<String?>(null) }
+    val locKey = ui.location?.coordinates?.let { (it.lat * 300).roundToInt() to (it.lng * 300).roundToInt() }
+    LaunchedEffect(locKey, settings.showLocality) {
+      val c = ui.location?.coordinates
+      locality = if (c == null || !settings.showLocality) null
+          else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { AppGraph.addresses.localityAt(c.lat, c.lng) }.getOrNull() }
+    }
     val nextStop = vm.nextStopAhead(traveled)
     val remainingM = ui.progress?.distanceRemaining
     val remainingS = ui.progress?.durationRemaining
@@ -1344,6 +1369,7 @@ private fun NavigatingOverlay(
             drivenS = drivenS,
             headingDeg = ui.location?.courseOverGround?.degrees?.toDouble(),
             road = ui.currentStepRoadName,
+            place = locality,
         ),
         onChange = { i, f ->
           AppGraph.settings.update { st ->
@@ -1356,6 +1382,9 @@ private fun NavigatingOverlay(
         modifier = Modifier.fillMaxWidth(),
     )
   }
+  // the controls a touch on the map brings up: over the trip bar at the bottom, never over the
+  // vehicle in the middle of the map
+  ControlsBar(controls, bar, maxWidth, Modifier.align(Alignment.BottomEnd))
   }
 }
 

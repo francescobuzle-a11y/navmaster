@@ -8,6 +8,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,10 +58,40 @@ val NmAmber = Color(0xFFFFB300)
  * road or the text of the sign, and on the right the lane assist with every lane of the road.
  */
 @Composable
-fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier: Modifier = Modifier, showLanes: Boolean = true, roundabout: RoundaboutShape? = null) {
+fun TopManeuverBar(instruction: VisualInstruction?, distanceM: Double?, modifier: Modifier = Modifier, showLanes: Boolean = true, roundabout: RoundaboutShape? = null,
+                   /** Far from the manoeuvre: only its sign and the distance, in a small tab (a touch opens it for a while). */
+                   compact: Boolean = false, onTap: (() -> Unit)? = null) {
   if (instruction == null) return
   val primary = instruction.primaryContent
   val lanes = instruction.subContent?.laneInfo ?: primary.laneInfo
+  if (compact) {
+    Row(
+        modifier
+            .shadow(8.dp, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(Brush.verticalGradient(listOf(NmGreenTop, NmGreenBottom)))
+            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier)
+            .heightIn(min = 60.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+      val t = primary.maneuverType?.name?.uppercase() ?: ""
+      if (roundabout != null && (t.contains("ROUNDABOUT") || t.contains("ROTARY"))) {
+        RoundaboutGlyph(roundabout, Color.White, Modifier.size(44.dp))
+      } else {
+        ManeuverGlyph(type = primary.maneuverType?.name, modifier = primary.maneuverModifier?.name, color = Color.White, mod = Modifier.size(40.dp))
+      }
+      if (distanceM != null) {
+        Spacer(Modifier.width(10.dp))
+        val d = Fmt.distance(distanceM)
+        Row(verticalAlignment = Alignment.Bottom) {
+          Text(d.value, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+          Text(" " + d.unit, color = Color(0xCCFFFFFF), fontSize = 16.sp, modifier = Modifier.padding(bottom = 4.dp))
+        }
+      }
+    }
+    return
+  }
   Row(
       modifier
           .shadow(8.dp, RoundedCornerShape(16.dp))
@@ -319,6 +353,32 @@ fun SectionBanner(section: RouteLimit, traveled: Double, limitKmh: Int?, avgKmh:
       Text(if (inside) "fine tra " + Fmt.distanceText((section.endM - traveled).coerceAtLeast(0.0))
            else "inizia tra " + Fmt.distanceText((section.alongM - traveled).coerceAtLeast(0.0)),
           color = if (over) Color.White else Color(0xFF90CAF9), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+    }
+  }
+}
+
+/**
+ * The speed limit as the road sign, always in sight at the side of the map: the limit for the
+ * vehicle (the vehicle's own when it is lower than the road's, then "mezzo" under it), amber
+ * inside while over it.
+ */
+@Composable
+fun SpeedLimitSign(limitKmh: Int, vehicleMaxKmh: Int, speedKmh: Int?, toleranceKmh: Int, modifier: Modifier = Modifier, size: Dp = 72.dp) {
+  val effective = minOf(limitKmh, vehicleMaxKmh)
+  val forVehicle = vehicleMaxKmh < limitKmh
+  val over = speedKmh != null && speedKmh > effective + toleranceKmh
+  Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+    Box(
+        Modifier.size(size).shadow(6.dp, CircleShape).clip(CircleShape).background(if (over) NmAmber else Color.White)
+            .border(size * 0.11f, Color(0xFFD32F2F), CircleShape)
+            .semantics { contentDescription = "Limite $effective km/h" },
+        contentAlignment = Alignment.Center,
+    ) {
+      Text("$effective", color = Color.Black, fontSize = (size.value * (if (effective >= 100) 0.32f else 0.38f)).sp, fontWeight = FontWeight.Bold)
+    }
+    if (forVehicle) {
+      Text("mezzo", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+          modifier = Modifier.padding(top = 3.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 1.dp))
     }
   }
 }

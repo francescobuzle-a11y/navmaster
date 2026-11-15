@@ -273,6 +273,19 @@ private fun DrivingPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
       Pills { for (t in listOf(15, 25, 40)) Pill("$t s prima", s.junctionViewSeconds == t) { set { it.copy(junctionViewSeconds = t) } } }
     }
   }
+  Card("Schermo di guida") {
+    ToggleRow("Barra della manovra compatta", "Lontano dalla manovra solo il suo segno e la distanza, in alto a sinistra; si apre intera " +
+        "quando la manovra è vicina (o con un tocco)", s.maneuverCompact) { v -> set { it.copy(maneuverCompact = v) } }
+    if (s.maneuverCompact) {
+      Caption("Si apre intera", Modifier.padding(top = 6.dp), size = 14)
+      Pills { for (t in listOf(10, 15, 20, 30, 45)) Pill("$t s prima", s.maneuverOpenS == t) { set { it.copy(maneuverOpenS = t) } } }
+    }
+    ToggleRow("Limite di velocità sempre in vista", "Il cartello del limite a sinistra della mappa (quello del mezzo quando è più basso)",
+        s.speedLimitSide) { v -> set { it.copy(speedLimitSide = v) } }
+    ToggleRow("Località in basso", "Il paese o la frazione in cui sei, sopra l'ora di arrivo e le altre informazioni", s.showLocality) { v ->
+      set { it.copy(showLocality = v) }
+    }
+  }
   MapGapsCard()
   Card("Tempi di guida") {
     ToggleRow("Promemoria delle pause", "Pausa dopo 4 h 30 di guida (reg. CE 561/2006) con i parcheggi adatti", s.driveTimeReminder) { v ->

@@ -221,6 +221,13 @@ data class Settings(
     val driveLaneSide: Boolean = true,
     /** The route already driven: 0 like the rest, 1 lighter and see-through, 2 hidden. */
     val doneRoute: Int = 1,
+    /** The manoeuvre bar small (its sign and the distance) far from the manoeuvre, whole this many seconds before it. */
+    val maneuverCompact: Boolean = true,
+    val maneuverOpenS: Int = 20,
+    /** The speed limit sign always in sight at the left of the map. */
+    val speedLimitSide: Boolean = true,
+    /** The town the vehicle is in, above the trip bar. */
+    val showLocality: Boolean = true,
     /** At roundabouts the view rises over the roundabout and keeps its direction (as TomTom GO does). */
     val roundaboutView: Boolean = true,
     /** From how far before the roundabout, metres. */

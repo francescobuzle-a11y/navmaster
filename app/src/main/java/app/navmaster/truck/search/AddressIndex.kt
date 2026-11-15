@@ -111,6 +111,35 @@ class AddressIndex(private val regions: RegionManager) {
 
   private fun rankOf(kind: String) = when (kind) { "city" -> 1; "town" -> 2; "village", "suburb" -> 3; else -> 4 }
 
+  /**
+   * The town, village or hamlet a point is in, as the driver would name it: the nearest place for
+   * its size (a city reaches farther than a hamlet), within its reach; null outside them all.
+   */
+  fun localityAt(lat: Double, lon: Double): String? {
+    val dLat = 7000.0 / 110_540.0
+    val dLon = 7000.0 / (111_320.0 * kotlin.math.cos(Math.toRadians(lat)))
+    var best: String? = null
+    var bestScore = 1.0
+    for ((_, db) in dbs.all()) runCatching {
+      // the numbers written in the query: rawQuery binds its arguments as text
+      db.rawQuery("SELECT name, kind, lat, lon FROM places WHERE lat BETWEEN ${lat - dLat} AND ${lat + dLat} " +
+          "AND lon BETWEEN ${lon - dLon} AND ${lon + dLon}", null).use { c ->
+        while (c.moveToNext()) {
+          val reach = when (c.getString(1)) {
+            "city" -> 6000.0
+            "town" -> 3000.0
+            "village" -> 1500.0
+            "suburb", "quarter", "neighbourhood" -> 900.0
+            else -> 700.0
+          }
+          val score = Geo.dist(lat, lon, c.getDouble(2), c.getDouble(3)) / reach
+          if (score < bestScore) { bestScore = score; best = c.getString(0) }
+        }
+      }
+    }
+    return best
+  }
+
   fun streets(region: String, place: PlaceHit, query: String, limit: Int = 120): List<StreetHit> {
     val db = db(region) ?: return emptyList()
     val placeId = place.parentId ?: place.id
