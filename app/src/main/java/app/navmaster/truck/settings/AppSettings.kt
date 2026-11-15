@@ -200,8 +200,30 @@ data class Settings(
     /** The kinds of alert shown on the map (ids of limits.AlertGroup). */
     val alertGroups: Set<String> = setOf("fisso", "tutor", "semaforo", "mobile", "ztl", "lez", "camion", "cinture", "dosso", "pericolo"),
     val nightMode: NightMode = NightMode.AUTO,
+    /** The old tilt of the 3D view (before the TomTom-like view): kept so old saved settings still read. */
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,
+    /**
+     * The 3D driving view, as TomTom GO draws it on the tablet (measured 2026-11-15): tilt in degrees
+     * (3° more across the screen) and closeness as the map's zoom. Over 60° only where the map on
+     * the tablet allows it (ui.DriveCamera); otherwise 60° and a little less close, the same road.
+     */
+    val driveTilt: Int = 65,
+    val driveZoom: Double = 18.6,
+    /** At roundabouts the view rises over the roundabout and keeps its direction (as TomTom GO does). */
+    val roundaboutView: Boolean = true,
+    /** From how far before the roundabout, metres. */
+    val roundaboutViewFromM: Int = 120,
+    val roundaboutTilt: Int = 43,
+    val roundaboutZoom: Double = 17.6,
+    /** At motorway junctions (exits, forks, slip roads) the view rises to show the junction, following the vehicle. */
+    val junctionZoomView: Boolean = true,
+    val junctionZoomFromM: Int = 300,
+    val junctionTilt: Int = 50,
+    val junctionZoom: Double = 17.9,
+    /** The same at the turns in town, from nearer. */
+    val junctionZoomInTown: Boolean = false,
+    val junctionZoomTownFromM: Int = 120,
     val poiCategories: Set<String> = setOf("truck_parking", "fuel", "services", "rest_area", "food", "shower"),
     val poiOnlyTruckFriendly: Boolean = true,
     /** Finer choices, as "category:flag" (none for a category = all its places). */

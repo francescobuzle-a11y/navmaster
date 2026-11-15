@@ -122,7 +122,7 @@ private fun summary(p: SettingsPage, s: Settings): String =
           if (s.liveTraffic) "traffico" else null,
           if (s.liveTraffic && s.personalFeed) "Waze" else null,
       ).joinToString(" · ").ifBlank { "Spento" }.replaceFirstChar { it.uppercase() }
-      SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.tiltDeg}°" else "2D dall'alto") + " · " + s.nightMode.label +
+      SettingsPage.MAP -> (if (s.driveView == DriveView.VIEW_3D) "3D, inclinata di ${s.driveTilt}°" else "2D dall'alto") + " · " + s.nightMode.label +
           (if (s.alertsOnMap) " · allerte" else "")
       SettingsPage.POI -> if (s.poiRailCount == 0) "Pannello spento" else
         "${s.poiRailCount} punti · ${s.poiCategories.size} categorie · " + (if (s.poiRailSeconds == 0) "sempre aperto" else "${s.poiRailSeconds} s")
@@ -432,7 +432,54 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     Caption("Si cambia anche in guida con il pulsante 2D/3D a destra.", Modifier.padding(top = 6.dp), size = 13)
     if (s.driveView == DriveView.VIEW_3D) {
       Spacer(Modifier.height(6.dp))
-      Stepper("Inclinazione", s.tiltDeg.toDouble(), "°", 5.0, 20.0, 60.0, 0) { v -> set { it.copy(tiltDeg = v.toInt()) } }
+      Stepper("Inclinazione", s.driveTilt.toDouble(), "°", 1.0, 30.0, 70.0, 0) { v -> set { it.copy(driveTilt = v.toInt()) } }
+      Stepper("Vicinanza (zoom)", s.driveZoom, "", 0.1, 15.5, 19.5, 1) { v -> set { it.copy(driveZoom = v) } }
+      Caption("Come TomTom GO: 65° e 18,6, la stessa a ogni velocità; con il tablet in orizzontale 3° in più. Oltre 60° solo se " +
+          "la mappa del tablet lo permette, altrimenti 60° e un po' meno vicina, con la strada dei primi 100 m dove la mette TomTom.",
+          Modifier.padding(top = 2.dp), size = 13, lines = 5)
+      if (s.driveTilt != 65 || s.driveZoom != 18.6) {
+        Spacer(Modifier.height(6.dp))
+        Pills { Pill("Come TomTom GO", false) { set { it.copy(driveTilt = 65, driveZoom = 18.6) } } }
+      }
+    }
+  }
+  Card("Zoom automatico") {
+    ToggleRow("Rotonde", "La vista si alza sopra la rotonda e la mappa resta ferma mentre giri, poi torna com'era (come TomTom GO)",
+        s.roundaboutView) { v -> set { it.copy(roundaboutView = v) } }
+    if (s.roundaboutView) {
+      Stepper("Da quanti metri prima", s.roundaboutViewFromM.toDouble(), "m", 10.0, 40.0, 300.0, 0) { v -> set { it.copy(roundaboutViewFromM = v.toInt()) } }
+      if (s.driveView == DriveView.VIEW_3D) {
+        Stepper("Inclinazione nella rotonda", s.roundaboutTilt.toDouble(), "°", 1.0, 0.0, 60.0, 0) { v -> set { it.copy(roundaboutTilt = v.toInt()) } }
+      }
+      Stepper("Vicinanza nella rotonda", s.roundaboutZoom, "", 0.1, 15.0, 19.5, 1) { v -> set { it.copy(roundaboutZoom = v) } }
+    }
+    ToggleRow("Svincoli", "Alle uscite, ai bivi e alle rampe delle autostrade e superstrade la vista si alza per mostrare lo svincolo, " +
+        "seguendo il mezzo, poi torna com'era", s.junctionZoomView) { v -> set { it.copy(junctionZoomView = v) } }
+    ToggleRow("Anche agli incroci in città", "Le svolte sulle altre strade, da più vicino", s.junctionZoomInTown) { v ->
+      set { it.copy(junctionZoomInTown = v) }
+    }
+    if (s.junctionZoomView || s.junctionZoomInTown) {
+      if (s.junctionZoomView) {
+        Stepper("Svincoli: da quanti metri prima", s.junctionZoomFromM.toDouble(), "m", 50.0, 100.0, 1000.0, 0) { v -> set { it.copy(junctionZoomFromM = v.toInt()) } }
+      }
+      if (s.junctionZoomInTown) {
+        Stepper("Incroci: da quanti metri prima", s.junctionZoomTownFromM.toDouble(), "m", 10.0, 50.0, 300.0, 0) { v -> set { it.copy(junctionZoomTownFromM = v.toInt()) } }
+      }
+      if (s.driveView == DriveView.VIEW_3D) {
+        Stepper("Inclinazione allo svincolo", s.junctionTilt.toDouble(), "°", 1.0, 0.0, 70.0, 0) { v -> set { it.copy(junctionTilt = v.toInt()) } }
+      }
+      Stepper("Vicinanza allo svincolo", s.junctionZoom, "", 0.1, 15.0, 19.5, 1) { v -> set { it.copy(junctionZoom = v) } }
+    }
+    if (s.roundaboutView || s.junctionZoomView || s.junctionZoomInTown) {
+      Spacer(Modifier.height(6.dp))
+      Pills {
+        Pill("Valori di partenza", false) {
+          set {
+            it.copy(roundaboutViewFromM = 120, roundaboutTilt = 43, roundaboutZoom = 17.6, junctionZoomFromM = 300, junctionTilt = 50,
+                junctionZoom = 17.9, junctionZoomTownFromM = 120)
+          }
+        }
+      }
     }
   }
   Card("Colori") {

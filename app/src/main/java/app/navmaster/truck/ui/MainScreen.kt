@@ -245,29 +245,29 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
 
-  // Garmin-like camera: tilted, the vehicle low on the screen so the road ahead is visible. Near a
-  // turn in town it comes closer and leans a little more, smoothly, and goes back after it
+  // the driving camera as TomTom GO draws it (DriveCamera): tilted, close, the vehicle low on the
+  // screen, the horizon in sight; the same at every speed. At roundabouts and junctions the view
+  // rises and comes back (driven below, frame by frame, while the vehicle is in their stretch)
   val h = configuration.screenHeightDp
   val w = configuration.screenWidthDp
   val is3d = settings.driveView == app.navmaster.truck.settings.DriveView.VIEW_3D
-  val toManeuver = if (navigating) ui.progress?.distanceToNextManeuver else null
-  val fastRoad = nav.analysis?.edgeAt((if (navigating) (nav.routeLength - (ui.progress?.distanceRemaining ?: 0.0)) else 0.0).coerceAtLeast(0.0))
-      ?.roadClass in setOf("motorway", "trunk")
-  val closeUp = toManeuver != null && toManeuver < (if (fastRoad) 0.0 else 260.0)
-  // zoom and tilt change in one step and the map engine eases them itself once: a value animated
-  // here frame by frame restarted the engine's own camera animation at every frame (stutter)
-  val zoom = (if (is3d) 16.6f else 16.0f) + (if (closeUp) 0.9f else 0f)
-  val tilt = if (is3d) settings.tiltDeg.toFloat() + (if (closeUp) 5f else 0f) else 0f
+  // the tilt the tablet's map allows (60°, more if its map underneath accepts it: asked below)
+  var mapMaxTilt by remember { mutableStateOf(DriveCamera.MAP_MAX_TILT) }
+  val plainView = DriveCamera.plainView(settings, landscape, mapMaxTilt)
+  val zoom = if (is3d) plainView.second else 16.0
+  val tilt = if (is3d) plainView.first else 0.0
+  // the vehicle where TomTom GO puts it (2D: a little higher, more to see around it)
+  val vehicleAt = if (!is3d) (if (landscape) 0.65 else 0.70) else if (landscape) DriveCamera.VEHICLE_ACROSS else DriveCamera.VEHICLE_UPRIGHT
+  val navPadding =
+      if (landscape) PaddingValues(top = (h * (2 * vehicleAt - 1)).toFloat().dp, end = (w * 0.42f).dp)
+      else PaddingValues(top = (h * (2 * vehicleAt - 1)).toFloat().dp)
   val cameraOptions =
       NavigationCameraOptions(
           browsingZoom = 15.0,
-          navigationZoom = zoom.toDouble(),
-          // 2D: straight from above, a little farther to see more around
-          navigationTilt = tilt.toDouble().coerceAtMost(65.0),
+          navigationZoom = zoom,
+          navigationTilt = tilt,
           browsingPadding = PaddingValues(0.dp),
-          navigationPadding =
-              if (landscape) PaddingValues(top = (h * 0.30f).dp, end = (w * 0.42f).dp)
-              else PaddingValues(top = (h * 0.40f).dp),
+          navigationPadding = navPadding,
       )
   val mapState = rememberNavigationMapState()
   // routes computed (or another one chosen): the whole route on screen, beside the routes panel;
@@ -463,6 +463,87 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     }
   }
 
+  // ---- the view of roundabouts and junctions (DriveCamera): while the vehicle is in their stretch
+  // of the route the camera is driven here, frame by frame, eased in and out (the map holding its
+  // direction through a roundabout); Ferrostar's own tracking the rest of the time
+  val camWindows = remember(trackAnalysis, settings.roundaboutView, settings.roundaboutViewFromM, settings.roundaboutTilt, settings.roundaboutZoom,
+      settings.junctionZoomView, settings.junctionZoomFromM, settings.junctionTilt, settings.junctionZoom, settings.junctionZoomInTown,
+      settings.junctionZoomTownFromM) {
+    trackAnalysis?.let { DriveCamera.windows(it, settings) } ?: emptyList()
+  }
+  val camDriver = remember { DriveCamera.Driver() }
+  val camPlain = androidx.compose.runtime.rememberUpdatedState(Triple(zoom, tilt, navPadding))
+  val camTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
+  val camUiLoc = androidx.compose.runtime.rememberUpdatedState(ui.location)
+  LaunchedEffect(navigating, camWindows, is3d) {
+    if (camDriver.active) {
+      camDriver.reset()
+      if (navigating) mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FOLLOW_USER_WITH_BEARING
+    }
+    if (!navigating || camWindows.isEmpty()) return@LaunchedEffect
+    while (true) {
+      androidx.compose.runtime.withFrameNanos { t ->
+        val loc = smoothLoc.value ?: camUiLoc.value ?: return@withFrameNanos
+        val along = smoothAlong.value.takeIf { it >= 0 } ?: camTraveled.value
+        val win = DriveCamera.windowAt(camWindows, along)
+        val cs = mapState.cameraState
+        if (!camDriver.active) {
+          if (win == null) return@withFrameNanos
+          // only from the plain view that follows the vehicle (not while the driver has moved the map)
+          if (mapState.cameraMode != com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FOLLOW_USER_WITH_BEARING) return@withFrameNanos
+          camDriver.active = true
+          camDriver.blend = 0.0
+          camDriver.lastNanos = t
+          camDriver.window = win
+          camDriver.heldBearing = cs.position.bearing
+          mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FREE
+        }
+        // the driver's finger on the map: the map is theirs ("Centra" brings the view back)
+        if (cs.moveReason == org.maplibre.compose.camera.CameraMoveReason.GESTURE) {
+          camDriver.reset()
+          return@withFrameNanos
+        }
+        if (win != null && win != camDriver.window) {
+          // the next stretch (a junction right after a roundabout): its view; through a roundabout
+          // the direction is held from where its stretch starts
+          if (win.roundabout && camDriver.window?.roundabout != true) camDriver.heldBearing = cs.position.bearing
+          camDriver.window = win
+        }
+        val dt = ((t - camDriver.lastNanos) / 1e9).coerceIn(0.0, 0.1)
+        camDriver.lastNanos = t
+        camDriver.blend = (camDriver.blend + (if (win != null) dt else -dt) / DriveCamera.EASE_S).coerceIn(0.0, 1.0)
+        val e = DriveCamera.ease(camDriver.blend)
+        val wv = camDriver.window ?: return@withFrameNanos
+        val (z0, t0, pad) = camPlain.value
+        val course = loc.courseOverGround?.degrees?.toDouble() ?: cs.position.bearing
+        val bearing = if (wv.roundabout && !camDriver.heldBearing.isNaN()) DriveCamera.lerpAngle(course, camDriver.heldBearing, e) else course
+        val tiltW = if (is3d) wv.tilt else 0.0
+        cs.position = org.maplibre.compose.camera.CameraPosition(
+            bearing = bearing,
+            target = org.maplibre.spatialk.geojson.Position(loc.coordinates.lng, loc.coordinates.lat),
+            tilt = t0 + (tiltW - t0) * e,
+            zoom = z0 + (wv.zoom - z0) * e,
+            padding = pad,
+        )
+        // out of the stretch and eased back: Ferrostar follows again, from the same view
+        if (win == null && camDriver.blend <= 0.0) {
+          camDriver.reset()
+          mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FOLLOW_USER_WITH_BEARING
+        }
+      }
+    }
+  }
+  // the tilt over 60° asked of the tablet's map while driving in 3D (again now and then: the map's
+  // library sets its own limit back when it redraws its options)
+  val camWantTilt = androidx.compose.runtime.rememberUpdatedState(settings.driveTilt + 3.0)
+  LaunchedEffect(navigating, is3d) {
+    if (!navigating || !is3d) return@LaunchedEffect
+    while (true) {
+      mapMaxTilt = DriveCamera.allowTilt(mapState.cameraState, maxOf(DriveCamera.MAP_MAX_TILT, camWantTilt.value))
+      kotlinx.coroutines.delay(2000)
+    }
+  }
+
   Box(Modifier.fillMaxSize().background(Nm.Bg)) {
     // a new map view when the tablet turns: the old one kept drawing at the old size (a blank strip
     // on one side in portrait); the camera state survives, it is kept outside
@@ -543,6 +624,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         // a bubble: the map two steps closer, centred on it (the map stops following the vehicle)
         alertScope.launch {
           runCatching {
+            // the map is the driver's now: the view of a roundabout or a junction stops
+            camDriver.reset()
             mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FREE
             val cam = mapState.cameraState.position
             mapState.cameraState.animateTo(cam.copy(target = at, zoom = (cam.zoom + 2.0).coerceAtMost(14.0)))
@@ -638,7 +721,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           satellite = satellite,
           onRecenter = { mapState.recenter(false) },
           onCrit = { openCrit = it },
-          tracking = mapState.isTrackingUser,
+          tracking = mapState.isTrackingUser || DriveCamera.driving.value,
           onPois = { poiOpen = true },
           mapMoved = mapMoved,
       )
@@ -1051,7 +1134,7 @@ private fun NavigatingOverlay(
       val route = analysis?.let { it.route.geometry }
       val hereNow = androidx.compose.runtime.rememberUpdatedState(ui.location?.coordinates)
       val source = remember(route, destination) { AppPoiSource(route, { hereNow.value }, destination) }
-      val tracking = mapState.isTrackingUser
+      val tracking = mapState.isTrackingUser || DriveCamera.driving.value
       // the round buttons at the left: with the controls (a touch on the map) report, settings,
       // stops; always "centre" when the map was moved and the reminder when muted
       val railCount = (if (controls) (if (settings.liveReports) 1 else 0) + 1 + (if (stopsCount > 0) 1 else 0) else 0) +
