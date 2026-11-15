@@ -134,6 +134,10 @@ class RouteChunks(val points: List<GeographicCoordinate>) {
     return lo
   }
 
+  /** How far the point at [alongM] metres of this line is from [p] (metres). */
+  fun distanceTo(alongM: Double, p: GeographicCoordinate): Double =
+      app.navmaster.truck.core.Geo.dist(app.navmaster.truck.core.Geo.pointAt(points, cum, alongM), p)
+
   /** The stretch at [alongM] cut there: the part behind and the part ahead, as GeoJSON lines. */
   fun split(alongM: Double): Pair<String, String> {
     val k = chunkAt(alongM)
@@ -178,22 +182,49 @@ fun groundOffset(metres: Double, lat: Double): org.maplibre.compose.expressions.
       8 to const(dpAt(8.0)), 22 to const(dpAt(22.0)))
 }
 
+/** The vehicle farther than this from the point where the line is cut is not on that line (metres). */
+internal const val OFF_LINE_M = 150.0
+
+/**
+ * The vehicle's position ON THE LINE THAT IS DRAWN, in metres from its start. [alongM] is measured on
+ * the whole route ([wholeLengthM] long; 0 when the line drawn is the whole route), but the line drawn
+ * can be only the end of it ([drawnLengthM] long): the simulation puts the vehicle somewhere and the
+ * guidance goes on from there on the rest of the route. Then the vehicle is that much nearer the start
+ * of the line (cut at the whole route's [alongM], the first kilometres ahead of the vehicle were drawn
+ * as already driven: the blue line stayed grey after a jump of the simulation).
+ *
+ * Where the vehicle is not on the line (the old line while a new one is on its way, the end of the
+ * route) the answer is 0: the whole line ahead in its colour, never all of it as already driven.
+ */
+internal fun onDrawnLine(alongM: Double, wholeLengthM: Double, drawnLengthM: Double): Double {
+  val cutOff = if (wholeLengthM > drawnLengthM + 5.0) wholeLengthM - drawnLengthM else 0.0
+  val here = alongM - cutOff
+  return if (here < -50.0 || here > drawnLengthM + 50.0) 0.0 else here.coerceIn(0.0, drawnLengthM)
+}
+
 /**
  * The route while driving: ahead in its colour with the border, behind (the road already done)
  * lighter and see-through, or not at all ([done]: 0 like the rest, 1 lighter, 2 hidden), the two
- * meeting under the vehicle at [alongM] metres; [offsetM] metres to the right of the road's middle
+ * meeting under the vehicle at [alongM] metres of the whole route ([wholeLengthM] long, 0 when [points]
+ * is the whole route: see [onDrawnLine]); [offsetM] metres to the right of the road's middle
  * (the lane the vehicle drives in, as its arrow).
  */
 @Composable
 @MaplibreComposable
 fun NmDrivenRoute(points: List<GeographicCoordinate>?, alongM: Double, offsetM: Double, lat: Double, done: Int, idPrefix: String,
-                  color: Color, lineWidth: Float, borderWidth: Float, borderColor: Color = Nm.RouteBorder) {
+                  color: Color, lineWidth: Float, borderWidth: Float, borderColor: Color = Nm.RouteBorder, wholeLengthM: Double = 0.0,
+                  vehicle: GeographicCoordinate? = null) {
   val n = points?.size ?: 0
   val chunks = androidx.compose.runtime.produceState<RouteChunks?>(null, n, points?.firstOrNull(), points?.lastOrNull(), points?.getOrNull(n / 2)) {
     value = if (points == null || n < 2) null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { RouteChunks(points) }
   }.value ?: return
+  // where the vehicle is on THIS line (it may be only the end of the route [alongM] is measured on)
+  var along = onDrawnLine(alongM, wholeLengthM, chunks.cum.last())
+  // and it must really be there: where the vehicle is not on the line at that point (a new line on its
+  // way, a recalculation) the whole line stays ahead, in its colour, never wrongly grey
+  if (vehicle != null && along > 0.0 && chunks.distanceTo(along, vehicle) > OFF_LINE_M) along = 0.0
   // the cut redone every 5 m (a short line): the map is not given new data at every frame
-  val step = (alongM.coerceAtLeast(0.0) / 5.0).toLong()
+  val step = (along / 5.0).toLong()
   val cur = chunks.chunkAt(step * 5.0)
   val cut = remember(chunks, step) { chunks.split(step * 5.0) }
   val all = rememberJsonSource(chunks.json)

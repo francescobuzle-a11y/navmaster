@@ -497,6 +497,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val camShift = androidx.compose.runtime.rememberUpdatedState(laneShiftM)
   val routeDone = androidx.compose.runtime.rememberUpdatedState(settings.doneRoute)
   val routeTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
+  // the length of the route the position is measured on (the line drawn may be only its end: simulation jumps)
+  val routeWholeLength = androidx.compose.runtime.rememberUpdatedState(trackAnalysis?.length ?: 0.0)
   val camPlain = androidx.compose.runtime.rememberUpdatedState(Triple(zoom, tilt, navPadding))
   val camTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
   val camUiLoc = androidx.compose.runtime.rememberUpdatedState(ui.location)
@@ -600,7 +602,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
               // ahead in blue, behind lighter (or hidden), on the lane of the driving side as the arrow
               val g = state.routeGeometry
               NmDrivenRoute(g, smoothAlong.value.takeIf { it >= 0 } ?: routeTraveled.value, camShift.value, g?.firstOrNull()?.lat ?: 45.0,
-                  routeDone.value, "nm-route", Nm.Route, 13f, 3f)
+                  routeDone.value, "nm-route", Nm.Route, 13f, 3f, wholeLengthM = routeWholeLength.value,
+                  vehicle = smoothLoc.value?.coordinates)
             }
           })
     }
