@@ -422,6 +422,8 @@ private const val Z_CROSS = 3.4
 internal const val M_PER_Z = 12.0
 /** The width of a lane, metres. */
 private const val LANE_M = 3.5
+/** The stem of a lane's arrow as a share of the lane's width (its head about half the lane). */
+private const val LANE_ARROW_STEM = 0.19
 
 /**
  * The fixed perspective of the picture: a point of the road is given by its depth z (1 at the
@@ -672,9 +674,33 @@ private fun DrawScope.laneArrow(p: Persp, l: Layout, lane: Int, across: Double, 
   translate(c.x - cw / 2, c.y - ch / 2) {
     val old = drawContext.size
     drawContext.size = Size(cw, ch)
-    drawTurnArrow(angleDeg, color, ARROW_STROKE, cell * 1.6f)
+    drawTurnArrow(angleDeg, color, ARROW_STROKE, laneW * 0.9f)
     drawContext.size = old
   }
+}
+
+/**
+ * The arrow of a lane to take along its course on the screen, ended where its head is still whole
+ * inside the picture (a road leaving sideways goes on past the picture's edge).
+ */
+private fun DrawScope.laneCourseArrow(centre: List<Offset>, widths0: List<Float>, color: Color) {
+  // never thinner than well over a third of its widest: the head stays readable where the course
+  // ends far away (a road leaving sideways at the junction)
+  val widest = widths0.maxOrNull() ?: return
+  val widths = widths0.map { max(it, widest * 0.38f) }
+  val inset = size.width * 0.02f
+  var n = centre.size
+  while (n > 4) {
+    val e = centre[n - 1]; val q = centre[n - 3]
+    val len = kotlin.math.hypot(e.x - q.x, e.y - q.y).coerceAtLeast(1e-3f)
+    val head = widths[n - 1] * 1.75f
+    val tipX = e.x + (e.x - q.x) / len * head
+    val tipY = e.y + (e.y - q.y) / len * head
+    val side = widths[n - 1] * 1.375f
+    if (tipX >= inset + side && tipX <= size.width - inset - side && tipY >= inset && e.x >= inset && e.x <= size.width - inset) break
+    n--
+  }
+  drawPathArrow(centre.subList(0, n), widths.subList(0, n), color)
 }
 
 /** Draws in a cell [cw] by [ch] centred on [c] (the arrows draw in the current size). */
@@ -708,52 +734,26 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
   val road = Brush.verticalGradient(listOf(pal.asphaltFar, pal.asphalt), hy, h)
   val litBrush = Brush.verticalGradient(listOf(pal.litFar, pal.lit), hy, h)
   if (l.turn) drawTown(l, p, pal, road, litBrush) else drawRoad(l, p, pal, road, litBrush)
-  // ---- the arrows: white on the lanes to take, three rows of them (the lane's own arrow where
-  // the map has it, else the way the lane goes); dull and once on the other lanes, where painted
-  val litRows = if (l.turn) listOf(1.3, 1.8, 2.35) else listOf(1.35, 1.9, 2.6)
-  // how the branch goes on beyond the picture (a tight curve, a loop, a ramp curving back): a
-  // curved arrow on the branch well after it has left the road, in place of the far row
-  val curveHere = l.branch && l.nextSide == null && l.curve != Curve.STRAIGHT
-  val sideWord = if (l.side > 0) "slight right" else "slight left"
-  // the room of each row on the screen: down to the row before it (the first: to the bottom edge)
-  val rowRoom = litRows.indices.map { k -> ((if (k == 0) h else p.y(litRows[k - 1])) - p.y(litRows[k])) * (if (k == 0) 1.6f else 0.92f) }
-  if (l.known) for (i in 0 until l.n) {
-    val lane = l.j.lanes[i]
-    val onBranch = l.branch && i in l.active
-    if (lane.take) {
-      val word = if (lane.painted) lane.arrow else if (onBranch) sideWord else "straight"
-      // a lane painted with a second arrow too (straight on and the exit): both on the near row
-      val others = if (lane.painted) lane.arrows.distinct().filter { it != lane.arrow }.take(1) else emptyList()
-      for ((k, z0) in litRows.withIndex()) {
-        if (curveHere && onBranch && k == 2) continue
-        if (k == 0 && others.isNotEmpty()) {
-          val pair = (others + word).sortedBy { directionAngle(it) }
-          pair.forEachIndexed { ai, ar ->
-            laneArrow(p, l, i, if (ai == 0) -0.22 else 0.22, z0, directionAngle(ar), if (ar == word) pal.paint else pal.paintDim, 0.44f, onBranch, rowRoom[k])
-          }
-        } else laneArrow(p, l, i, 0.0, z0, directionAngle(word), pal.paint, 0.58f, onBranch, rowRoom[k])
-      }
-    } else if (lane.painted) {
-      val arrows = lane.arrows.distinct().take(2).sortedBy { directionAngle(it) }
-      arrows.forEachIndexed { ai, ar ->
-        val across = if (arrows.size == 1) 0.0 else if (ai == 0) -0.22 else 0.22
-        // on the near row, in line with the arrows of the lanes to take
-        laneArrow(p, l, i, across, litRows[0], directionAngle(ar), pal.paintDim, if (arrows.size == 1) 0.58f else 0.44f, false, rowRoom[0])
-      }
-    }
-  } else if (l.branch) {
-    for ((k, z0) in litRows.withIndex()) {
-      if (curveHere && k == 2) continue
-      laneArrow(p, l, l.active.first(), 0.0, z0, directionAngle(sideWord), pal.paint, 0.58f, true, rowRoom[k])
+  // ---- the arrows: ONE on each lane to take, short, laid flat on the road along the lane's own
+  // course (up the lane and just into the branch), always inside the lane: its stem a fifth of
+  // the lane, its head about half. In town drawTown lays them, round
+  // the corner into the road taken. On the other lanes the arrow painted there, dull, once.
+  if (!l.turn && l.active.isNotEmpty()) {
+    // short: from a little before where the branch leaves to just into it (enough to say which
+    // lane, which branch; the lit lanes show the rest)
+    val ns = 0
+    val zs = depths(1.75, if (l.branch) 3.05 else 2.7, 24)
+    val hu = LANE_ARROW_STEM / l.n
+    for (i in l.active) {
+      val uc = p.boundary(i) + 1.0 / l.n
+      fun at(u: Double, z: Double) = pt(p, l, u, z, l.branch, if (z > Z_SPLIT2) ns else 0)
+      laneCourseArrow(zs.map { at(uc, it) }, zs.map { abs(at(uc + hu, it).x - at(uc - hu, it).x) }, pal.paint)
     }
   }
-  if (curveHere) {
-    val ua = p.boundary(l.litA); val ub = p.boundary(l.litB)
-    val zc = 3.4
-    val a = pt(p, l, ua, zc, true); val b = pt(p, l, ub, zc, true)
-    val size0 = (abs(b.x - a.x) * 0.9f).coerceIn(40f * density, 68f * density)
-    val cc = Offset(((a.x + b.x) / 2).coerceIn(size0 * 0.6f, w - size0 * 0.6f), a.y)
-    inCell(cc, size0, size0) { drawCurveArrow(l.turnAfter.toFloat(), pal.paint) }
+  if (l.known) for (i in 0 until l.n) {
+    val lane = l.j.lanes[i]
+    if (lane.take || !lane.painted) continue
+    laneArrow(p, l, i, 0.0, 1.6, directionAngle(lane.arrow), pal.paintDim, 0.5f, false)
   }
   // ---- the signs, in their band at the top
   drawSignStatic(signOf(scene), l, pal)
@@ -914,6 +914,7 @@ private fun DrawScope.drawTown(l: Layout, p: Persp, pal: Palette, road: Brush, l
     }
     drawPath(path, road)
   }
+  var townArrows: (() -> Unit)? = null
   // ---- the lit lanes: up to the junction, round into their half of the road taken
   val approach = arms.first { it.approach }
   val taken = arms.firstOrNull { it.road?.taken == true }
@@ -955,6 +956,38 @@ private fun DrawScope.drawTown(l: Layout, p: Persp, pal: Palette, road: Brush, l
     val far = (reach(taken) - into).coerceAtLeast(0.0)
     for (s in 1..6) { pts += p3 + dirOf(taken.deg) * (far * s / 6); halves += w1 }
     drawPath(ribbon(p, pts, { halves[it] }), litBrush)
+    // one arrow on each lane to take, along its course round the corner into the road taken (laid
+    // after the markings): the lanes side by side keep their order in their half of that road
+    townArrows = {
+      val m = l.active.size
+      val hw = LANE_ARROW_STEM * LANE_M / 2
+      for ((k, lane) in l.active.withIndex()) {
+        val xl = (p.boundary(lane) + 1.0 / l.n) * p.halfM
+        val offL = if (straight) xl else off + (k - (m - 1) / 2.0) * (2 * w1 / m)
+        val a0 = GP(xl, dMouth)
+        val a3 = c0 + dirOf(taken.deg) * into + rightOf(taken.deg) * offL
+        val kk = (a3 - a0).len() * 0.55
+        val a1 = a0 + GP(0.0, kk); val a2 = a3 - dirOf(taken.deg) * kk
+        val course = ArrayList<GP>()
+        // short: from a few metres before the junction to just into the road taken
+        course += GP(xl, dMouth - 7.0)
+        // round the corner only as far as the turn is plain to see (not all the way into the road taken)
+        val upTo = if (straight) 1.0 else 0.74
+        for (sI in 0..24) {
+          val t = upTo * sI / 24.0; val u = 1 - t
+          course += a0 * (u * u * u) + a1 * (3 * u * u * t) + a2 * (3 * u * t * t) + a3 * (t * t * t)
+        }
+        val centre = course.map { p.g(it) }
+        val widths = course.indices.map { i ->
+          val d = course[minOf(i + 1, course.size - 1)] - course[maxOf(i - 1, 0)]
+          val len = d.len().coerceAtLeast(1e-6)
+          val nr = GP(d.d / len, -d.x / len)
+          val a = p.g(course[i] - nr * hw); val b = p.g(course[i] + nr * hw)
+          kotlin.math.hypot(b.x - a.x, b.y - a.y)
+        }
+        laneCourseArrow(centre, widths, pal.paint)
+      }
+    }
   }
   // ---- the markings
   val m = pal.marking
@@ -986,6 +1019,7 @@ private fun DrawScope.drawTown(l: Layout, p: Persp, pal: Palette, road: Brush, l
       groundLine(p, listOf(c0 + dirOf(a.deg) * from, c0 + dirOf(a.deg) * end), m, true)
     }
   }
+  townArrows?.invoke()
 }
 
 /** A panel laid out on the screen. */

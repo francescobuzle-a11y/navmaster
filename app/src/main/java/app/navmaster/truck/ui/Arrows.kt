@@ -92,39 +92,39 @@ fun DrawScope.drawTurnArrow(angleDeg: Float, color: Color, strokeFrac: Float = A
 }
 
 /**
- * The same arrow along a curve: a short stem up, then round a circle for [turnDeg] degrees (right
- * positive, up to a loop of 270°), the same head at its end. Fitted in the current cell.
+ * The same arrow laid along a course on the screen (a lane of the junction view, flat on the road):
+ * the stem along [centre], as thick at each point as [widths] says (it thins into the distance
+ * with the road), a round end at its start and the same head at its end, in the arrow's own
+ * proportions to the stem there.
  */
-fun DrawScope.drawCurveArrow(turnDeg: Float, color: Color) {
-  val a = turnDeg.coerceIn(-270f, 270f)
-  val sgn = if (a >= 0) 1f else -1f
-  val total = Math.toRadians(abs(a).toDouble())
-  // in units of the circle's radius: the stem's thickness and the head in the arrow's own proportions
-  val st = 0.46f
-  val headLen = st * 1.75f
-  val headHalf = st * 1.375f
-  val pts = ArrayList<Offset>()
-  pts += Offset(0f, 0.9f)
-  val steps = 36
-  for (k in 0..steps) {
-    val th = total * k / steps
-    pts += Offset(sgn * (1f - cos(th).toFloat()), -sin(th).toFloat())
+fun DrawScope.drawPathArrow(centre: List<Offset>, widths: List<Float>, color: Color) {
+  val n = centre.size
+  if (n < 2 || widths.size != n) return
+  val left = ArrayList<Offset>(n)
+  val right = ArrayList<Offset>(n)
+  for (i in 0 until n) {
+    val a = centre[maxOf(i - 1, 0)]
+    val b = centre[minOf(i + 1, n - 1)]
+    val dx = b.x - a.x
+    val dy = b.y - a.y
+    val len = kotlin.math.hypot(dx, dy).coerceAtLeast(1e-3f)
+    val hw = widths[i] / 2
+    left += Offset(centre[i].x + dy / len * hw, centre[i].y - dx / len * hw)
+    right += Offset(centre[i].x - dy / len * hw, centre[i].y + dx / len * hw)
   }
-  val tx = sgn * sin(total).toFloat()
-  val ty = -cos(total).toFloat()
-  val end = pts.last()
-  val headPts = listOf(Offset(end.x + tx * headLen, end.y + ty * headLen), Offset(end.x - ty * headHalf, end.y + tx * headHalf),
-      Offset(end.x + ty * headHalf, end.y - tx * headHalf))
-  val all = pts + headPts
-  val minX = all.minOf { it.x } - st / 2; val maxX = all.maxOf { it.x } + st / 2
-  val minY = all.minOf { it.y } - st / 2; val maxY = all.maxOf { it.y } + st / 2
-  val k = minOf(size.width / (maxX - minX), size.height / (maxY - minY))
-  val ox = (size.width - (maxX - minX) * k) / 2 - minX * k
-  val oy = (size.height - (maxY - minY) * k) / 2 - minY * k
-  fun m(o: Offset) = Offset(ox + o.x * k, oy + o.y * k)
-  val path = Path().apply { pts.forEachIndexed { i, o -> val q = m(o); if (i == 0) moveTo(q.x, q.y) else lineTo(q.x, q.y) } }
-  drawPath(path, color, style = Stroke(width = st * k, cap = StrokeCap.Round, join = StrokeJoin.Round))
-  arrowHead(m(end), tx, ty, headLen * k, headHalf * k, color)
+  val stem = Path().apply {
+    left.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
+    right.asReversed().forEach { lineTo(it.x, it.y) }
+    close()
+  }
+  drawPath(stem, color)
+  drawCircle(color, widths[0] / 2, centre[0])
+  // the head along the last stretch of the course
+  val e = centre[n - 1]
+  val q = centre[maxOf(n - 3, 0)]
+  val len = kotlin.math.hypot(e.x - q.x, e.y - q.y).coerceAtLeast(1e-3f)
+  val w = widths[n - 1]
+  arrowHead(e, (e.x - q.x) / len, (e.y - q.y) / len, w * (0.28f / ARROW_STROKE), w * (0.22f / ARROW_STROKE), color)
 }
 
 /** Maneuver glyph for the green bar: modifier gives the direction, roundabouts get a ring. */
