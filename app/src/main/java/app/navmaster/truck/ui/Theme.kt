@@ -262,7 +262,7 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
 @Composable
 fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modifier, wide: Boolean = false,
                   scroll: Boolean = true, onBack: (() -> Unit)? = null, actions: @Composable () -> Unit = {},
-                  content: @Composable ColumnScope.() -> Unit) {
+                  header: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
   val cfg = LocalConfiguration.current
   val landscape = cfg.screenWidthDp > cfg.screenHeightDp
   Box(
@@ -277,9 +277,12 @@ fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modif
         Modifier.align(align).then(sizeMod).clip(shape).background(Nm.PanelSolid)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
             // the keyboard pushes the panel up instead of covering it (edge to edge: no automatic resize)
-            .statusBarsPadding().navigationBarsPadding().imePadding().padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 12.dp),
+            .statusBarsPadding().navigationBarsPadding().imePadding()
+            .padding(start = 18.dp, end = 18.dp, top = if (header) 14.dp else 10.dp, bottom = 12.dp),
     ) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
+      // header = false: the caller draws its own close button (the search with the keyboard open
+      // in landscape, where the title row would leave no room for the results)
+      if (header) Row(verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) {
           RoundAction(Icons.AutoMirrored.Rounded.ArrowBack, "Indietro", size = 52.dp, container = Nm.Raised, onClick = onBack)
           Spacer(Modifier.size(12.dp))
@@ -288,7 +291,7 @@ fun AdaptiveSheet(title: String, onClose: () -> Unit, modifier: Modifier = Modif
         actions()
         RoundAction(Icons.Rounded.Close, "Chiudi", size = 52.dp, container = Nm.Raised, onClick = onClose)
       }
-      Spacer(Modifier.size(8.dp))
+      if (header) Spacer(Modifier.size(8.dp))
       // scroll = false: the caller keeps some parts fixed (a search field) and scrolls the rest itself
       if (scroll) Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), content = content)
       else Column(Modifier.weight(1f, fill = false), content = content)

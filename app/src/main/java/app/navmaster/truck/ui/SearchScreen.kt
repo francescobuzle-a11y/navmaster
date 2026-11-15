@@ -8,6 +8,16 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -72,19 +82,48 @@ fun SearchScreen(near: GeographicCoordinate?, onPick: (Found) -> Unit, onClose: 
   var guided by remember { mutableStateOf(startGuided) }
   // the mode buttons and the field stay put, only the results scroll: with the keyboard open the
   // panel sits above it and every result can be reached
-  AdaptiveSheet("Dove andiamo?", onClose, wide = true, scroll = false) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      Pill("🔎 Ricerca libera", !guided) { guided = false }
-      Pill("🧭 Paese › Città › Via", guided) { guided = true }
+  BoxWithConstraints {
+    // little room above the keyboard (the tablet in landscape: about 270 dp, a small phone): the
+    // title and the mode buttons go, the field shares one row with the mode switch and the close
+    // button, so the first results stay visible over the keyboard
+    val tight = keyboardTight(maxHeight)
+    AdaptiveSheet("Dove andiamo?", onClose, wide = true, scroll = false, header = !tight) {
+      if (!tight) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Pill("🔎 Ricerca libera", !guided) { guided = false }
+          Pill("🧭 Paese › Città › Via", guided) { guided = true }
+        }
+        Spacer(Modifier.height(12.dp))
+      }
+      val bar: (@Composable RowScope.() -> Unit)? = if (!tight) null else ({
+        Spacer(Modifier.width(8.dp))
+        RoundAction(if (guided) Icons.Rounded.Search else Icons.Rounded.Explore,
+            if (guided) "Ricerca libera" else "Paese, città, via", size = 52.dp, container = Nm.Raised) { guided = !guided }
+        Spacer(Modifier.width(8.dp))
+        RoundAction(Icons.Rounded.Close, "Chiudi", size = 52.dp, container = Nm.Raised, onClick = onClose)
+      })
+      val pick = { f: Found ->
+        AppGraph.recents.add(f)
+        onPick(f)
+      }
+      if (guided) GuidedSearch(pick, bar) else FreeSearch(near, pick, bar)
     }
-    Spacer(Modifier.height(12.dp))
-    val pick = { f: Found ->
-      AppGraph.recents.add(f)
-      onPick(f)
-    }
-    if (guided) GuidedSearch(pick) else FreeSearch(near, pick)
   }
 }
+
+/** Less than [TIGHT_FREE] above the keyboard in a window [height] tall (system bars taken off). */
+@Composable
+private fun keyboardTight(height: Dp): Boolean {
+  val d = LocalDensity.current
+  val ime = WindowInsets.ime.getBottom(d)
+  if (ime == 0) return false
+  val top = WindowInsets.statusBars.getTop(d)
+  val bottom = maxOf(ime, WindowInsets.navigationBars.getBottom(d))
+  return height - with(d) { (top + bottom).toDp() } < TIGHT_FREE
+}
+
+/** Room the full header (title, mode buttons, field: about 220 dp) needs to leave three results under it. */
+private val TIGHT_FREE = 440.dp
 
 /** The results under a search field: they scroll, and scrolling them puts the keyboard away. */
 @Composable
@@ -96,18 +135,31 @@ private fun ColumnScope.Results(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun field(value: String, onChange: (String) -> Unit, hint: String, focus: FocusRequester? = null) {
+private fun field(value: String, onChange: (String) -> Unit, hint: String, focus: FocusRequester? = null,
+                  bar: (@Composable RowScope.() -> Unit)? = null) {
   val kb = LocalSoftwareKeyboardController.current
+  Row(verticalAlignment = Alignment.CenterVertically) {
   OutlinedTextField(
       value, onChange, placeholder = { Text(hint, fontSize = 18.sp) }, singleLine = true,
       keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
       keyboardActions = KeyboardActions(onSearch = { kb?.hide() }, onDone = { kb?.hide() }),
       leadingIcon = { Icon(Icons.Rounded.Search, null, tint = Nm.Muted) },
       textStyle = androidx.compose.ui.text.TextStyle(fontSize = 20.sp, color = Nm.Text),
-      modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).then(if (focus != null) Modifier.focusRequester(focus) else Modifier),
+      modifier = Modifier.weight(1f).heightIn(min = if (bar != null) 56.dp else 64.dp)
+          .then(if (focus != null) Modifier.focusRequester(focus) else Modifier),
       shape = RoundedCornerShape(18.dp),
       colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Nm.Accent, unfocusedBorderColor = Nm.Line, cursorColor = Nm.Accent),
   )
+  bar?.invoke(this)
+  }
+}
+
+/** The mode switch and the close button alone, on a step of the guided search without a field. */
+@Composable
+private fun BarOnly(bar: (@Composable RowScope.() -> Unit)?) {
+  if (bar == null) return
+  Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) { bar() }
+  Spacer(Modifier.height(8.dp))
 }
 
 @Composable
@@ -128,7 +180,7 @@ private fun ResultRow(icon: String, title: String, detail: String?, trailing: St
 }
 
 @Composable
-private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) -> Unit) {
+private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) -> Unit, bar: (@Composable RowScope.() -> Unit)? = null) {
   var q by remember { mutableStateOf("") }
   var offline by remember { mutableStateOf<List<Found>>(emptyList()) }
   var online by remember { mutableStateOf<List<Found>>(emptyList()) }
@@ -185,7 +237,7 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
       if (withHere.isNotEmpty()) online = withHere
     }
   }
-  field(q, { q = it }, "Via, città, azienda o coordinate", focus)
+  field(q, { q = it }, "Via, città, azienda o coordinate", focus, bar)
   Spacer(Modifier.height(8.dp))
   Results {
     if (q.isBlank()) {
@@ -206,7 +258,7 @@ private fun ColumnScope.FreeSearch(near: GeographicCoordinate?, onPick: (Found) 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
+private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit, bar: (@Composable RowScope.() -> Unit)? = null) {
   val regions = remember { AppGraph.addresses.regionsWithAddresses() }
   var region by remember { mutableStateOf(regions.singleOrNull()) }
   var place by remember { mutableStateOf<PlaceHit?>(null) }
@@ -226,6 +278,7 @@ private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
 
   val r = region
   if (r == null) {
+    BarOnly(bar)
     Results {
       if (regions.isEmpty()) Caption("Scarica prima un Paese: gli indirizzi sono sul tablet e funzionano senza rete.")
       for (x in regions) ResultRow(flagOf(x), x.label, "Indirizzi offline") { region = x; q = "" }
@@ -239,7 +292,7 @@ private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
       delay(150)
       list = withContext(Dispatchers.IO) { runCatching { AppGraph.addresses.places(r.id, q) }.getOrDefault(emptyList()) }
     }
-    field(q, { q = it }, "Città o paese")
+    field(q, { q = it }, "Città o paese", bar = bar)
     Spacer(Modifier.height(6.dp))
     Results {
       for (x in list) {
@@ -256,7 +309,7 @@ private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
       delay(120)
       list = withContext(Dispatchers.IO) { runCatching { AppGraph.addresses.streets(r.id, p, q) }.getOrDefault(emptyList()) }
     }
-    field(q, { q = it }, "Via di ${p.name}")
+    field(q, { q = it }, "Via di ${p.name}", bar = bar)
     Spacer(Modifier.height(6.dp))
     Results {
       ResultRow("🎯", "Centro di ${p.name}", "Senza via") {
@@ -268,7 +321,7 @@ private fun ColumnScope.GuidedSearch(onPick: (Found) -> Unit) {
   }
   var houses by remember(s.id) { mutableStateOf<List<HouseHit>>(emptyList()) }
   LaunchedEffect(s.id) { houses = withContext(Dispatchers.IO) { runCatching { AppGraph.addresses.houses(r.id, s.id) }.getOrDefault(emptyList()) } }
-  field(q, { q = it }, "Numero civico")
+  field(q, { q = it }, "Numero civico", bar = bar)
   Spacer(Modifier.height(8.dp))
   Results {
   BigButton("Vai in ${s.name} (senza civico)", Modifier.fillMaxWidth(), style = BtnStyle.SECONDARY) {
