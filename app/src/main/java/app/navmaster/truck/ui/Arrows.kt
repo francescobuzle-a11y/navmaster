@@ -94,37 +94,56 @@ fun DrawScope.drawTurnArrow(angleDeg: Float, color: Color, strokeFrac: Float = A
 /**
  * The same arrow laid along a course on the screen (a lane of the junction view, flat on the road):
  * the stem along [centre], as thick at each point as [widths] says (it thins into the distance
- * with the road), a round end at its start and the same head at its end, in the arrow's own
- * proportions to the stem there.
+ * with the road), a round end at its start, and the same head in the arrow's own proportions. The
+ * head is the END of the course, not beyond it: its tip on the last point, its base back along
+ * the course, so the whole arrow lies on the course it was given.
  */
 fun DrawScope.drawPathArrow(centre: List<Offset>, widths: List<Float>, color: Color) {
   val n = centre.size
   if (n < 2 || widths.size != n) return
-  val left = ArrayList<Offset>(n)
-  val right = ArrayList<Offset>(n)
-  for (i in 0 until n) {
-    val a = centre[maxOf(i - 1, 0)]
-    val b = centre[minOf(i + 1, n - 1)]
-    val dx = b.x - a.x
-    val dy = b.y - a.y
-    val len = kotlin.math.hypot(dx, dy).coerceAtLeast(1e-3f)
-    val hw = widths[i] / 2
-    left += Offset(centre[i].x + dy / len * hw, centre[i].y - dx / len * hw)
-    right += Offset(centre[i].x - dy / len * hw, centre[i].y + dx / len * hw)
+  fun dist(a: Offset, b: Offset) = kotlin.math.hypot(b.x - a.x, b.y - a.y)
+  var total = 0f
+  for (i in 1 until n) total += dist(centre[i - 1], centre[i])
+  if (total < 1f) return
+  // the head's length from the stem where it starts, never more than half the course
+  val headLen = minOf(widths[n - 1] * (0.28f / ARROW_STROKE) * 1.15f, total * 0.5f)
+  // the base of the head: back along the course from its end
+  var back = 0f
+  var j = n - 1
+  while (j > 0 && back + dist(centre[j - 1], centre[j]) < headLen) { back += dist(centre[j - 1], centre[j]); j-- }
+  val seg = dist(centre[maxOf(j - 1, 0)], centre[j]).coerceAtLeast(1e-3f)
+  val f = ((headLen - back) / seg).coerceIn(0f, 1f)
+  val a0 = centre[maxOf(j - 1, 0)]
+  val base = Offset(centre[j].x + (a0.x - centre[j].x) * f, centre[j].y + (a0.y - centre[j].y) * f)
+  val baseW = widths[j] + (widths[maxOf(j - 1, 0)] - widths[j]) * f
+  // the stem up to the head's base
+  val pts = ArrayList<Offset>(j + 1)
+  val ws = ArrayList<Float>(j + 1)
+  for (i in 0 until j) { pts += centre[i]; ws += widths[i] }
+  pts += base; ws += baseW
+  if (pts.size >= 2) {
+    val m = pts.size
+    val left = ArrayList<Offset>(m)
+    val right = ArrayList<Offset>(m)
+    for (i in 0 until m) {
+      val a = pts[maxOf(i - 1, 0)]
+      val b = pts[minOf(i + 1, m - 1)]
+      val len = dist(a, b).coerceAtLeast(1e-3f)
+      val hw = ws[i] / 2
+      left += Offset(pts[i].x + (b.y - a.y) / len * hw, pts[i].y - (b.x - a.x) / len * hw)
+      right += Offset(pts[i].x - (b.y - a.y) / len * hw, pts[i].y + (b.x - a.x) / len * hw)
+    }
+    drawPath(Path().apply {
+      left.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
+      right.asReversed().forEach { lineTo(it.x, it.y) }
+      close()
+    }, color)
+    drawCircle(color, ws[0] / 2, pts[0])
   }
-  val stem = Path().apply {
-    left.forEachIndexed { i, o -> if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
-    right.asReversed().forEach { lineTo(it.x, it.y) }
-    close()
-  }
-  drawPath(stem, color)
-  drawCircle(color, widths[0] / 2, centre[0])
-  // the head along the last stretch of the course
-  val e = centre[n - 1]
-  val q = centre[maxOf(n - 3, 0)]
-  val len = kotlin.math.hypot(e.x - q.x, e.y - q.y).coerceAtLeast(1e-3f)
-  val w = widths[n - 1]
-  arrowHead(e, (e.x - q.x) / len, (e.y - q.y) / len, w * (0.28f / ARROW_STROKE), w * (0.22f / ARROW_STROKE), color)
+  val tip = centre[n - 1]
+  val len = dist(base, tip).coerceAtLeast(1e-3f)
+  // as wide as the arrow's head is for the stem at its base, never squatter than the arrow's own shape
+  arrowHead(base, (tip.x - base.x) / len, (tip.y - base.y) / len, len, minOf(baseW * (0.22f / ARROW_STROKE), len * (0.22f / 0.28f)), color)
 }
 
 /** Maneuver glyph for the green bar: modifier gives the direction, roundabouts get a ring. */

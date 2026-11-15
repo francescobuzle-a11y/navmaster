@@ -680,27 +680,27 @@ private fun DrawScope.laneArrow(p: Persp, l: Layout, lane: Int, across: Double, 
 }
 
 /**
- * The arrow of a lane to take along its course on the screen, ended where its head is still whole
- * inside the picture (a road leaving sideways goes on past the picture's edge).
+ * The arrow of a lane to take along its course on the screen, ended where it is still whole inside
+ * the picture (a road leaving sideways goes on past the picture's edge).
  */
-private fun DrawScope.laneCourseArrow(centre: List<Offset>, widths0: List<Float>, color: Color) {
-  // never thinner than well over a third of its widest: the head stays readable where the course
-  // ends far away (a road leaving sideways at the junction)
-  val widest = widths0.maxOrNull() ?: return
-  val widths = widths0.map { max(it, widest * 0.38f) }
+private fun DrawScope.laneCourseArrow(centre: List<Offset>, widths: List<Float>, color: Color) {
   val inset = size.width * 0.02f
+  val widest = widths.maxOrNull() ?: return
   var n = centre.size
+  // ended where it is whole inside the picture, and before the lane gets so thin into the distance
+  // that the head could not be read (under two fifths of the stem's width at its start)
   while (n > 4) {
-    val e = centre[n - 1]; val q = centre[n - 3]
-    val len = kotlin.math.hypot(e.x - q.x, e.y - q.y).coerceAtLeast(1e-3f)
-    val head = widths[n - 1] * 1.75f
-    val tipX = e.x + (e.x - q.x) / len * head
-    val tipY = e.y + (e.y - q.y) / len * head
-    val side = widths[n - 1] * 1.375f
-    if (tipX >= inset + side && tipX <= size.width - inset - side && tipY >= inset && e.x >= inset && e.x <= size.width - inset) break
+    val e = centre[n - 1]
+    val side = widths[n - 1] * 1.4f
+    if (widths[n - 1] >= widest * 0.4f && e.x >= inset + side && e.x <= size.width - inset - side && e.y >= inset) break
     n--
   }
-  drawPathArrow(centre.subList(0, n), widths.subList(0, n), color)
+  // the same proportions everywhere: the stem never thicker than a fifth of the arrow's length (a
+  // wide, low picture has wide lanes and a short way up the road)
+  var total = 0f
+  for (k in 1 until n) total += kotlin.math.hypot(centre[k].x - centre[k - 1].x, centre[k].y - centre[k - 1].y)
+  val f = if (widest > total / 5f) (total / 5f) / widest else 1f
+  drawPathArrow(centre.subList(0, n), widths.subList(0, n).map { it * f }, color)
 }
 
 /** Draws in a cell [cw] by [ch] centred on [c] (the arrows draw in the current size). */
@@ -739,10 +739,10 @@ internal fun DrawScope.drawJunction(scene: JunctionScene, night: Boolean) {
   // the lane, its head about half. In town drawTown lays them, round
   // the corner into the road taken. On the other lanes the arrow painted there, dull, once.
   if (!l.turn && l.active.isNotEmpty()) {
-    // short: from a little before where the branch leaves to just into it (enough to say which
-    // lane, which branch; the lit lanes show the rest)
+    // short: from just before where the branch leaves to where it has plainly bent away, so the
+    // head points the branch's way (enough to say which lane, which branch)
     val ns = 0
-    val zs = depths(1.75, if (l.branch) 3.05 else 2.7, 24)
+    val zs = depths(2.0, if (l.branch) 3.7 else 2.9, 24)
     val hu = LANE_ARROW_STEM / l.n
     for (i in l.active) {
       val uc = p.boundary(i) + 1.0 / l.n
@@ -956,34 +956,30 @@ private fun DrawScope.drawTown(l: Layout, p: Persp, pal: Palette, road: Brush, l
     val far = (reach(taken) - into).coerceAtLeast(0.0)
     for (s in 1..6) { pts += p3 + dirOf(taken.deg) * (far * s / 6); halves += w1 }
     drawPath(ribbon(p, pts, { halves[it] }), litBrush)
-    // one arrow on each lane to take, along its course round the corner into the road taken (laid
-    // after the markings): the lanes side by side keep their order in their half of that road
+    // one arrow on each lane to take, on the lit lanes themselves: along their middle (the lanes
+    // side by side each on its share of them), as wide as its share of the lane there, from a few
+    // metres before the junction to where the turn has plainly begun. Never off the blue.
     townArrows = {
       val m = l.active.size
-      val hw = LANE_ARROW_STEM * LANE_M / 2
-      for ((k, lane) in l.active.withIndex()) {
-        val xl = (p.boundary(lane) + 1.0 / l.n) * p.halfM
-        val offL = if (straight) xl else off + (k - (m - 1) / 2.0) * (2 * w1 / m)
-        val a0 = GP(xl, dMouth)
-        val a3 = c0 + dirOf(taken.deg) * into + rightOf(taken.deg) * offL
-        val kk = (a3 - a0).len() * 0.55
-        val a1 = a0 + GP(0.0, kk); val a2 = a3 - dirOf(taken.deg) * kk
-        val course = ArrayList<GP>()
-        // short: from a few metres before the junction to just into the road taken
-        course += GP(xl, dMouth - 7.0)
-        // round the corner only as far as the turn is plain to see (not all the way into the road taken)
-        val upTo = if (straight) 1.0 else 0.74
-        for (sI in 0..24) {
-          val t = upTo * sI / 24.0; val u = 1 - t
-          course += a0 * (u * u * u) + a1 * (3 * u * u * t) + a2 * (3 * u * t * t) + a3 * (t * t * t)
-        }
-        val centre = course.map { p.g(it) }
-        val widths = course.indices.map { i ->
+      // the lit lanes' own line from 7 m before the junction to part of the way round the corner
+      val upTo = if (straight) nb else (nb * 0.72).toInt()
+      val course = ArrayList<GP>()
+      val half = ArrayList<Double>()
+      course += GP(x0, dMouth - 8.0); half += w0
+      for (i in 1..(1 + upTo)) { course += pts[i]; half += halves[i] }
+      for ((k, _) in l.active.withIndex()) {
+        val share = (k - (m - 1) / 2.0) * 2.0 / m
+        val centre = ArrayList<Offset>(course.size)
+        val widths = ArrayList<Float>(course.size)
+        for (i in course.indices) {
           val d = course[minOf(i + 1, course.size - 1)] - course[maxOf(i - 1, 0)]
           val len = d.len().coerceAtLeast(1e-6)
           val nr = GP(d.d / len, -d.x / len)
-          val a = p.g(course[i] - nr * hw); val b = p.g(course[i] + nr * hw)
-          kotlin.math.hypot(b.x - a.x, b.y - a.y)
+          val c = course[i] + nr * (share * half[i])
+          val hw = LANE_ARROW_STEM * (2 * half[i] / m) / 2
+          val a = p.g(c - nr * hw); val b = p.g(c + nr * hw)
+          centre += p.g(c)
+          widths += kotlin.math.hypot(b.x - a.x, b.y - a.y)
         }
         laneCourseArrow(centre, widths, pal.paint)
       }
