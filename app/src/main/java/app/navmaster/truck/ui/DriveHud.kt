@@ -178,8 +178,8 @@ enum class SpeedState { OK, OVER, FAR, SECTION }
 @Composable
 fun SpeedArc(
     speedKmh: Int?,
-    limitKmh: Int?,
-    vehicleMaxKmh: Int,
+    /** The limit to respect (SpeedRules): the lowest of the signs, the law for this vehicle and its own maximum. */
+    limit: app.navmaster.truck.vehicle.SpeedRules.Limit?,
     toleranceKmh: Int,
     sectionAvg: Int?,
     sectionLimit: Int?,
@@ -188,8 +188,8 @@ fun SpeedArc(
     modifier: Modifier = Modifier,
     onSay: (String) -> Unit = {},
 ) {
-  val effective = limitKmh?.let { minOf(it, vehicleMaxKmh) }
-  val forVehicle = limitKmh != null && vehicleMaxKmh < limitKmh
+  val effective = limit?.kmh
+  val forVehicle = limit != null && limit.why != app.navmaster.truck.vehicle.SpeedRules.Why.SIGNED
   val over = if (speedKmh != null && effective != null) speedKmh - effective else 0
   val state = when {
     effective != null && over >= 10 -> SpeedState.FAR
@@ -288,7 +288,7 @@ fun SpeedArc(
       }
       val label = when {
         sectionAvg != null -> "media $sectionAvg" + (sectionLimit?.let { " / $it" } ?: "")
-        forVehicle -> "limite del mezzo"
+        forVehicle -> if (limit?.why == app.navmaster.truck.vehicle.SpeedRules.Why.LEGAL) "limite del mezzo" else "tuo limite"
         effective != null -> "limite"
         else -> null
       }

@@ -1,5 +1,7 @@
 package app.navmaster.truck.ui
 
+import app.navmaster.truck.vehicle.SpeedRules
+
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -311,7 +314,7 @@ fun BottomTripBar(road: String?, remainingM: Double?, remainingS: Double?, modif
 
 /** Fixed speed camera ahead (or a speed "control zone" where only that may be shown). */
 @Composable
-fun CameraBanner(camera: RouteLimit, distanceM: Double, zoneOnly: Boolean, modifier: Modifier = Modifier) {
+fun CameraBanner(camera: RouteLimit, distanceM: Double, zoneOnly: Boolean, modifier: Modifier = Modifier, limit: SpeedRules.Limit? = null) {
   Row(
       modifier.shadow(6.dp, RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)).background(NmPanel).padding(6.dp),
       verticalAlignment = Alignment.CenterVertically,
@@ -321,8 +324,14 @@ fun CameraBanner(camera: RouteLimit, distanceM: Double, zoneOnly: Boolean, modif
     }
     Spacer(Modifier.width(10.dp))
     Column(Modifier.padding(end = 12.dp)) {
-      Text(if (zoneOnly) "Zona di controllo" else (camera.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") +
-          (if (camera.value > 0) " · ${camera.value.toInt()} km/h" else ""),
+      // the limit to respect with this vehicle, and the sign's when it is higher (the same two numbers as the sign at the side of the map)
+      val speed = when {
+        limit != null && limit.signedAbove != null -> " · ${limit.kmh} km/h (cartello ${limit.signedAbove})"
+        limit != null -> " · ${limit.kmh} km/h"
+        camera.value > 0 -> " · ${camera.value.toInt()} km/h"
+        else -> ""
+      }
+      Text(if (zoneOnly) "Zona di controllo" else (camera.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") + speed,
           color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
       if (!zoneOnly) Text(if (distanceM < 30) "qui" else "tra " + Fmt.distanceText(distanceM), color = Color(0xFF90CAF9), fontSize = 20.sp,
           fontWeight = FontWeight.Bold)
@@ -358,27 +367,64 @@ fun SectionBanner(section: RouteLimit, traveled: Double, limitKmh: Int?, avgKmh:
 }
 
 /**
- * The speed limit as the road sign, always in sight at the side of the map: the limit for the
- * vehicle (the vehicle's own when it is lower than the road's, then "mezzo" under it), amber
- * inside while over it.
+ * The speed limit as the road sign, always in sight at the side of the map: the limit to RESPECT
+ * (app.navmaster.truck.vehicle.SpeedRules: the lowest of the signs, the law for this vehicle and the
+ * vehicle's own maximum), amber inside while over it. When it is not what the signs say it is
+ * told so, never left to be guessed: a truck badge on the sign and "per il mezzo" (the law) or
+ * "tuo limite" (the profile's own maximum) under it, and the number the signs say in a small sign
+ * beside ("cartello 130"). The same words and numbers as the speedometer and the speed cameras.
  */
 @Composable
-fun SpeedLimitSign(limitKmh: Int, vehicleMaxKmh: Int, speedKmh: Int?, toleranceKmh: Int, modifier: Modifier = Modifier, size: Dp = 72.dp) {
-  val effective = minOf(limitKmh, vehicleMaxKmh)
-  val forVehicle = vehicleMaxKmh < limitKmh
-  val over = speedKmh != null && speedKmh > effective + toleranceKmh
-  Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-    Box(
-        Modifier.size(size).shadow(6.dp, CircleShape).clip(CircleShape).background(if (over) NmAmber else Color.White)
-            .border(size * 0.11f, Color(0xFFD32F2F), CircleShape)
-            .semantics { contentDescription = "Limite $effective km/h" },
-        contentAlignment = Alignment.Center,
-    ) {
-      Text("$effective", color = Color.Black, fontSize = (size.value * (if (effective >= 100) 0.32f else 0.38f)).sp, fontWeight = FontWeight.Bold)
+fun SpeedLimitSign(limit: SpeedRules.Limit, speedKmh: Int?, toleranceKmh: Int, modifier: Modifier = Modifier, size: Dp = 72.dp) {
+  val over = speedKmh != null && speedKmh > limit.kmh + toleranceKmh
+  val why = limit.why
+  Column(modifier, horizontalAlignment = Alignment.Start) {
+    Box {
+      Box(
+          Modifier.size(size).shadow(6.dp, CircleShape).clip(CircleShape).background(if (over) NmAmber else Color.White)
+              .border(size * 0.11f, Color(0xFFD32F2F), CircleShape)
+              .semantics { contentDescription = "Limite da rispettare ${limit.kmh} km/h" },
+          contentAlignment = Alignment.Center,
+      ) {
+        Text("${limit.kmh}", color = Color.Black, fontSize = (size.value * (if (limit.kmh >= 100) 0.32f else 0.38f)).sp, fontWeight = FontWeight.Bold)
+      }
+      if (why != SpeedRules.Why.SIGNED) TruckBadge(size * 0.46f, Modifier.align(Alignment.BottomEnd).offset(x = size * 0.1f, y = size * 0.02f))
     }
-    if (forVehicle) {
-      Text("mezzo", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-          modifier = Modifier.padding(top = 3.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 1.dp))
+    if (why != SpeedRules.Why.SIGNED) {
+      Text(if (why == SpeedRules.Why.LEGAL) "per il mezzo" else "tuo limite", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+          modifier = Modifier.padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 7.dp, vertical = 2.dp))
+    }
+    limit.signedAbove?.let { signed ->
+      Row(Modifier.padding(top = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(size * 0.5f).clip(CircleShape).background(Color(0xFFECEFF1)).border(size * 0.055f, Color(0xFFD32F2F), CircleShape)
+                .semantics { contentDescription = "Cartello $signed km/h" },
+            contentAlignment = Alignment.Center,
+        ) { Text("$signed", color = Color.Black, fontSize = (size.value * (if (signed >= 100) 0.17f else 0.2f)).sp, fontWeight = FontWeight.Bold) }
+        Text("cartello", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(start = 4.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xCC000000)).padding(horizontal = 6.dp, vertical = 2.dp))
+      }
+    }
+  }
+}
+
+/** A small round badge with a lorry's silhouette: what a limit for lorries carries on a sign. */
+@Composable
+fun TruckBadge(size: Dp, modifier: Modifier = Modifier) {
+  Canvas(modifier.size(size)) {
+    val w = this.size.width
+    drawCircle(Color(0xFF0B4EA2), w / 2)
+    drawCircle(Color.White, w / 2, style = androidx.compose.ui.graphics.drawscope.Stroke(width = w * 0.06f))
+    // the trailer, the cab with its slanted windscreen, the wheels
+    drawRoundRect(Color.White, androidx.compose.ui.geometry.Offset(w * 0.17f, w * 0.30f), androidx.compose.ui.geometry.Size(w * 0.38f, w * 0.30f),
+        androidx.compose.ui.geometry.CornerRadius(w * 0.02f))
+    val cab = androidx.compose.ui.graphics.Path().apply {
+      moveTo(w * 0.58f, w * 0.38f); lineTo(w * 0.72f, w * 0.38f); lineTo(w * 0.84f, w * 0.50f); lineTo(w * 0.84f, w * 0.60f); lineTo(w * 0.58f, w * 0.60f); close()
+    }
+    drawPath(cab, Color.White)
+    for (x in listOf(0.28f, 0.46f, 0.72f)) {
+      drawCircle(Color(0xFF0B4EA2), w * 0.075f, androidx.compose.ui.geometry.Offset(w * x, w * 0.66f))
+      drawCircle(Color.White, w * 0.06f, androidx.compose.ui.geometry.Offset(w * x, w * 0.66f))
     }
   }
 }

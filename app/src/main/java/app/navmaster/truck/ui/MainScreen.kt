@@ -331,10 +331,19 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       nav.analysis?.edgeAt(nextCamera.alongM)?.country?.uppercase() in CAMERA_ZONE_ONLY
   LaunchedEffect(nextCamera?.alongM, (nextCamera?.alongM?.minus(traveled) ?: 9999.0) < 600) {
     val cam = nextCamera ?: return@LaunchedEffect
-    if (cam.alongM - traveled < 600) vm.say(if (cameraZoneOnly) "Zona di controllo della velocità" else
-      (cam.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") +
-          " tra ${(((cam.alongM - traveled) / 50).roundToInt() * 50).coerceAtLeast(50)} metri" +
-          (if (cam.value > 0) ", limite ${cam.value.toInt()}" else ""))
+    if (cam.alongM - traveled < 600) {
+      // the limit with this vehicle, said as the banner shows it (a lorry: 80 where the camera's sign says 130)
+      val lim = if (cam.value > 0) limitAt(garage.active, nav.analysis, cam.alongM, cam.value.toInt(), here?.iso) else null
+      vm.say(if (cameraZoneOnly) "Zona di controllo della velocità" else
+        (cam.cameraWhat?.replaceFirstChar { it.uppercase() } ?: "Autovelox") +
+            " tra ${(((cam.alongM - traveled) / 50).roundToInt() * 50).coerceAtLeast(50)} metri" +
+            (when {
+              lim != null && lim.why != app.navmaster.truck.vehicle.SpeedRules.Why.SIGNED -> ", limite per il tuo mezzo ${lim.kmh}"
+              lim != null -> ", limite ${lim.kmh}"
+              cam.value > 0 -> ", limite ${cam.value.toInt()}"
+              else -> ""
+            }))
+    }
   }
   // sections under average speed control (Tutor): said 1 km before, the average shown inside, said
   // at the end; the limit is the lower of the section's and the vehicle's (a lorry: 80 on motorways)
@@ -345,7 +354,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   }
   val section = if (!navigating || !settings.speedCameras) null else sectionsOk.firstOrNull { l -> traveled < l.endM + 30 && l.alongM - traveled < 1500 }
   val sectionKey = section?.alongM?.toLong()
-  val sectionLimit = section?.let { s -> listOf(s.value.toInt(), garage.active.topSpeedKmh).filter { it > 0 }.minOrNull() }
+  val sectionLimit = section?.let { s ->
+    limitAt(garage.active, nav.analysis, s.alongM, s.value.toInt().takeIf { it > 0 }, here?.iso)?.kmh ?: garage.active.topSpeedKmh.takeIf { it > 0 }
+  }
   val sectionEntry = remember { androidx.compose.runtime.mutableStateMapOf<Long, Pair<Long, Double>>() }
   val inSection = section != null && traveled >= section.alongM
   LaunchedEffect(sectionKey, inSection) {
@@ -1081,7 +1092,12 @@ private fun NavigatingOverlay(
   }
   val speedKmh = if (!simulatingNow && (reckoningNow || speedStale)) null
       else (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured)?.let { (it * 3.6).roundToInt() }
-  val limitKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
+  // the limit to RESPECT here: the lowest of the signs (the route's annotation), the law for this
+  // vehicle on this kind of road in this country, and the vehicle's own maximum; one number for the
+  // sign, the speedometer, the trip bar and the warnings (SpeedRules)
+  val signedKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
+  val limit = limitAt(vehicle, analysis, traveled, signedKmh, countryIso)
+  val limitKmh = limit?.kmh
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
   // the junction view fits the screen: about a third of the height upright, never taller than wide
   val jvHeight = (maxHeight.value * 0.40f).coerceIn(200f, 400f).coerceAtMost(maxWidth.value * 0.78f).dp
@@ -1093,7 +1109,7 @@ private fun NavigatingOverlay(
   val arcFull = (shortSide * 0.36f).coerceIn(150.dp, 230.dp)
   val arcSmall = (shortSide * 0.24f).coerceIn(112.dp, 150.dp)
   var poiPanelOpen by remember { mutableStateOf(false) }
-  val overLimit = speedKmh != null && limitKmh != null && speedKmh - minOf(limitKmh, vehicle.topSpeedKmh) >= 1
+  val overLimit = speedKmh != null && limitKmh != null && speedKmh - limitKmh >= 1
   var arcBig by remember { mutableStateOf(false) }
   LaunchedEffect(overLimit) {
     if (overLimit) {
@@ -1116,7 +1132,7 @@ private fun NavigatingOverlay(
   val sectionAvg = section?.third
   val sectionLimit = section?.second
   val speedArc: @Composable (Modifier) -> Unit = { m ->
-    SpeedArc(speedKmh, limitKmh, vehicle.topSpeedKmh, settings.speedWarningKmh, sectionAvg, sectionLimit, arcW, muted, m,
+    SpeedArc(speedKmh, limit, settings.speedWarningKmh, sectionAvg, sectionLimit, arcW, muted, m,
         onSay = { vm.say(it) })
   }
   // under the manoeuvre bar, RIGHT under it: the lane bar from 2 km (once the junction view is
@@ -1135,7 +1151,8 @@ private fun NavigatingOverlay(
         CritBanner(nextCrit, (nextCrit.startM - traveled).coerceAtLeast(0.0)) { onCrit(nextCrit) }
       }
       if (booth != null) BoothBanner(booth.first, booth.second, booth.third)
-      if (camera != null) CameraBanner(camera, (camera.alongM - traveled).coerceAtLeast(0.0), cameraZoneOnly)
+      if (camera != null) CameraBanner(camera, (camera.alongM - traveled).coerceAtLeast(0.0), cameraZoneOnly,
+          limit = if (camera.value > 0) limitAt(vehicle, analysis, camera.alongM, camera.value.toInt(), countryIso) else null)
       if (section != null) SectionBanner(section.first, traveled, section.second, section.third)
       if (nextLive != null) LiveBanner(nextLive, (nextLive.startM - traveled).coerceAtLeast(0.0), analysis?.edgeAt(nextLive.startM)?.country)
     }
@@ -1312,8 +1329,8 @@ private fun NavigatingOverlay(
       )
       if (jv != null) LaunchedEffect(Unit) { onPoiPins(emptyList()) }
       // the speed limit always in sight at the left, under the simulation's label
-      if (settings.speedLimitSide && limitKmh != null) {
-        SpeedLimitSign(limitKmh, vehicle.topSpeedKmh, speedKmh, settings.speedWarningKmh,
+      if (settings.speedLimitSide && limit != null) {
+        SpeedLimitSign(limit, speedKmh, settings.speedWarningKmh,
             Modifier.align(Alignment.TopStart).padding(top = if (simulating) 40.dp else 6.dp))
       }
       if (simulating) {
@@ -1360,7 +1377,7 @@ private fun NavigatingOverlay(
         fields = settings.tripFields.mapNotNull { TripField.of(it) }.ifEmpty { listOf(TripField.SPEED, TripField.ARRIVAL, TripField.DIST_LEFT, TripField.TIME_LEFT) },
         data = TripData(
             speedKmh = speedKmh,
-            limitKmh = limitKmh?.let { minOf(it, vehicle.topSpeedKmh) },
+            limitKmh = limitKmh,
             toleranceKmh = settings.speedWarningKmh,
             remainingM = remainingM,
             remainingS = remainingS,
@@ -1386,6 +1403,16 @@ private fun NavigatingOverlay(
   // vehicle in the middle of the map
   ControlsBar(controls, bar, maxWidth, Modifier.align(Alignment.BottomEnd))
   }
+}
+
+/**
+ * The limit to respect for [v] at [alongM] metres of the route [a] where the signs say [signed] (null:
+ * the map has no number), from the road there (its class, its country, a slip road or not).
+ */
+internal fun limitAt(v: VehicleProfile, a: app.navmaster.truck.routing.RouteAnalysis?, alongM: Double, signed: Int?, fallbackCountry: String?):
+    app.navmaster.truck.vehicle.SpeedRules.Limit? {
+  val e = a?.edgeAt(alongM.coerceAtLeast(0.0))
+  return app.navmaster.truck.vehicle.SpeedRules.at(v, e?.country ?: fallbackCountry, e?.roadClass, signed, ramp = e?.isRamp == true)
 }
 
 private fun vehicleValue(l: RouteLimit, v: VehicleProfile): String? =

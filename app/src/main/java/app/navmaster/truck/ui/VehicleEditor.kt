@@ -139,6 +139,9 @@ fun VehicleEditor(onClose: () -> Unit) {
       }
       5 -> GroupCard("Preferenze di percorso") {
         Stepper("Velocità massima del mezzo", v.topSpeedKmh.toDouble(), "km/h", 5.0, 40.0, 130.0, 0) { save(v.copy(topSpeedKmh = it.toInt())) }
+        Caption("Il limite da rispettare che vedi in guida è il più basso tra tre: il cartello della strada, la legge per il tuo mezzo " +
+            "(per i camion oltre 3,5 t, in Italia, Austria, Germania e altri Paesi, in autostrada e fuori) e questa velocità. " +
+            "Accanto al limite compare scritto quale dei tre vale, con il numero del cartello.", size = 13, lines = 5)
         ToggleRow("Preferisci le strade per mezzi pesanti", null, v.preferTruckRoutes) { save(v.copy(preferTruckRoutes = it)) }
         ToggleRow("Evita i traghetti", null, v.avoidFerries) { save(v.copy(avoidFerries = it)) }
         ToggleRow("Evita le strade sterrate", null, v.avoidUnpaved) { save(v.copy(avoidUnpaved = it)) }

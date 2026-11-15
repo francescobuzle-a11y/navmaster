@@ -128,7 +128,7 @@ class DriveScreenShots {
       var open by remember { mutableStateOf(false) }
       val arcW by animateDpAsState(if (open) (arcFull * 0.72f).coerceAtLeast(130.dp) else arcFull, label = "arc")
       val arc: @Composable () -> Unit = {
-        Box(Modifier.testTag("arc")) { SpeedArc(87, 90, 90, 3, null, null, arcW, muted = true) }
+        Box(Modifier.testTag("arc")) { SpeedArc(87, app.navmaster.truck.vehicle.SpeedRules.Limit(90, app.navmaster.truck.vehicle.SpeedRules.Why.SIGNED, 90, null, 90), 3, null, null, arcW, muted = true) }
       }
       val maneuver: @Composable (Modifier) -> Unit = { m ->
         Box(m.height(96.dp).background(Nm.PanelSolid).testTag("manovra")) {
