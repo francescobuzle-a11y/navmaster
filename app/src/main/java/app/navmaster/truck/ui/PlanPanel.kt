@@ -300,8 +300,20 @@ private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
     }
     Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
     Caption("${Fmt.distanceText(v.distanceM)} · arrivo ${Fmt.eta(v.durationS)}", size = 13)
-    Caption(if (v.analysis.tollKm > 0.5) "💶 ${v.analysis.tollKm.toInt()} km a pedaggio" else "✓ senza pedaggi", size = 13,
-        color = if (v.analysis.tollKm > 0.5) Nm.Amber else Nm.Accent)
+    // a booth counts as a toll too (the ramps to it are often not tagged in OpenStreetMap); with
+    // «senza pedaggi» or «senza autostrade» chosen, what is left of them is said plainly: the engine
+    // uses them only when there is no other way
+    val booths = v.analysis.tollBooths.count { it.type == "toll_booth" }
+    val paid = v.analysis.tollKm > 0.5 || booths > 0
+    val tollText = when {
+      !paid -> "✓ senza pedaggi"
+      v.options.avoidTolls -> "⚠ pedaggio inevitabile: " + (if (v.analysis.tollKm > 0.5) "${v.analysis.tollKm.toInt()} km" else "$booths casell${if (booths == 1) "o" else "i"}")
+      v.analysis.tollKm > 0.5 -> "💶 ${v.analysis.tollKm.toInt()} km a pedaggio"
+      else -> "💶 $booths casell${if (booths == 1) "o" else "i"}"
+    }
+    Caption(tollText, size = 13, color = if (paid) Nm.Amber else Nm.Accent)
+    if (v.options.avoidMotorways && v.analysis.motorwayKm > 0.5)
+      Caption("⚠ autostrada inevitabile: ${v.analysis.motorwayKm.toInt()} km", size = 13, color = Nm.Amber)
     Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
       if (v.critical > 0) Badge("${v.critical} critiche", Nm.Red)
       if (v.warnings > 0) Badge("${v.warnings} attenzione", Nm.Amber)

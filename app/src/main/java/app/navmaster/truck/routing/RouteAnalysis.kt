@@ -47,6 +47,8 @@ data class EdgeInfo(
     val hazmat: Boolean = false,
     /** ADR tunnel category as a rank (2 = B … 5 = E), 0 when none. */
     val adrTunnel: Int = 0,
+    /** Closed to goods polluting to water (hazmat:water=no; engines with the ADR values only). */
+    val hazmatWater: Boolean = false,
     /** Restrictions valid only at some hours, as OSM writes them ("maxweight:conditional=3.5 @ (Mo-Fr 07:00-19:00)"). */
     val conditional: List<String> = emptyList(),
     /** The signs over the lanes at the end of this road (destination:lanes and the like, lanes separated by |). */
@@ -430,6 +432,7 @@ class RouteAnalysis(
             turnLanes = e.str("turn_lanes")?.takeIf { it.isNotBlank() },
             limits = (e["limits"] as? JsonObject)?.mapNotNull { (k, v) -> v.jsonPrimitive.doubleOrNull?.let { k to it } }?.toMap() ?: emptyMap(),
             hazmat = e.bool("hazmat") ?: false,
+            hazmatWater = e.bool("hazmat_water") ?: false,
             adrTunnel = e.str("adr_tunnel")?.let { "BCDE".indexOf(it.trim().uppercase()) }?.takeIf { it >= 0 }?.let { it + 2 } ?: 0,
             conditional = (e["conditional"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
             laneSigns = (e["lane_signs"] as? JsonObject)?.let { ls -> EdgeLaneSigns(ls.str("destination") ?: "", ls.str("ref") ?: "", ls.str("colour") ?: "") },

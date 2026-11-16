@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -251,6 +252,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     viewModelScope.launch {
       kotlinx.coroutines.flow.combine(AppGraph.smartLocation.onRoute, AppGraph.smartLocation.raw) { f, r -> f to r }
           .collect { (f, r) -> onProviderFix(f, r) }
+    }
+    // «senza pedaggi» or «senza autostrade» changed while driving or with the routes on screen: the
+    // trip follows the new choice (before, the choices were taken once, when the trip started)
+    viewModelScope.launch {
+      AppGraph.settings.settings.map { (it.tollPolicy == TollPolicy.AVOID) to it.avoidMotorways }.distinctUntilChanged().drop(1)
+          .collect { (noTolls, noMotorways) -> onAvoidChanged(noTolls, noMotorways) }
     }
     // a jump of the simulation is not a wrong turn: no new route while the vehicle is being moved
     core.deviationHandler = RouteDeviationHandler { _, _, waypoints ->
@@ -2257,6 +2264,20 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     AppGraph.trip.value = AppGraph.trip.value.copy(avoidTolls = true)
     core.replaceRoute(p.tollFree)
     say("Percorso senza pedaggio.")
+  }
+
+  private fun onAvoidChanged(noTolls: Boolean, noMotorways: Boolean) {
+    if (navigationUiState.value.isNavigating()) {
+      val t = AppGraph.trip.value
+      if (t.avoidTolls == noTolls && t.avoidMotorways == noMotorways) return
+      Log.i(TAG, "trip choices changed while driving: tolls=${!noTolls}, motorways=${!noMotorways}")
+      AppGraph.trip.value = t.copy(avoidTolls = noTolls, avoidMotorways = noMotorways)
+      val what = listOfNotNull(if (noTolls) "senza pedaggi" else null, if (noMotorways) "senza autostrade" else null)
+      recalcFromHere(if (what.isEmpty()) "Ricalcolo il percorso" else "Ricalcolo il percorso ${what.joinToString(" e ")}")
+    } else if (_plan.value.variants.isNotEmpty() && !_plan.value.computing) {
+      Log.i(TAG, "trip choices changed with the routes on screen: planned again")
+      planRoutes()
+    }
   }
 
   private fun recalcFromHere(message: String) {

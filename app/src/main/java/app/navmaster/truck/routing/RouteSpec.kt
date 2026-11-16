@@ -24,6 +24,14 @@ data class RouteSpec(
     val axleLoadT: Double,
     /** Dangerous goods on board (ADR): openrouteservice's `hazmat` restriction. */
     val hazmat: Boolean,
+    /**
+     * The load's ADR tunnel code, "B" to "E" ("" none): a NavMaster extension of the engine
+     * (`restrictions.adr_tunnel_code`). With it a tunnel closes only from its own category on
+     * (code D: tunnels D and E), instead of every tunnel with an ADR category.
+     */
+    val adrTunnelCode: String = "",
+    /** Goods polluting to water on board: roads with `hazmat:water=no` closed (`restrictions.hazmat_water`). */
+    val hazmatWater: Boolean = false,
     /** Top speed of the vehicle, km/h (openrouteservice's `maximum_speed`, 80 km/h or more). */
     val topSpeedKmh: Double,
     val avoidTolls: Boolean,
@@ -39,7 +47,7 @@ data class RouteSpec(
 
   override fun toString(): String =
       "RouteSpec{$profile" + (if (hgv && vehicleType != "hgv") "/$vehicleType" else "") + ", h=$heightM, w=$widthM, l=$lengthM, t=$weightT, axle=$axleLoadT" +
-          ", hazmat=$hazmat, v=$topSpeedKmh, $preference, tolls=${!avoidTolls}, ferries=${!avoidFerries}" +
+          ", hazmat=$hazmat" + (if (adrTunnelCode.isNotEmpty()) "/$adrTunnelCode" else "") + (if (hazmatWater) "/water" else "") + ", v=$topSpeedKmh, $preference, tolls=${!avoidTolls}, ferries=${!avoidFerries}" +
           (if (avoidMotorways) ", noMotorway" else "") + ", zones=${avoidZones.size}}"
 }
 
@@ -54,6 +62,8 @@ fun VehicleProfile.routeSpec(loadT: Double, trip: TripOptions): RouteSpec {
       heightM = v.heightM, widthM = v.widthM, lengthM = v.lengthM,
       weightT = v.tripWeightT(loadT), axleLoadT = v.axleLoadT,
       hazmat = v.adr != AdrTunnel.NONE,
+      adrTunnelCode = if (v.adr == AdrTunnel.NONE) "" else v.adr.name,
+      hazmatWater = v.hazmatWater,
       topSpeedKmh = v.topSpeedKmh.toDouble(),
       avoidTolls = trip.avoidTolls,
       avoidFerries = v.avoidFerries,

@@ -94,6 +94,7 @@ data class RouteLimit(
           "bus" -> "Divieto autobus"
           "motorhome" -> "Divieto camper"
           "hazmat" -> "Divieto merci pericolose"
+          "hazmat_water" -> "Divieto merci inquinanti per le acque"
           "access" -> "Divieto di transito"
           "adr_tunnel" -> "Galleria ADR cat. ${raw ?: ""}"
           "speed_camera" -> "Autovelox"
@@ -155,9 +156,12 @@ class LimitsIndex(regions: RegionManager) {
       val osm = if (e.wayId > 0) "w${e.wayId}" else null
       val items = ArrayList<Pair<String, Double>>()
       for ((k, value) in e.limits) items += (SIGNED[k] ?: k) to value
-      if (e.hazmat && vehicle.hazmat) items += "hazmat" to 0.0
+      // the engine's "hazmat" also marks the tunnels with an ADR category (hazmat:B..E=no): those are
+      // told below by category against the load's tunnel code, as the engine routes them
+      if (e.hazmat && vehicle.hazmat && e.adrTunnel == 0) items += "hazmat" to 0.0
+      if (e.hazmatWater && vehicle.hazmatWater) items += "hazmat_water" to 0.0
       for ((kind, value) in items) {
-        if (kind !in SIGNED.values && kind != "hazmat") continue
+        if (kind !in SIGNED.values && kind != "hazmat" && kind != "hazmat_water") continue
         // widths and heights no road vehicle fits: bollards and barriers of paths
         if ((kind == "maxwidth" || kind == "maxheight") && value < 1.6) continue
         // the same way signed with the same limit over several edges: said once, where it starts
@@ -467,6 +471,7 @@ class LimitsIndex(regions: RegionManager) {
         "bus" -> v.type == VehicleType.AUTOBUS
         "motorhome" -> v.type == VehicleType.CAMPER
         "hazmat" -> v.hazmat
+        "hazmat_water" -> v.hazmatWater
         "access" -> true
         // a tunnel of category X is closed to loads with tunnel code X or stricter (B < C < D < E)
         "adr_tunnel" -> v.adr != AdrTunnel.NONE && adrRank(v.adr) <= value.toInt()

@@ -75,7 +75,10 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       val started = SystemClock.elapsedRealtime()
       try {
         val g = RoutingGraph.load(dir, true)
-        val o = Open(region, key, g, DirectionsService(g, DirectionsLimits(50, 6_000_000.0, 6_000_000.0, 400.0), ENGINE_VERSION))
+        // alternatives: the plateau method up to 60 km in a straight line, the via points method beyond
+        val service = DirectionsService(g, DirectionsLimits(50, 6_000_000.0, 6_000_000.0, 400.0, 60_000.0), ENGINE_VERSION)
+        service.alternativesLog = { Log.i(TAG, it) }
+        val o = Open(region, key, g, service)
         open[region.id] = o
         Log.i(TAG, "engine graph of ${region.id} opened in ${SystemClock.elapsedRealtime() - started} ms: ${g.profileNames} ch=${g.chStorages.keys}")
         o

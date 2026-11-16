@@ -55,7 +55,11 @@ class NmRouting(
     var from = "engine"
     var text: String? = engine.directions(points, spec.profile, body)
     if (text == null && server != null && server.unavailable() == null) {
-      text = server.directions(spec.profile, body)
+      // a server with an older engine refuses alternatives beyond 100 km (openrouteservice's limit):
+      // there the request goes without them
+      val serverBody = if (alternates > 0 && points.size == 2 && app.navmaster.truck.core.Geo.dist(points[0][0], points[0][1], points[1][0], points[1][1]) > 95_000)
+        request(points, spec, passThrough, 0, headings).toString() else body
+      text = server.directions(spec.profile, serverBody)
       from = "server"
       if (text == null) Log.w(TAG, "server: ${server.note}")
     }
@@ -119,6 +123,10 @@ class NmRouting(
     if (s.weightT > 0) r["weight"] = JsonPrimitive(s.weightT)
     if (s.axleLoadT > 0) r["axleload"] = JsonPrimitive(s.axleLoadT)
     if (s.hgv && s.hazmat) r["hazmat"] = JsonPrimitive(true)
+    // NavMaster extensions of the engine (an older engine or server ignores them): the tunnel code
+    // compared with each tunnel's ADR category, and the roads closed to goods polluting to water
+    if (s.hgv && s.adrTunnelCode.isNotEmpty()) r["adr_tunnel_code"] = JsonPrimitive(s.adrTunnelCode)
+    if (s.hgv && s.hazmatWater) r["hazmat_water"] = JsonPrimitive(true)
     if (r.isNotEmpty()) options["profile_params"] = JsonObject(mapOf("restrictions" to JsonObject(r)))
     if (s.avoidZones.isNotEmpty()) {
       // rings of [lon, lat] → GeoJSON MultiPolygon
@@ -139,7 +147,10 @@ class NmRouting(
         "extra_info" to JsonArray(listOf(JsonPrimitive("tollways"), JsonPrimitive("waycategory"), JsonPrimitive("waytype"))),
         "geometry" to JsonPrimitive(true),
         // NavMaster: the facts about the roads of the route (limits, lanes, signs, tolls), from the graph
-        "navmaster" to JsonObject(mapOf("roads" to JsonPrimitive(true))),
+        // NavMaster: «avoid» as a heavy penalty, not a ban (as TomTom's avoid): a road to avoid is used
+        // only when there is no other way (the vehicle already on the motorway, an island, a pass
+        // reached only through a toll), so the trip never fails nor starts on a road it cannot reach
+        "navmaster" to JsonObject(if (avoid.isEmpty()) mapOf("roads" to JsonPrimitive(true)) else mapOf("roads" to JsonPrimitive(true), "avoid_penalty" to JsonPrimitive(true))),
     )
     if (options.isNotEmpty()) o["options"] = JsonObject(options)
     // ORS bearings: the direction of travel at the start and at the points passed through ([] where none)
@@ -154,21 +165,16 @@ class NmRouting(
     // profile's own top speeds (lorries 85 km/h on motorways, cars 130), else it changes nothing and
     // would only make the search slower
     if (s.topSpeedKmh > 0 && s.topSpeedKmh < (if (s.hgv) 85.0 else 130.0)) o["maximum_speed"] = JsonPrimitive(s.topSpeedKmh.coerceAtLeast(80.0))
-    // alternatives (openrouteservice's alternative_routes): only between two points not too far apart
-    // (60 km: the alternatives use the full search, which on a longer trip does not fit the tablet's memory)
-    if (alternates > 0 && points.size == 2 && crow(points[0], points[1]) < 60_000) {
+    // alternatives (openrouteservice's alternative_routes), between two points: the engine picks the
+    // method, openrouteservice's plateau up to 60 km (its full search does not fit the tablet's memory
+    // on longer trips, NmEngine's limit), beyond that and across borders routes through points to the
+    // side of the trip (navmaster-engine LongAlternatives)
+    if (alternates > 0 && points.size == 2) {
       o["alternative_routes"] = JsonObject(mapOf(
           "target_count" to JsonPrimitive((1 + alternates).coerceIn(2, 3)), "weight_factor" to JsonPrimitive(1.4), "share_factor" to JsonPrimitive(0.6),
       ))
     }
     return JsonObject(o)
-  }
-
-  private fun crow(a: DoubleArray, b: DoubleArray): Double {
-    val k = Math.cos(Math.toRadians((a[0] + b[0]) / 2))
-    val dy = (b[0] - a[0]) * 111_195
-    val dx = (b[1] - a[1]) * 111_195 * k
-    return Math.sqrt(dx * dx + dy * dy)
   }
 
   private fun parse(root: JsonObject, nPoints: Int): List<RouteResult>? {

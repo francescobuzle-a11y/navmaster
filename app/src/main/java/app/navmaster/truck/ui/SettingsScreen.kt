@@ -227,7 +227,7 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   }
   Card("Strade a pagamento") {
     Pills { for (p in TollPolicy.entries) Pill(p.label, s.tollPolicy == p) { set { it.copy(tollPolicy = p) } } }
-    if (s.tollPolicy == TollPolicy.AVOID) Caption("Nessuna strada a pedaggio, mai: le autostrade e i tratti gratuiti restano ammessi.", Modifier.padding(top = 6.dp), size = 13)
+    if (s.tollPolicy == TollPolicy.AVOID) Caption("Nessuna strada a pedaggio né casello: solo se non c'è un'altra strada (per esempio sei già in autostrada) e lo vedi sulla scheda del percorso. Le autostrade gratuite restano ammesse.", Modifier.padding(top = 6.dp), size = 13)
     if (s.tollPolicy == TollPolicy.ASK) {
       Spacer(Modifier.height(6.dp))
       Stepper("Minuti in più che accetti per evitare il pedaggio", s.tollMaxExtraMin.toDouble(), "min", 1.0, 0.0, 30.0, 0) { v ->
@@ -236,7 +236,7 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     }
   }
   Card("Autostrade") {
-    ToggleRow("Senza autostrade", "Mai in autostrada, nemmeno per un tratto: il percorso passa solo da statali e provinciali (con «Più autostrada» spento)",
+    ToggleRow("Senza autostrade", "Il percorso passa da statali e provinciali; l'autostrada solo se non c'è un'altra strada (se sei già in autostrada, fino alla prima uscita). Le superstrade restano ammesse",
         s.avoidMotorways) { v -> set { it.copy(avoidMotorways = v) } }
   }
   Card("Strade strette e curve") {
