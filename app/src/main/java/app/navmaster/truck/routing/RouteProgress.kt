@@ -100,11 +100,37 @@ object RouteProgress {
     _state.value = null
   }
 
-  /** A message of the engine (CrossBorderDirections, alternatives): the phase it means, if any. */
+  /**
+   * A message of the engine (CrossBorderDirections, alternatives): the phase it means, if any.
+   * Looking for alternatives every candidate is a whole trip, with all the phases of one: they move
+   * the bar within the stretch of that candidate (the route done again, the first, the second),
+   * never to the point the same message means for a single route.
+   */
   fun onEngineLog(line: String) {
     if (_state.value?.done != false) return
     val l = line.trim()
     fun name(id: String) = names[id] ?: id.replaceFirstChar { it.uppercase() }
+    if (forAlternatives) {
+      val (lo, hi, who) = when (alternativesFound) {
+        0 -> Triple(0.02f, 0.3f, "Rifaccio il percorso")
+        1 -> Triple(0.3f, 0.6f, "Prima alternativa trovata, ne cerco un'altra")
+        else -> Triple(0.6f, 0.88f, "Seconda alternativa trovata")
+      }
+      fun within(f: Float) = lo + (hi - lo) * f
+      when {
+        l.startsWith("alternativa ") -> {
+          alternativesFound++
+          phase(if (alternativesFound == 1) "Prima alternativa trovata, ne cerco un'altra…" else "Seconda alternativa trovata, ultimo controllo…",
+              if (alternativesFound == 1) 0.3f else 0.6f)
+        }
+        l.startsWith("alternative dei viaggi lunghi:") -> phase("Alternative trovate: controllo limiti e pedaggi…", 0.88f)
+        l.startsWith("sequenze ") -> phase("$who: cerco i valichi…", within(0.15f))
+        l.contains(" confine ") && l.contains("candidati") -> phase("$who: confronto i valichi…", within(0.3f))
+        l.startsWith("due valichi insieme") || l.startsWith("valico scelto") -> phase("$who: calcolo i tratti nei Paesi…", within(0.6f))
+        l.startsWith("viaggio tra Paesi:") -> phase("$who: unisco i tratti…", within(0.9f))
+      }
+      return
+    }
     when {
       l.startsWith("punti nei grafi:") -> {
         val ids = l.substringAfter(":").split(',').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
@@ -121,17 +147,8 @@ object RouteProgress {
       l.startsWith("due valichi insieme") || l.startsWith("valico scelto") -> phase("Valichi scelti: calcolo i tratti nei Paesi…", 0.55f)
       // after the first choice of the crossings the other sequences of countries are weighed: said so
       l.startsWith("pesi ") -> phase(if ((_state.value?.floor ?: 0f) >= 0.55f) "Provo anche il passaggio per altri Paesi…" else "Confronto i percorsi per i valichi…", 0.45f)
-      // the alternatives of a long trip: each candidate is a whole trip; two are looked for
-      forAlternatives && l.startsWith("viaggio tra Paesi:") -> phase(
-          if (alternativesFound == 0) "Primo percorso rifatto, ora le alternative…" else "Confronto un'altra strada…",
-          if (alternativesFound == 0) 0.3f else 0.6f)
-      l.startsWith("alternativa ") -> {
-        alternativesFound++
-        phase(if (alternativesFound == 1) "Prima alternativa trovata, ne cerco un'altra…" else "Seconda alternativa trovata…",
-            if (alternativesFound == 1) 0.55f else 0.85f)
-      }
-      l.startsWith("alternative dei viaggi lunghi:") -> phase("Alternative trovate: controllo limiti e pedaggi…", 0.88f)
       l.startsWith("viaggio tra Paesi:") -> phase("Percorso trovato: unisco i tratti dei Paesi…", 0.8f)
+      l.startsWith("alternativa ") -> phase("Alternativa trovata, ne cerco un'altra…", 0.85f)
     }
   }
 }

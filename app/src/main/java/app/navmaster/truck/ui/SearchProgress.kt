@@ -48,10 +48,13 @@ fun SearchProgress(vehicleName: String, modifier: Modifier = Modifier, compact: 
     Row(verticalAlignment = Alignment.CenterVertically) {
       Text("${(f * 100).toInt()} %", color = Nm.Accent, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.Bold)
       Spacer(Modifier.width(if (compact) 6.dp else 10.dp))
-      Caption(s?.phase ?: "Calcolo il percorso…", Modifier.weight(1f), color = Nm.Text, size = if (compact) 12 else 15, lines = 2)
+      // in the narrow card the phase goes under, on its own line (beside the number it had no room)
+      if (!compact) Caption(s?.phase ?: "Calcolo il percorso…", Modifier.weight(1f), color = Nm.Text, size = 15, lines = 2)
+      else Spacer(Modifier.weight(1f))
       Spacer(Modifier.width(8.dp))
       Caption("$seconds s", size = if (compact) 11 else 13)
     }
+    if (compact) Caption(s?.phase ?: "Cerco altre strade…", Modifier.fillMaxWidth().padding(top = 2.dp), color = Nm.Text, size = 12, lines = 3)
     Spacer(Modifier.height(if (compact) 5.dp else 8.dp))
     LinearProgressIndicator(progress = { f }, modifier = Modifier.fillMaxWidth().height(if (compact) 6.dp else 8.dp).clip(RoundedCornerShape(4.dp)),
         color = Nm.Accent, trackColor = Nm.Line)
