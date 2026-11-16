@@ -39,6 +39,7 @@ import kotlin.concurrent.write
  * closing a graph waits for them (the write lock).
  */
 class NmEngine(private val context: Context, private val regions: RegionManager, private val catalog: CatalogStore? = null) {
+  init { RouteProgress.init(context) }
   private class Open(val region: InstalledRegion, val key: String, val graph: RoutingGraph, val service: DirectionsService) {
     val country = CountryGraph(region.id, service)
     @Volatile var used = SystemClock.elapsedRealtime()
@@ -77,7 +78,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
         val g = RoutingGraph.load(dir, true)
         // alternatives: the plateau method up to 60 km in a straight line, the via points method beyond
         val service = DirectionsService(g, DirectionsLimits(50, 6_000_000.0, 6_000_000.0, 400.0, 60_000.0), ENGINE_VERSION)
-        service.alternativesLog = { Log.i(TAG, it) }
+        service.alternativesLog = { Log.i(TAG, it); RouteProgress.onEngineLog(it) }
         val o = Open(region, key, g, service)
         open[region.id] = o
         Log.i(TAG, "engine graph of ${region.id} opened in ${SystemClock.elapsedRealtime() - started} ms: ${g.profileNames} ch=${g.chStorages.keys}")
@@ -135,7 +136,9 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       problem = null
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
-          val cb = CrossBorderDirections(graphs.map { it.country }, { a, b -> transfersBetween(a, b) }, { Log.i(TAG, it) })
+          // the engine's messages also move the bar of the search (RouteProgress)
+          RouteProgress.names = countries.associate { it.id to it.label }
+          val cb = CrossBorderDirections(graphs.map { it.country }, { a, b -> transfersBetween(a, b) }, { Log.i(TAG, it); RouteProgress.onEngineLog(it) })
           return try {
             Json.stringify(cb.handle(DirectionsRequest.fromJson(profile, parsed), at.map { it?.id }))
           } catch (e: ApiException) { Json.stringify(graphs.first().service.errorBody(e)) }

@@ -154,13 +154,8 @@ fun PlanPanel(
             color = if (plan.addingStop) Nm.Amber else Nm.Accent)
       }
 
-      if (plan.computing) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 10.dp)) {
-          CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(28.dp))
-          Spacer(Modifier.width(12.dp))
-          Caption("Percorsi per $vehicleName: controllo limiti, pedaggi, svincoli e strade strette…", color = Nm.Text)
-        }
-      }
+      // the search: what is being done and how far it has gone (RouteProgress)
+      if (plan.computing) SearchProgress(vehicleName, Modifier.fillMaxWidth())
       plan.error?.let { Caption(it, color = Nm.Red, size = 15) }
 
       if (plan.variants.isNotEmpty()) {

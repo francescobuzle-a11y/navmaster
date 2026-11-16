@@ -899,7 +899,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         // 1. the routes of the kind the driver prefers (the best one and an alternative) with the
         //    vehicle's measures: shown as soon as they are there, the driver can start at once
         // the best route first (the alternatives come with «Altri percorsi»: they take longer)
+        // the bar of the search (RouteProgress): the time expected from the distance, the phases from the engine
+        app.navmaster.truck.routing.RouteProgress.begin(
+            (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0)
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 0))
+        if (main.isNotEmpty()) app.navmaster.truck.routing.RouteProgress.routeFound()
         val routeNote = AppGraph.routes.note
         val req = Triple(from, waypoints, base)
         planRequest = req
@@ -937,6 +941,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val shown = _plan.value.copy(variants = first.mapIndexed { i, x -> if (i == 0) x.copy(recommended = true) else x }, selected = 0, computing = false, advice = null, routeNote = routeNote,
             more = if (extras) MoreRoutes.LOADING else MoreRoutes.NONE)
         _plan.value = shown
+        app.navmaster.truck.routing.RouteProgress.end()
         if (!extras) {
           withContext(Dispatchers.Main) { then?.invoke(shown) }
           return@launch
@@ -1030,6 +1035,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         throw e
       } catch (e: Exception) {
         Log.e(TAG, "route failed", e)
+        app.navmaster.truck.routing.RouteProgress.clear()
         // the routes already on screen stay (a failure of the other choices is not an error)
         _plan.update { if (it.variants.isNotEmpty() && !it.computing) it.copy(more = MoreRoutes.NONE) else it.copy(computing = false, error = friendly(e)) }
       }
