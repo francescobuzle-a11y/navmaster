@@ -107,7 +107,8 @@ object RouteProgress {
         if (pair.size == 2) phase("Valichi ${name(pair[0])} – ${name(pair[1])}: $n da confrontare", 0.2f)
       }
       l.startsWith("due valichi insieme") || l.startsWith("valico scelto") -> phase("Valichi scelti: calcolo i tratti nei Paesi…", 0.55f)
-      l.startsWith("pesi ") -> phase("Confronto i percorsi per i valichi…", 0.45f)
+      // after the first choice of the crossings the other sequences of countries are weighed: said so
+      l.startsWith("pesi ") -> phase(if ((_state.value?.floor ?: 0f) >= 0.55f) "Provo anche il passaggio per altri Paesi…" else "Confronto i percorsi per i valichi…", 0.45f)
       l.startsWith("viaggio tra Paesi:") -> phase("Percorso trovato: unisco i tratti dei Paesi…", 0.8f)
       l.startsWith("alternativa ") -> phase("Alternativa trovata, ne cerco un'altra…", 0.85f)
     }
