@@ -1067,7 +1067,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     moreJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val (from, waypoints, base) = req
+        // the bar of the search (RouteProgress): the alternatives of a long trip take about 2.3 times one route
+        app.navmaster.truck.routing.RouteProgress.begin(
+            (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0,
+            alternatives = true)
         val routes = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2, moreRoutes = true))
+        app.navmaster.truck.routing.RouteProgress.phase("Altre strade trovate: controllo limiti, pedaggi e svincoli…", 0.9f)
         val departure = LocalDateTime.now()
         val cur = _plan.value
         val added = mutableListOf<RouteVariant>()
@@ -1080,12 +1085,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           added += buildVariant(VariantKind.ALTERNATIVE, "Alternativa $n", r, base, departure)
         }
         Log.i(TAG, "more routes (engine): ${routes.size} found, ${added.size} new")
+        app.navmaster.truck.routing.RouteProgress.end()
         if (planRequest !== req) return@launch
         _plan.update { it.copy(variants = it.variants + added, more = if (added.isEmpty()) MoreRoutes.NONE_FOUND else MoreRoutes.ADDED) }
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (e: Exception) {
         Log.e(TAG, "more routes failed", e)
+        app.navmaster.truck.routing.RouteProgress.clear()
         _plan.update { it.copy(more = MoreRoutes.NONE_FOUND) }
       }
     }

@@ -266,8 +266,8 @@ private fun MoreRoutesCard(state: MoreRoutes, compact: Boolean, onClick: () -> U
   ) {
     when (state) {
       MoreRoutes.LOADING -> {
-        CircularProgressIndicator(color = Nm.Accent, modifier = Modifier.size(24.dp))
-        Caption("Cerco altre strade…", size = 13, color = Nm.Text)
+        // the same bar as the search of the routes (RouteProgress): the phases of the alternatives
+        SearchProgress("", Modifier.widthIn(min = if (compact) 220.dp else 260.dp), compact = true)
       }
       MoreRoutes.NONE_FOUND -> Caption("Nessun altro percorso", size = 13, color = Nm.Muted, lines = 2)
       else -> {

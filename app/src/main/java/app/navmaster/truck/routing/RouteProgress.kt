@@ -53,12 +53,24 @@ object RouteProgress {
     msPerKm = prefs?.getFloat("ms_per_km", 30f)?.toDouble() ?: 30.0
   }
 
-  /** A search of routes starts, [crow] km as the crow flies along its points. */
-  fun begin(crow: Double) {
+  /** Alternatives being looked for ("Altri percorsi"): their found count moves the bar, and routeFound does not learn from them. */
+  private var forAlternatives = false
+  private var alternativesFound = 0
+
+  /**
+   * A search of routes starts, [crow] km as the crow flies along its points; [alternatives]: the
+   * "other routes" of a trip already on screen (about [ALTERNATIVES_FACTOR] times one route: Bratislava
+   * 37 s against 17 s on the tablet).
+   */
+  fun begin(crow: Double, alternatives: Boolean = false) {
     crowKm = crow
-    val expected = (crow * msPerKm).toLong().coerceIn(1_500L, 120_000L)
-    _state.value = State("Calcolo il percorso…", 0.02f, SystemClock.elapsedRealtime(), expected)
+    forAlternatives = alternatives
+    alternativesFound = 0
+    val expected = (crow * msPerKm * (if (alternatives) ALTERNATIVES_FACTOR else 1.0)).toLong().coerceIn(1_500L, 120_000L)
+    _state.value = State(if (alternatives) "Cerco altre strade…" else "Calcolo il percorso…", 0.02f, SystemClock.elapsedRealtime(), expected)
   }
+
+  private const val ALTERNATIVES_FACTOR = 2.3
 
   /** A phase reached ([at]: the bar's least point for it). */
   fun phase(text: String, at: Float) {
@@ -70,7 +82,7 @@ object RouteProgress {
     val s = _state.value ?: return
     if (s.done) return
     val ms = SystemClock.elapsedRealtime() - s.startedAt
-    if (crowKm > 20) {
+    if (crowKm > 20 && !forAlternatives) {
       // a slow average (one odd search does not swing it), within sensible bounds
       msPerKm = (msPerKm * 0.7 + (ms / crowKm) * 0.3).coerceIn(3.0, 200.0)
       prefs?.edit()?.putFloat("ms_per_km", msPerKm.toFloat())?.apply()
@@ -109,8 +121,17 @@ object RouteProgress {
       l.startsWith("due valichi insieme") || l.startsWith("valico scelto") -> phase("Valichi scelti: calcolo i tratti nei Paesi…", 0.55f)
       // after the first choice of the crossings the other sequences of countries are weighed: said so
       l.startsWith("pesi ") -> phase(if ((_state.value?.floor ?: 0f) >= 0.55f) "Provo anche il passaggio per altri Paesi…" else "Confronto i percorsi per i valichi…", 0.45f)
+      // the alternatives of a long trip: each candidate is a whole trip; two are looked for
+      forAlternatives && l.startsWith("viaggio tra Paesi:") -> phase(
+          if (alternativesFound == 0) "Primo percorso rifatto, ora le alternative…" else "Confronto un'altra strada…",
+          if (alternativesFound == 0) 0.3f else 0.6f)
+      l.startsWith("alternativa ") -> {
+        alternativesFound++
+        phase(if (alternativesFound == 1) "Prima alternativa trovata, ne cerco un'altra…" else "Seconda alternativa trovata…",
+            if (alternativesFound == 1) 0.55f else 0.85f)
+      }
+      l.startsWith("alternative dei viaggi lunghi:") -> phase("Alternative trovate: controllo limiti e pedaggi…", 0.88f)
       l.startsWith("viaggio tra Paesi:") -> phase("Percorso trovato: unisco i tratti dei Paesi…", 0.8f)
-      l.startsWith("alternativa ") -> phase("Alternativa trovata, ne cerco un'altra…", 0.85f)
     }
   }
 }

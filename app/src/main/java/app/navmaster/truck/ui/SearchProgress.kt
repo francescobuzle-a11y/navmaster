@@ -31,7 +31,7 @@ import kotlinx.coroutines.delay
  * (RouteProgress: the phases done and the time expected) and the seconds so far.
  */
 @Composable
-fun SearchProgress(vehicleName: String, modifier: Modifier = Modifier) {
+fun SearchProgress(vehicleName: String, modifier: Modifier = Modifier, compact: Boolean = false) {
   val st by RouteProgress.state.collectAsState()
   var now by remember { mutableLongStateOf(android.os.SystemClock.elapsedRealtime()) }
   LaunchedEffect(st?.startedAt, st?.done) {
@@ -44,17 +44,17 @@ fun SearchProgress(vehicleName: String, modifier: Modifier = Modifier) {
   val s = st
   val f = s?.fraction(now) ?: 0f
   val seconds = s?.let { ((now - it.startedAt) / 1000).coerceAtLeast(0) } ?: 0
-  Column(modifier.padding(vertical = 10.dp)) {
+  Column(modifier.padding(vertical = if (compact) 2.dp else 10.dp)) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-      Text("${(f * 100).toInt()} %", color = Nm.Accent, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-      Spacer(Modifier.width(10.dp))
-      Caption(s?.phase ?: "Calcolo il percorso…", Modifier.weight(1f), color = Nm.Text, size = 15, lines = 2)
+      Text("${(f * 100).toInt()} %", color = Nm.Accent, fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.Bold)
+      Spacer(Modifier.width(if (compact) 6.dp else 10.dp))
+      Caption(s?.phase ?: "Calcolo il percorso…", Modifier.weight(1f), color = Nm.Text, size = if (compact) 12 else 15, lines = 2)
       Spacer(Modifier.width(8.dp))
-      Caption("$seconds s", size = 13)
+      Caption("$seconds s", size = if (compact) 11 else 13)
     }
-    Spacer(Modifier.height(8.dp))
-    LinearProgressIndicator(progress = { f }, modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+    Spacer(Modifier.height(if (compact) 5.dp else 8.dp))
+    LinearProgressIndicator(progress = { f }, modifier = Modifier.fillMaxWidth().height(if (compact) 6.dp else 8.dp).clip(RoundedCornerShape(4.dp)),
         color = Nm.Accent, trackColor = Nm.Line)
-    Caption("Percorsi per $vehicleName: limiti, pedaggi, svincoli e strade strette del mezzo", Modifier.padding(top = 6.dp), size = 13)
+    if (!compact) Caption("Percorsi per $vehicleName: limiti, pedaggi, svincoli e strade strette del mezzo", Modifier.padding(top = 6.dp), size = 13)
   }
 }
