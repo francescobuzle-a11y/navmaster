@@ -203,6 +203,8 @@ data class Settings(
     /** The old tilt of the 3D view (before the TomTom-like view): kept so old saved settings still read. */
     val tiltDeg: Int = 55,
     val driveView: DriveView = DriveView.VIEW_3D,
+    /** Without a route, with the app open: the map as while driving (following the vehicle, its direction up, tilted and close), as Waze. */
+    val idleDriveView: Boolean = true,
     /**
      * The 3D driving view, as TomTom GO draws it on the tablet (measured 2026-11-15): tilt in degrees
      * (3° more across the screen) and closeness as the map's zoom. Over 60° only where the map on

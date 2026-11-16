@@ -447,6 +447,9 @@ private fun MapPage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
   Card("Vista in guida") {
     Pills { for (d in DriveView.entries) Pill(d.label, s.driveView == d) { set { it.copy(driveView = d) } } }
     Caption("Si cambia anche in guida con il pulsante 2D/3D a destra.", Modifier.padding(top = 6.dp), size = 13)
+    ToggleRow("Vista da guida anche senza percorso", "Con l'app aperta la mappa segue il mezzo come in guida: la direzione di marcia in alto, " +
+        "inclinata e vicina, col tachimetro. Spostando la mappa la vista si ferma; «Centra» la riporta",
+        s.idleDriveView) { v -> set { it.copy(idleDriveView = v) } }
     if (s.driveView == DriveView.VIEW_3D) {
       Spacer(Modifier.height(6.dp))
       Stepper("Inclinazione", s.driveTilt.toDouble(), "°", 1.0, 30.0, DriveCamera.MAX_SETTING_TILT.toDouble(), 0) { v -> set { it.copy(driveTilt = v.toInt()) } }

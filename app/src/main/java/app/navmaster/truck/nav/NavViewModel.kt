@@ -184,6 +184,28 @@ data class NavExtras(
     val liveInfo: String? = null,
 )
 
+/**
+ * A route offered aside while driving, with another choice of tolls or motorways (the toll button,
+ * or the choice changed in the settings): its overview beside the guidance, which goes on meanwhile.
+ * [route] null: still being computed ([error] when there is none).
+ */
+data class RouteOffer(
+    val title: String,
+    val route: Route?,
+    /** The rest of the route being driven, for the overview. */
+    val current: List<GeographicCoordinate>,
+    val options: TripOptions,
+    /** Seconds and metres more than the rest of the present route (less: negative). */
+    val extraS: Double = 0.0,
+    val extraM: Double = 0.0,
+    val tollKmNew: Double = 0.0,
+    val tollKmNow: Double = 0.0,
+    val motorwayKmNew: Double = 0.0,
+    val motorwayKmNow: Double = 0.0,
+    val error: String? = null,
+    val askedAt: Long = System.currentTimeMillis(),
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotationPublisher()) {
 
@@ -203,6 +225,16 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   val simulating: StateFlow<Boolean> = _simulating.asStateFlow()
 
   private var planJob: Job? = null
+
+  /** Guidance started by the app and not yet ended: no route is handed to the guidance outside it (see [stopNavigation]). */
+  @Volatile private var guiding = false
+
+  /** The route offered aside while driving (see [proposeChoice]). */
+  private val _offer = MutableStateFlow<RouteOffer?>(null)
+  val offer: StateFlow<RouteOffer?> = _offer.asStateFlow()
+  private var offerJob: Job? = null
+  /** The toll choice the toll button goes back to when it lets tolls in again. */
+  private var lastTollPolicy = TollPolicy.ASK
   private var moreJob: Job? = null
   /** Where from, through which stops and with which choices the routes on screen were computed. */
   private var planRequest: Triple<UserLocation, List<Waypoint>, TripOptions>? = null
@@ -252,6 +284,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     viewModelScope.launch {
       kotlinx.coroutines.flow.combine(AppGraph.smartLocation.onRoute, AppGraph.smartLocation.raw) { f, r -> f to r }
           .collect { (f, r) -> onProviderFix(f, r) }
+    }
+    // the guidance back on after the end (a route handed over late): ended again at once
+    viewModelScope.launch {
+      core.state.collect { st ->
+        if (st.tripState is uniffi.ferrostar.TripState.Navigating && !guiding) {
+          Log.w(TAG, "guidance on after its end: stopped again")
+          core.stopNavigation()
+        }
+      }
     }
     // «senza pedaggi» or «senza autostrade» changed while driving or with the routes on screen: the
     // trip follows the new choice (before, the choices were taken once, when the trip started)
@@ -597,8 +638,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val r = AppGraph.routes.routes(loc, vias + remainingStops(), options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
-          if (_simulating.value) locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
+          if (!replaceIfGuiding(r)) return@withContext
           onDone()
         }
         if (!quiet) say("Percorso ricalcolato da questa strada.")
@@ -659,8 +699,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val r = AppGraph.routes.routes(loc, all, options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
-          if (_simulating.value) locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
+          if (!replaceIfGuiding(r)) return@withContext
         }
         say("Ti riporto sul percorso.")
       } catch (e: Exception) {
@@ -1114,6 +1153,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     viewModelScope.launch(Dispatchers.Default) {
       MapGaps.record(v.analysis, v.analysis.countries.firstOrNull()?.first in setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE"))
     }
+    guiding = true
     if (navigationUiState.value.isNavigating()) core.replaceRoute(v.route) else core.startNavigation(v.route)
     startLive()
   }
@@ -1531,13 +1571,20 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   }
 
   override fun stopNavigation() {
+    // the guidance first, then the simulation: switching the simulation off gave the guidance a real
+    // position far from the simulated one, its "wrong turn" started a new route, and that route,
+    // handed over after the end (core.replaceRoute), put the screen back into a guidance without
+    // positions (the bar frozen, app 266). Nothing hands a route over once [guiding] is off
+    guiding = false
+    offerJob?.cancel()
+    _offer.value = null
+    core.stopNavigation()
     AppGraph.smartLocation.setRoute(null)
     voice.clear()
     drivenPending = 0L
     stopLive()
     locationProvider.disableSimulation()
     _simulating.value = false
-    core.stopNavigation()
     _nav.value = NavExtras()
     AppGraph.trip.value = TripOptions()
     _plan.value = PlanState()
@@ -1932,8 +1979,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         }
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
-          if (_simulating.value) locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
+          if (!replaceIfGuiding(r)) return@withContext
         }
         say(if (via) "Percorso ricalcolato: passi da quel punto e prosegui verso la destinazione." else "Tappa aggiunta: $label.")
       } catch (e: Exception) {
@@ -1995,8 +2041,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val r = AppGraph.routes.routes(from, waypoints, opts).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         AppGraph.trip.value = opts
         withContext(Dispatchers.Main) {
-          if (_simulating.value) locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
+          if (!replaceIfGuiding(r)) return@withContext
         }
         say("Ti porto al punto scelto, poi torni sul percorso di prima.")
       } catch (e: Exception) {
@@ -2041,8 +2086,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
             ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
-          if (_simulating.value) locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
+          if (!replaceIfGuiding(r)) return@withContext
         }
         say(message)
       } catch (e: Exception) {
@@ -2190,7 +2234,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       }
       if (got == null) Log.i(TAG, "simulation: no position from the simulation yet, the guidance moves anyway")
       delay(30)
-      core.replaceRoute(r)
+      if (guiding) core.replaceRoute(r)
     }
   }
 
@@ -2261,9 +2305,102 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val p = _nav.value.prompt as? DriverPrompt.TollChoice ?: return dismissPrompt()
     dismissPrompt()
     if (!avoid) return
+    if (!replaceIfGuiding(p.tollFree)) return
     AppGraph.trip.value = AppGraph.trip.value.copy(avoidTolls = true)
-    core.replaceRoute(p.tollFree)
     say("Percorso senza pedaggio.")
+  }
+
+  /**
+   * The route to the stops still to make with the choices [next], offered aside ([offer]) while the
+   * guidance goes on: its overview, the minutes and the tolls against the present route; the driver
+   * takes it ([acceptOffer]) or not ([dismissOffer]). [what]: "senza pedaggi", "con pedaggi"…
+   */
+  fun proposeChoice(next: TripOptions, what: String) {
+    if (!guiding) return
+    val a = _nav.value.analysis ?: return
+    val ui = navigationUiState.value
+    val from = ui.location ?: lastLocation.value ?: return
+    val traveled = (_nav.value.routeLength - (ui.progress?.distanceRemaining ?: 0.0)).coerceAtLeast(0.0)
+    val remainingS = ui.progress?.durationRemaining ?: a.durationS
+    val rest = restOf(a, traveled)
+    offerJob?.cancel()
+    _offer.value = RouteOffer(what, null, rest, next)
+    offerJob = viewModelScope.launch(Dispatchers.IO) {
+      try {
+        val waypoints = remainingStops()
+        val r = AppGraph.routes.routes(from, waypoints, next.copy(alternates = 0)).firstOrNull() ?: throw IllegalStateException("nessun percorso")
+        val garage = AppGraph.profiles.garage.value
+        val an = RouteAnalysis.analyse(r, garage.active, garage.loadT)
+        val ahead = { spans: List<Pair<Double, Double>> -> spans.sumOf { (s0, s1) -> (s1 - maxOf(s0, traveled)).coerceAtLeast(0.0) } / 1000.0 }
+        val o = RouteOffer(what, r, rest, next,
+            extraS = an.durationS - remainingS, extraM = r.distance - (a.length - traveled),
+            tollKmNew = an.tollKm, tollKmNow = ahead(a.tolls.map { it.startM to it.endM }),
+            motorwayKmNew = an.motorwayKm, motorwayKmNow = ahead(a.edges.filter { it.roadClass == "motorway" }.map { it.startM to it.endM }))
+        if (!guiding) return@launch
+        Log.i(TAG, "offer $what: ${"%+.0f".format(o.extraS / 60)} min, ${"%+.1f".format(o.extraM / 1000)} km, toll ${"%.1f".format(o.tollKmNow)} -> ${"%.1f".format(o.tollKmNew)} km")
+        _offer.value = o
+        say(offerSpeech(o))
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        Log.w(TAG, "offer $what: $e")
+        _offer.update { it?.copy(error = "Nessun percorso $what da qui") }
+      }
+    }
+  }
+
+  private fun offerSpeech(o: RouteOffer): String {
+    val min = (o.extraS / 60).roundToInt()
+    val time = when {
+      min >= 1 -> "arrivi $min minuti più tardi"
+      min <= -1 -> "arrivi ${-min} minuti prima"
+      else -> "arrivi alla stessa ora"
+    }
+    val toll = when {
+      o.tollKmNew < 0.5 && o.tollKmNow >= 0.5 -> " ed eviti ${o.tollKmNow.roundToInt()} chilometri a pagamento"
+      o.tollKmNew >= 0.5 && o.tollKmNow < 0.5 -> " con ${o.tollKmNew.roundToInt()} chilometri a pagamento"
+      else -> ""
+    }
+    return "Percorso ${o.title}: $time$toll. Guarda la panoramica a lato."
+  }
+
+  /** The route offered becomes the route of the guidance, with its choices. */
+  fun acceptOffer() {
+    val o = _offer.value ?: return
+    val r = o.route ?: return
+    _offer.value = null
+    if (!replaceIfGuiding(r)) return
+    AppGraph.trip.value = o.options
+    say("Va bene: percorso ${o.title}.")
+  }
+
+  /** The route offered is left: the guidance goes on as it was. */
+  fun dismissOffer() {
+    offerJob?.cancel()
+    _offer.value = null
+  }
+
+  /** The toll button while driving: the route with the other toll choice, offered aside (a second touch closes the offer). */
+  fun toggleTollsWhileDriving() {
+    if (_offer.value != null) return dismissOffer()
+    val t = AppGraph.trip.value
+    proposeChoice(t.copy(avoidTolls = !t.avoidTolls), if (t.avoidTolls) "con pedaggi" else "senza pedaggi")
+  }
+
+  /** The toll button outside the guidance: the choice for the trips (the routes on screen are computed again). */
+  fun toggleTollsSetting() {
+    val s = AppGraph.settings.settings.value
+    val avoiding = s.tollPolicy == TollPolicy.AVOID
+    if (!avoiding) lastTollPolicy = s.tollPolicy
+    AppGraph.settings.update { it.copy(tollPolicy = if (avoiding) lastTollPolicy else TollPolicy.AVOID) }
+    showNotice(if (avoiding) "Pedaggi ammessi" else "Senza pedaggi")
+  }
+
+  /** The rest of [a]'s route from [traveled] metres (for an overview). */
+  private fun restOf(a: RouteAnalysis, traveled: Double): List<GeographicCoordinate> {
+    val g = a.route.geometry
+    val k = a.cum.indexOfFirst { it >= traveled }.let { if (it < 0) g.size - 1 else it }
+    return listOf(a.pointAt(traveled)) + g.drop(k)
   }
 
   private fun onAvoidChanged(noTolls: Boolean, noMotorways: Boolean) {
@@ -2271,13 +2408,27 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       val t = AppGraph.trip.value
       if (t.avoidTolls == noTolls && t.avoidMotorways == noMotorways) return
       Log.i(TAG, "trip choices changed while driving: tolls=${!noTolls}, motorways=${!noMotorways}")
-      AppGraph.trip.value = t.copy(avoidTolls = noTolls, avoidMotorways = noMotorways)
-      val what = listOfNotNull(if (noTolls) "senza pedaggi" else null, if (noMotorways) "senza autostrade" else null)
-      recalcFromHere(if (what.isEmpty()) "Ricalcolo il percorso" else "Ricalcolo il percorso ${what.joinToString(" e ")}")
-    } else if (_plan.value.variants.isNotEmpty() && !_plan.value.computing) {
+      // the route with the new choice offered aside, the guidance going on (the driver chooses)
+      val what = listOfNotNull(
+          if (t.avoidTolls != noTolls) (if (noTolls) "senza pedaggi" else "con pedaggi") else null,
+          if (t.avoidMotorways != noMotorways) (if (noMotorways) "senza autostrade" else "con autostrade") else null)
+      proposeChoice(t.copy(avoidTolls = noTolls, avoidMotorways = noMotorways), what.joinToString(" e "))
+    } else if (_plan.value.stops.isNotEmpty()) {
+      // the routes on screen or still being computed: computed again with the new choice
       Log.i(TAG, "trip choices changed with the routes on screen: planned again")
       planRoutes()
     }
+  }
+
+  /** [r] becomes the route of the guidance (and of the simulation); false, nothing done, once the guidance has ended. */
+  private fun replaceIfGuiding(r: Route): Boolean {
+    if (!guiding) {
+      Log.i(TAG, "route not handed over: the guidance has ended")
+      return false
+    }
+    if (_simulating.value) locationProvider.enableSimulationOn(r)
+    core.replaceRoute(r)
+    return true
   }
 
   private fun recalcFromHere(message: String) {
@@ -2290,8 +2441,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val waypoints = remainingStops()
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         withContext(Dispatchers.Main) {
-          if (_simulating.value) locationProvider.enableSimulationOn(r)
-          core.replaceRoute(r)
+          if (!replaceIfGuiding(r)) return@withContext
         }
       } catch (e: Exception) {
         Log.w(TAG, "recalc: $e")

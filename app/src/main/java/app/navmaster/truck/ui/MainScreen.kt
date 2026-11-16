@@ -43,6 +43,8 @@ import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Navigation
 import androidx.compose.material.icons.rounded.AddLocationAlt
 import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.MoneyOff
+import androidx.compose.material.icons.rounded.Euro
 import androidx.compose.material.icons.rounded.LocalShipping
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material.icons.rounded.Public
@@ -148,6 +150,12 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val settings by AppGraph.settings.settings.collectAsState()
   val location by vm.location.collectAsState()
   val navigating = ui.isNavigating()
+  // the route offered aside while driving (toll button, choices changed): its overview beside the guidance
+  val offer by vm.offer.collectAsState()
+  val trip by AppGraph.trip.collectAsState()
+  // without a route the map as while driving (Waze): following the vehicle, its direction up, tilted
+  val idleDrive = !navigating && plan.stops.isEmpty() && settings.idleDriveView
+  val idleSpeedMs by vm.speedMs.collectAsState()
   LaunchedEffect(navigating, settings.voiceAnswers, settings.liveReports) {
     if (navigating && settings.voiceAnswers && settings.liveReports && !settings.micAsked &&
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -264,8 +272,10 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // the junction view) is open at the right, the view glides aside to leave it room, and back
   val vehicleAt = ((if (landscape) settings.vehicleAcrossPct else settings.vehicleUprightPct) / 100.0).coerceIn(0.3, 0.9)
   var sideRoomTarget by remember { mutableStateOf(0.dp) }
+  // lying down the offered route's card takes the right side: the view moves aside for it too
+  val offerRoom = if (navigating && offer != null && landscape) (w * 0.40f).dp else 0.dp
   val sideRoom by androidx.compose.animation.core.animateDpAsState(
-      if (navigating) sideRoomTarget else 0.dp, androidx.compose.animation.core.tween(700), label = "lato")
+      if (navigating) maxOf(sideRoomTarget, offerRoom) else 0.dp, androidx.compose.animation.core.tween(700), label = "lato")
   val navPadding = PaddingValues(
       top = (h * (2 * vehicleAt - 1)).coerceAtLeast(0.0).toFloat().dp,
       bottom = (h * (1 - 2 * vehicleAt)).coerceAtLeast(0.0).toFloat().dp,
@@ -291,7 +301,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           else PaddingValues(start = 40.dp, top = 110.dp, end = 90.dp, bottom = (h * 0.42f).dp))
     }
   }
-  LaunchedEffect(plan.stops.isEmpty()) { if (plan.stops.isEmpty() && !navigating) mapState.recenter(false) }
+  // without a route: the driving view (idleDrive) or the plain one from above, also right after the end of a guidance
+  LaunchedEffect(plan.stops.isEmpty(), navigating, settings.idleDriveView) { if (plan.stops.isEmpty() && !navigating) mapState.recenter(idleDrive) }
   // tests on the tablet: the map moved to a place and zoom (UiHints.view, extra nm_view)
   val testView by UiHints.view.collectAsState()
   LaunchedEffect(testView) {
@@ -566,8 +577,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   }
   // the tilt over 60° asked of the tablet's map while driving in 3D, as much as its map allows
   // (again now and then: the map's library sets its own limit back when it redraws its options)
-  LaunchedEffect(navigating, is3d) {
-    if (!navigating || !is3d) return@LaunchedEffect
+  LaunchedEffect(navigating || idleDrive, is3d) {
+    if (!(navigating || idleDrive) || !is3d) return@LaunchedEffect
     while (true) {
       mapMaxTilt = DriveCamera.allowTilt(mapState.cameraState, DriveCamera.ASK_TILT)
       kotlinx.coroutines.delay(2000)
@@ -722,7 +733,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           stopsCount = plan.stops.size - 1, onStops = { stopsOpen = true }, onPois = { poiOpen = true },
           destination = plan.stops.lastOrNull()?.coordinate, onPoiPins = { drivePins = it },
           satellite = satellite, onSatellite = { satellite = !satellite }, smoothAlong = smoothAlong,
-          onSideRoom = { if (sideRoomTarget != it) sideRoomTarget = it })
+          onSideRoom = { if (sideRoomTarget != it) sideRoomTarget = it },
+          tollsAvoided = trip.avoidTolls, onTolls = vm::toggleTollsWhileDriving)
       if (nav.recalculating) {
         Box(Modifier.align(Alignment.Center).clip(RoundedCornerShape(20.dp)).background(Color(0xE6000000)).padding(18.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically) {
@@ -736,6 +748,14 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         PromptCard(p, traveled, onRamp = vm::answerRamp, onToll = vm::answerToll,
             onBreakGo = { pk -> vm.dismissPrompt(); vm.addStopDuringNav(pk.poi.coordinate, pk.poi.title.ifBlank { "Parcheggio" }) },
             onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure, onOffRoute = vm::answerOffRoute)
+      }
+      // the route offered aside: lying down at the right, upright above the trip bar; the guidance goes on
+      offer?.let { o ->
+        RouteOfferCard(o, styleUri, onAccept = vm::acceptOffer, onDismiss = vm::dismissOffer,
+            modifier = if (landscape) Modifier.align(Alignment.CenterEnd).statusBarsPadding().navigationBarsPadding()
+                .padding(end = 12.dp, top = 8.dp, bottom = 8.dp).fillMaxWidth(0.38f)
+            else Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 12.dp, end = 12.dp, bottom = 96.dp).fillMaxWidth(),
+            mapHeight = if (landscape) (h * 0.36f).toInt().coerceIn(140, 320) else (h * 0.24f).toInt().coerceIn(150, 300))
       }
       if (stopsOpen && plan.stops.size > 1) {
         StopsPanel(plan.stops, onRemove = { i -> vm.removeStopDuringNav(i); if (plan.stops.size <= 2) stopsOpen = false },
@@ -755,8 +775,13 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           onRegions = { sheet = Sheet.REGIONS },
           onSatellite = { satellite = !satellite },
           satellite = satellite,
-          onRecenter = { mapState.recenter(false) },
+          onRecenter = { mapState.recenter(idleDrive) },
           onCrit = { openCrit = it },
+          idleDrive = idleDrive,
+          speedKmh = (location?.speed?.value?.takeIf { it >= 0 } ?: idleSpeedMs)?.let { (it * 3.6).roundToInt() },
+          speedWarningKmh = settings.speedWarningKmh,
+          tollsAvoided = settings.tollPolicy == app.navmaster.truck.settings.TollPolicy.AVOID,
+          onTolls = vm::toggleTollsSetting,
           tracking = mapState.isTrackingUser || DriveCamera.driving.value,
           onPois = { poiOpen = true },
           mapMoved = mapMoved,
@@ -897,6 +922,13 @@ private fun BrowsingOverlay(
     onPois: () -> Unit = {},
     mapMoved: Long = 0L,
     onPickStart: () -> Unit = {},
+    /** Without a route, the map as while driving: the speedometer too. */
+    idleDrive: Boolean = false,
+    speedKmh: Int? = null,
+    speedWarningKmh: Int = 0,
+    /** The toll button: tolls avoided now (the choice of the trips: the routes on screen are computed again). */
+    tollsAvoided: Boolean = false,
+    onTolls: () -> Unit = {},
 ) {
   // the routes panel goes down while the map is moved, and comes back with "Dettagli"
   var collapsed by remember { mutableStateOf(false) }
@@ -932,6 +964,11 @@ private fun BrowsingOverlay(
       if (plan.stops.isEmpty()) RoundAction(Icons.Rounded.Settings, "Impostazioni", onClick = onSettings)
       RoundAction(Icons.Rounded.Layers, "Satellite", container = if (satellite) Nm.Accent else Nm.Panel, onClick = onSatellite)
       RoundAction(Icons.Rounded.Place, "Punti di interesse", onClick = onPois)
+      TollButton(tollsAvoided, onTolls)
+    }
+    // without a route, the speedometer as while driving (no limit: there is no route to read it on)
+    if (idleDrive && plan.stops.isEmpty()) {
+      SpeedArc(speedKmh, null, speedWarningKmh, null, null, 120.dp, false, Modifier.align(Alignment.BottomStart).padding(bottom = 48.dp))
     }
     if (!tracking) RoundAction(Icons.Rounded.MyLocation, "Centra", Modifier.align(Alignment.BottomEnd), onClick = onRecenter)
 
@@ -1013,6 +1050,9 @@ private fun NavigatingOverlay(
     onSideRoom: (Dp) -> Unit = {},
     satellite: Boolean = false,
     onSatellite: () -> Unit = {},
+    /** The toll button: the trip avoids tolls now; a touch offers the route with the other choice aside. */
+    tollsAvoided: Boolean = false,
+    onTolls: () -> Unit = {},
 ) {
   val simulating by vm.simulating.collectAsState()
   val simSpeed by vm.simSpeed.collectAsState()
@@ -1199,6 +1239,12 @@ private fun NavigatingOverlay(
       BarButton("Più incl.", null, "+°", Nm.Raised) { tilted(5) },
       BarButton("Meno incl.", null, "−°", Nm.Raised) { tilted(-5) },
   ) else emptyList()) + listOf(
+      // tolls yes / no: the route with the other choice computed and offered aside, the guidance going on
+      BarButton(if (tollsAvoided) "Senza ped." else "Pedaggi", if (tollsAvoided) Icons.Rounded.MoneyOff else Icons.Rounded.Euro, null,
+          if (tollsAvoided) Nm.Amber else Nm.Raised) {
+        barTouch = System.currentTimeMillis()
+        onTolls()
+      },
       BarButton(if (satellite) "Mappa" else "Satellite", Icons.Rounded.Layers, null, if (satellite) Nm.Accent else Nm.Raised) {
         barTouch = System.currentTimeMillis()
         onSatellite()
@@ -1597,5 +1643,19 @@ private class SmoothTrack {
     return uniffi.ferrostar.UserLocation(
         p, accuracy, uniffi.ferrostar.CourseOverGround(lastBrg.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()),
         java.time.Instant.now(), speedObj)
+  }
+}
+
+/**
+ * Tolls yes / no in one touch, outside the guidance: the choice of the trips (Impostazioni › Percorso
+ * e pedaggi); the routes on screen, or still being computed, are computed again with it.
+ */
+@Composable
+private fun TollButton(avoided: Boolean, onClick: () -> Unit) {
+  Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    RoundAction(if (avoided) Icons.Rounded.MoneyOff else Icons.Rounded.Euro, if (avoided) "Senza pedaggi: tocca per ammetterli" else "Pedaggi ammessi: tocca per evitarli",
+        container = if (avoided) Nm.Amber else Nm.Panel, tint = if (avoided) Color.Black else Nm.Text, onClick = onClick)
+    Text(if (avoided) "No pedaggi" else "Pedaggi", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 2.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000)).padding(horizontal = 6.dp, vertical = 1.dp))
   }
 }
