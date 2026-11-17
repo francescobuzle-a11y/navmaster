@@ -61,6 +61,10 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
   private class Open(val region: InstalledRegion, val key: String, val graph: RoutingGraph, val service: DirectionsService) {
     val country = CountryGraph(region.id, service)
     @Volatile var used = SystemClock.elapsedRealtime()
+    // the last route computed on it (0: none): the warm-up and the crossings open every country in
+    // turn, and closing the graph of the trip on screen would lose its engine caches (the legs a
+    // pass-through point reuses, the best route the variants start from)
+    @Volatile var routed = 0L
   }
 
   private val lock = ReentrantReadWriteLock()
@@ -89,7 +93,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       open.remove(region.id)?.let { runCatching { it.graph.close() } }
       // a few graphs open at a time (each is mapped from its files: little memory of its own)
       while (open.size >= MAX_OPEN) {
-        val oldest = open.values.minByOrNull { it.used } ?: break
+        // first the graphs no route used (or used longest ago), then the least recently opened
+        val oldest = open.values.minWithOrNull(compareBy<Open>({ it.routed }, { it.used })) ?: break
         open.remove(oldest.region.id)
         runCatching { oldest.graph.close() }
       }
@@ -152,6 +157,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
         lock.read {
           if (open[region.id] === o) {
             o.used = SystemClock.elapsedRealtime()
+            o.routed = o.used
             return measured(rc, parseMs) {
               try { o.service.handle(DirectionsRequest.fromJson(profile, parsed), ResponseFormat.GEOJSON, rc) }
               catch (e: ApiException) { o.service.errorBody(e) }
@@ -169,6 +175,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       if (knownIds.any { k -> graphs.none { it.region.id == k } }) return null
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
+          val now = SystemClock.elapsedRealtime()
+          for (g in graphs) { g.used = now; if (g.region.id in knownIds) g.routed = now }
           // the engine's messages also move the bar of the search (RouteProgress), for the route on screen only
           val main = call.priority == RequestContext.MAIN
           if (main) RouteProgress.names = countries.associate { it.id to it.label }
