@@ -54,6 +54,12 @@ class NavMasterApp : Application() {
     super.onCreate()
     AppGraph.init(this)
   }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    // the system short of memory (not only the app out of sight): the engine's caches of legs and snaps go
+    if (level >= TRIM_MEMORY_RUNNING_LOW && level != TRIM_MEMORY_UI_HIDDEN) runCatching { AppGraph.engine.trimMemory(level) }
+  }
 }
 
 /** The app's few long-lived objects, wired by hand. */

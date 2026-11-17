@@ -157,8 +157,8 @@ data class TripOptions(
      */
     val viaHeadings: Map<String, Double> = emptyMap(),
     /**
-     * A choice computed next to the main route (another kind, without tolls): searched with a
-     * short time limit and without the "fewest limits" retry, so that it never keeps the tablet busy.
+     * A choice computed next to the main route (another kind, without tolls): searched in the
+     * background (it gives way to the route on screen) within 15 s, so that it never keeps the tablet busy.
      */
     val quick: Boolean = false,
 ) {

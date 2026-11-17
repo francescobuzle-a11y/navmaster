@@ -20,6 +20,8 @@ import app.navmaster.truck.routing.CritKind
 import app.navmaster.truck.routing.Criticality
 import app.navmaster.truck.routing.RouteAnalysis
 import app.navmaster.truck.routing.Severity
+import app.navmaster.truck.routing.VariantAsk
+import app.navmaster.truck.routing.VariantInfo
 import app.navmaster.truck.settings.TollPolicy
 import app.navmaster.truck.ui.Fmt
 import app.navmaster.truck.vehicle.TripOptions
@@ -87,6 +89,8 @@ data class RouteVariant(
     val recommended: Boolean = false,
     /** Who computed it: "ORS" openrouteservice (online), "GH" GraphHopper on the tablet. */
     val source: String? = null,
+    /** The engine's roads of a variant ("A1 · A21 · A1"), to tell the same route offered twice; null for the others. */
+    val signature: String? = null,
 ) {
   val durationS: Double
     get() = analysis.durationS
@@ -114,6 +118,12 @@ data class PlanState(
     val advice: String? = null,
     /** Points the driver asked to avoid. */
     val avoided: List<Criticality> = emptyList(),
+    /**
+     * The zones the route keeps out of for each avoided point (by its id), worked out once when the
+     * driver chose it, on the route it was found on: the same zones every time, so the engine finds
+     * the legs it already computed.
+     */
+    val avoidedZones: Map<String, List<List<List<Double>>>> = emptyMap(),
     /** Next long press on the map adds a stop instead of changing the destination. */
     val addingStop: Boolean = false,
     /** Zones the driver marked on the map to stay away from. */
@@ -225,6 +235,20 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   val simulating: StateFlow<Boolean> = _simulating.asStateFlow()
 
   private var planJob: Job? = null
+
+  /** The recalculations of the guided route: one at a time, the newest wins (see [RecalcSequence]). */
+  private val recalcs: RecalcSequence = RecalcSequence(viewModelScope, Dispatchers.IO,
+      onBusy = { _nav.update { it.copy(recalculating = true) } }, onIdle = { _nav.update { it.copy(recalculating = false) } },
+      onNoRoute = { seq ->
+        // the newest recalculation ended with no route (failed, or a wrong-turn reroute it had
+        // cancelled is lost with it): the old route stays, so the off-route check may try again in
+        // a few seconds (before, it stayed blocked on that route until the vehicle went back on it)
+        viewModelScope.launch(Dispatchers.Main) {
+          if (!recalcs.isLatest(seq)) return@launch
+          offRouteAskedKey = null
+          noRoadCheckedAt = maxOf(noRoadCheckedAt, System.currentTimeMillis() + 2_000)
+        }
+      })
 
   /** Guidance started by the app and not yet ended: no route is handed to the guidance outside it (see [stopNavigation]). */
   @Volatile private var guiding = false
@@ -577,10 +601,16 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   private fun stopKey(c: GeographicCoordinate) = "%.5f,%.5f".format(java.util.Locale.ROOT, c.lat, c.lng)
 
   private fun remainingStops(): List<Waypoint> {
+    val stops = remainingStopList()
+    return stops.mapIndexed { i, st -> Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK) }
+  }
+
+  /** The stops of the trip still to reach, in order (the last one is the destination). */
+  private fun remainingStopList(): List<Stop> {
     val stops = _plan.value.stops
-    if (stops.size <= 1) return stops.map { Waypoint(coordinate = it.coordinate, kind = WaypointKind.BREAK) }
+    if (stops.size <= 1) return stops
     val a = _nav.value.analysis
-    val out = mutableListOf<Waypoint>()
+    val out = mutableListOf<Stop>()
     for ((i, st) in stops.withIndex()) {
       // a delivery already made is not a stop any more (before, two wrong turns after it and the
       // recalculation sent the lorry back to it)
@@ -599,7 +629,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         }
         if (best < 300 && at < lastOnRouteTraveled - 30) continue
       }
-      out += Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
+      out += st
     }
     return out
   }
@@ -623,8 +653,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // old one (before, "keep this road" only put a point 700 m ahead on it, and from there the
     // best way to the destination was, more often than not, straight back onto the old route).
     // A road that rejoins the old route by itself within 2 km (via = rejoin) is not the case.
-    _nav.update { it.copy(recalculating = true) }
-    viewModelScope.launch(Dispatchers.IO) {
+    launchRecalc { seq ->
       try {
         val ahead = via ?: runCatching { RoadAhead.along(AppGraph.roads.near(lat, lon, 1500.0), lat, lon, heading, 700.0) }.getOrNull()
             ?: if (!heading.isNaN()) RoadAhead.straight(lat, lon, heading, 400.0) else null
@@ -637,21 +666,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         } else Log.w(TAG, "go on along this road: no point ahead found, plain route from here")
         val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val r = AppGraph.routes.routes(loc, vias + remainingStops(), options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
-        withContext(Dispatchers.Main) {
-          if (!replaceIfGuiding(r)) return@withContext
-          onDone()
-        }
-        if (!quiet) say("Percorso ricalcolato da questa strada.")
+        val applied = withContext(Dispatchers.Main) { applyIfLatest(seq, r).also { if (it) onDone() } }
+        if (applied && !quiet) say("Percorso ricalcolato da questa strada.")
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "reroute along this road: $e")
+        if (!recalcs.isLatest(seq)) return@launchRecalc
         if (!quiet) say("Non trovo un percorso da questa strada: prosegui con attenzione.")
         // tried again in 15 s (before, one failure meant no recalculation for the rest of the trip)
         withContext(Dispatchers.Main) {
           offRouteAskedKey = null
           noRoadCheckedAt = System.currentTimeMillis() + 12_000
         }
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
       }
     }
   }
@@ -664,8 +691,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
    */
   private fun rerouteBack(a: RouteAnalysis, leftAt: Double) {
     val loc = navigationUiState.value.location ?: lastLocation.value ?: return
-    _nav.update { it.copy(recalculating = true) }
-    viewModelScope.launch(Dispatchers.IO) {
+    launchRecalc { seq ->
       try {
         val stops = remainingStops()
         val headings = HashMap<String, Double>()
@@ -698,16 +724,15 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         Log.i(TAG, "back onto the route: ${vias.size} pass-through points from ${(leftAt + 1500).toInt()} m, ${stops.size} stops")
         val options = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val r = AppGraph.routes.routes(loc, all, options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
-        withContext(Dispatchers.Main) {
-          if (!replaceIfGuiding(r)) return@withContext
-        }
-        say("Ti riporto sul percorso.")
+        if (withContext(Dispatchers.Main) { applyIfLatest(seq, r) }) say("Ti riporto sul percorso.")
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "reroute back: $e")
+        if (!recalcs.isLatest(seq)) return@launchRecalc
         say("Non riesco a tornare sul percorso: ricalcolo da qui.")
-        withContext(Dispatchers.Main) { rerouteContinuing() }
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
+        // the next recalculation (this one is over: nothing of it is applied any more)
+        withContext(Dispatchers.Main) { if (recalcs.isLatest(seq)) rerouteContinuing() }
       }
     }
   }
@@ -765,7 +790,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val stop = Stop(coordinate, label ?: "Destinazione")
     val stops = if (p.addingStop && p.stops.isNotEmpty()) p.stops.dropLast(1) + stop + p.stops.last() else listOf(stop)
     _plan.value = p.copy(stops = stops, addingStop = false, variants = emptyList(), error = null, advice = null,
-        avoided = if (p.addingStop) p.avoided else emptyList())
+        avoided = if (p.addingStop) p.avoided else emptyList(), avoidedZones = if (p.addingStop) p.avoidedZones else emptyMap())
     planRoutes()
   }
 
@@ -791,24 +816,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   fun addVia(coordinate: GeographicCoordinate, label: String = "Passa di qui") {
     val p = _plan.value
     if (p.stops.isEmpty()) return selectDestination(coordinate, label)
-    val start = lastLocation.value?.coordinates
-    val pts = listOfNotNull(start) + p.stops.map { it.coordinate }
-    val offset = if (start != null) 1 else 0
-    var best = 0
-    var bestCost = Double.MAX_VALUE
-    for (i in 0 until p.stops.size) {
-      val prev = pts.getOrNull(i + offset - 1) ?: continue
-      val next = pts[i + offset]
-      val cost = Geo.dist(prev, coordinate) + Geo.dist(coordinate, next) - Geo.dist(prev, next)
-      if (cost < bestCost) {
-        bestCost = cost
-        best = i
-      }
-    }
-    if (start == null) best = (p.stops.size - 1).coerceAtLeast(0)
-    val stops = p.stops.toMutableList().apply { add(best, Stop(coordinate, label, via = true)) }
+    val stops = withStop(lastLocation.value?.coordinates, p.stops, Stop(coordinate, label, via = true))
     _plan.value = p.copy(stops = stops, addingStop = false, variants = emptyList(), error = null, advice = null)
-    planRoutes()
+    // only the new route through the point (the legs before it are the same) and its variants: the
+    // other kinds and the toll-free one are not computed again
+    planRoutes(viaOnly = true)
   }
 
   /** A zone of about 120 m the route must stay out of (a street the driver knows is bad). */
@@ -844,12 +856,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   /** The driver does not want to go through this point: recompute avoiding it. */
   fun avoid(c: Criticality) {
-    _plan.update { it.copy(avoided = it.avoided + c) }
+    // its zones from the route it was found on (its place along it), once
+    _plan.update { it.copy(avoided = it.avoided + c, avoidedZones = it.avoidedZones + (c.id to exclusionsFor(listOf(c), it.current?.analysis))) }
     planRoutes()
   }
 
   fun unavoid(c: Criticality) {
-    _plan.update { it.copy(avoided = it.avoided.filterNot { a -> a.id == c.id }) }
+    _plan.update { it.copy(avoided = it.avoided.filterNot { a -> a.id == c.id }, avoidedZones = it.avoidedZones - c.id) }
     planRoutes()
   }
 
@@ -861,7 +874,31 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         pts.map { (lat, lon) -> Geo.squareAround(lat, lon, 18.0) }
       }
 
-  fun planRoutes(then: ((PlanState) -> Unit)? = null) {
+  /**
+   * The departure of the routes planned again while the vehicle stands still: the same point as
+   * before within 30 m (the position wanders a little), so the engine finds the legs it already
+   * computed (a point added, a zone avoided: only the legs that change are searched again).
+   */
+  private var planAnchor: UserLocation? = null
+
+  private fun anchored(now: UserLocation): UserLocation {
+    val a = planAnchor
+    // only the point of the anchor: the speed and the direction are those of now (an anchor taken
+    // while moving out of a yard northwards made a route planned later, facing south, start north)
+    if (a != null && (now.speed?.value ?: 0.0) < 1.0 && Geo.dist(a.coordinates, now.coordinates) < 30) return now.copy(coordinates = a.coordinates)
+    planAnchor = now
+    return now
+  }
+
+  /**
+   * The routes of the trip: the best one of the kind the driver prefers, shown at once, then the
+   * engine's variants, the other kinds and the toll-free one. [viaOnly]: a point to pass through was
+   * added, only the best route and its variants are computed again. [startsGuidance]: the caller
+   * starts the guidance in [then] (a place chosen while driving): [then] comes as soon as the best
+   * route is there, and the variants, the other kinds and the toll-free one are not computed (in
+   * guidance there is nothing to choose; before, the guidance waited up to 25 s for them).
+   */
+  fun planRoutes(viaOnly: Boolean = false, startsGuidance: Boolean = false, then: ((PlanState) -> Unit)? = null) {
     val p = _plan.value
     if (p.stops.isEmpty()) return
     // the departure chosen by the driver, or where the vehicle is
@@ -872,7 +909,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         accuracy = 5f
         time = System.currentTimeMillis()
       }.toUserLocation()
-    } ?: lastLocation.value
+    } ?: lastLocation.value?.let { anchored(it) }
     if (from == null) {
       _plan.value = p.copy(error = "Posizione non ancora disponibile: attendi il segnale GPS o di rete")
       return
@@ -889,7 +926,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         val waypoints = p.stops.mapIndexed { i, st ->
           Waypoint(coordinate = st.coordinate, kind = if (st.via && i < p.stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
         }
-        val exclusions = exclusionsFor(p.avoided, _plan.value.current?.analysis) +
+        // the zones worked out when each point was avoided (not from the route on screen: a point
+        // added clears it, and other zones would make every leg a new search)
+        val exclusions = p.avoided.flatMap { c -> p.avoidedZones[c.id] ?: exclusionsFor(listOf(c), null) } +
             p.avoidAreas.map { Geo.squareAround(it.lat, it.lng, 60.0) }
         val avoidTolls = settings.tollPolicy == TollPolicy.AVOID
         // "no motorways": the "more motorway" kind makes no sense, the fastest takes its place
@@ -909,8 +948,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         planRequest = req
         val departure = LocalDateTime.now()
 
-        fun build(kind: VariantKind, title: String, r: Route, opts: TripOptions): RouteVariant =
-            buildVariant(kind, title, r, opts, departure)
+        fun build(kind: VariantKind, title: String, r: Route, opts: TripOptions, signature: String? = null): RouteVariant =
+            buildVariant(kind, title, r, opts, departure, signature)
 
         val first = mutableListOf<RouteVariant>()
         val suffix = (if (avoidTolls) " · senza pedaggi" else "") + (if (avoidMotorways) " · senza autostrade" else "")
@@ -932,18 +971,45 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         // computed twice (on a trip across a border half a minute more on the tablet)
         val heavy = AppGraph.profiles.garage.value.active.let { it.isHgv || it.isBus }
         val twin = setOf(app.navmaster.truck.vehicle.RouteKind.FASTEST, app.navmaster.truck.vehicle.RouteKind.RECOMMENDED)
-        val kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
+        var kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
             .filter { !(heavy && pref in twin && it in twin) }
             .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
-        val tryNoToll = !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
+        val tryNoToll = !viaOnly && !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
+        if (viaOnly) kinds = emptyList()
         val extras = kinds.isNotEmpty() || tryNoToll
-        Log.i(TAG, "plan: ${first.size} route(s) shown, then ${kinds.joinToString { it.name }}${if (tryNoToll) " + no toll" else ""} (crow ${crowKm.roundToInt()} km)")
+        Log.i(TAG, "plan: ${first.size} route(s) shown, then variants${if (kinds.isNotEmpty()) ", " + kinds.joinToString { it.name } else ""}${if (tryNoToll) " + no toll" else ""} (crow ${crowKm.roundToInt()} km)")
         val shown = _plan.value.copy(variants = first.mapIndexed { i, x -> if (i == 0) x.copy(recommended = true) else x }, selected = 0, computing = false, advice = null, routeNote = routeNote,
-            more = if (extras) MoreRoutes.LOADING else MoreRoutes.NONE)
+            more = if (startsGuidance) MoreRoutes.NONE else MoreRoutes.LOADING)
         _plan.value = shown
         app.navmaster.truck.routing.RouteProgress.end()
+        if (startsGuidance) {
+          // the guidance starts now on the best route: nothing else to compute
+          withContext(Dispatchers.Main) { if (planRequest === req) then?.invoke(shown) }
+          return@launch
+        }
+
+        // 1b. the engine's variants: three more routes as good as the best one (another motorway, a
+        //     slightly different way), computed by themselves in the background and stopped as soon
+        //     as another route is asked; added after the routes on screen, each titled with its road
+        //     and its differences from the best one
+        val found = runCatching { AppGraph.routes.variants(from, waypoints, base, VariantAsk.AUTO) }
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; Log.w(TAG, "variants: $it") }.getOrDefault(emptyList())
+        if (planRequest !== req) return@launch
+        val engineVariants = mutableListOf<RouteVariant>()
+        var nVar = first.count { it.kind == VariantKind.ALTERNATIVE }
+        for ((r, info) in found) {
+          // only the same route again is left out: same totals AND same line (RouteSameness), never
+          // by the totals alone (a variant of the engine is as good as the best on purpose) nor by
+          // "along the same roads" (it shares most of its roads on purpose)
+          if ((_plan.value.variants + engineVariants).any { duplicate(it, r, info) }) continue
+          nVar++
+          engineVariants += build(VariantKind.ALTERNATIVE, variantTitle(info, nVar, more = false), r, base, info?.signature)
+        }
+        if (planRequest !== req) return@launch
+        Log.i(TAG, "plan: ${found.size} variant(s) from the engine, ${engineVariants.size} added")
+        val withVariants = _plan.updateAndGet { st -> st.copy(variants = st.variants + engineVariants, more = if (extras) MoreRoutes.LOADING else MoreRoutes.NONE) }
         if (!extras) {
-          withContext(Dispatchers.Main) { then?.invoke(shown) }
+          withContext(Dispatchers.Main) { then?.invoke(withVariants) }
           return@launch
         }
 
@@ -1043,7 +1109,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   }
 
   /** A route with its analysis: tolls, signed limits and difficulties for the active vehicle. */
-  private fun buildVariant(kind: VariantKind, title: String, r: Route, opts: TripOptions, departure: LocalDateTime): RouteVariant {
+  private fun buildVariant(kind: VariantKind, title: String, r: Route, opts: TripOptions, departure: LocalDateTime, signature: String? = null): RouteVariant {
     val garage = AppGraph.profiles.garage.value
     val v = garage.active
     val analysis = RouteAnalysis.analyse(r, v, garage.loadT)
@@ -1051,7 +1117,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val weight = v.tripWeightT(garage.loadT)
     val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
     val crit = AppGraph.criticalities.find(analysis, m, limits, v, garage.loadT, departure)
-    return RouteVariant(kind, title, r, analysis, limits, crit, opts, source = AppGraph.routes.sourceOf(r))
+    return RouteVariant(kind, title, r, analysis, limits, crit, opts, source = AppGraph.routes.sourceOf(r), signature = signature)
   }
 
   /**
@@ -1071,18 +1137,21 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         app.navmaster.truck.routing.RouteProgress.begin(
             (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0,
             alternatives = true)
-        val routes = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 2, moreRoutes = true))
+        // the engine's variants with any number of points, also longer ones (up to 1.5 times the
+        // time) and the shorter ones even when slower
+        val routes = AppGraph.routes.variants(from, waypoints, base, VariantAsk.MORE)
         app.navmaster.truck.routing.RouteProgress.phase("Altre strade trovate: controllo limiti, pedaggi e svincoli…", 0.9f)
         val departure = LocalDateTime.now()
         val cur = _plan.value
         val added = mutableListOf<RouteVariant>()
         var n = cur.variants.count { it.kind == VariantKind.ALTERNATIVE }
-        for (r in routes) {
-          // the same road as a route already on screen (often openrouteservice's or the best one
-          // again, with a few metres of difference): not offered twice
-          if ((cur.variants + added).any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
+        for ((r, info) in routes) {
+          // a route already on screen (the engine does not know which variants are there) is not
+          // offered twice (same totals and same line); a variant sharing most of its roads with
+          // another one, or as long and as slow, is another way on purpose
+          if ((cur.variants + added).any { duplicate(it, r, info) }) continue
           n++
-          added += buildVariant(VariantKind.ALTERNATIVE, "Alternativa $n", r, base, departure)
+          added += buildVariant(VariantKind.ALTERNATIVE, variantTitle(info, n, more = true), r, base, departure, info?.signature)
         }
         Log.i(TAG, "more routes (engine): ${routes.size} found, ${added.size} new")
         app.navmaster.truck.routing.RouteProgress.end()
@@ -1125,6 +1194,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     return near >= n * 0.9
   }
 
+  private fun track(r: Route, signature: String?) = Track(r.distance, r.steps.sumOf { it.duration }, signature, r.geometry)
+
+  /** [r] (with the engine's [info]) is the route [v] already offered: see [RouteSameness]. */
+  private fun duplicate(v: RouteVariant, r: Route, info: VariantInfo?): Boolean =
+      RouteSameness.duplicate(track(v.route, v.signature), track(r, info?.signature))
+
   private fun same(a: Route, b: Route): Boolean =
       Geo.almostSame(a.distance, b.distance, 0.004) && Geo.almostSame(a.steps.sumOf { it.duration }, b.steps.sumOf { it.duration }, 0.01)
 
@@ -1133,11 +1208,12 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   fun start(simulate0: Boolean) {
     val v = _plan.value.current ?: return
     // the other choices still being looked for are no longer needed (the tablet is free for the
-    // recalculations along the way)
-    if (_plan.value.more == MoreRoutes.LOADING) {
-      planJob?.cancel()
-      _plan.update { it.copy(more = MoreRoutes.NONE) }
-    }
+    // recalculations along the way): their searches stop at once (the engine's cancel token)
+    planJob?.cancel()
+    moreJob?.cancel()
+    // a recalculation of the route driven before does not overwrite this one
+    cancelRecalc()
+    if (_plan.value.more == MoreRoutes.LOADING) _plan.update { it.copy(more = MoreRoutes.NONE) }
     // a trip from a departure chosen on the map can only be simulated (the vehicle is elsewhere)
     val simulate = simulate0 || _plan.value.start != null
     _simulating.value = simulate
@@ -1153,6 +1229,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     asked.clear()
     saidPlaces.clear()
     reachedStops.clear()
+    // the metres driven on the route of before count for nothing on this one (they made the stops
+    // of a new trip look already passed)
+    lastOnRouteTraveled = 0.0
     lastGeometryKey = geometryKey(v.route.geometry)
     // the trip starts away from the road the route begins on (a yard, a car park): said once
     if (!simulate) lastLocation.value?.coordinates?.let { here ->
@@ -1591,6 +1670,13 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     guiding = false
     offerJob?.cancel()
     _offer.value = null
+    // the routes still being computed (a place chosen while driving: its "then" started the guidance
+    // again by itself after the stop) and the recalculations under way go too
+    planJob?.cancel()
+    moreJob?.cancel()
+    planRequest = null
+    cancelRecalc()
+    lastOnRouteTraveled = 0.0
     core.stopNavigation()
     AppGraph.smartLocation.setRoute(null)
     voice.clear()
@@ -1980,29 +2066,34 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
    */
   fun addStopDuringNav(target: GeographicCoordinate, label: String, via: Boolean = false) {
     val p = _plan.value
-    val dest = p.stops.lastOrNull()
-    _plan.value = p.copy(stops = listOfNotNull(Stop(target, label, via = via), dest))
-    val from = navigationUiState.value.location ?: lastLocation.value ?: return
-    _nav.update { it.copy(recalculating = true) }
-    viewModelScope.launch(Dispatchers.IO) {
+    val here = navigationUiState.value.location ?: lastLocation.value
+    // among the stops still ahead, where it lengthens the trip the least (before, only the new stop
+    // and the destination were left: the other deliveries of the trip were lost)
+    // only the stops really reached (within 80 m) leave the trip: a guess from the line of the old
+    // route could take a delivery away for good
+    _plan.value = p.copy(stops = withStop(here?.coordinates, notReached(p.stops), Stop(target, label, via = via)))
+    val from = here ?: return
+    val stops = _plan.value.stops
+    launchRecalc { seq ->
       try {
-        val stops = _plan.value.stops
         val waypoints = stops.mapIndexed { i, st ->
           Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
         }
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value).firstOrNull() ?: throw IllegalStateException("nessun percorso")
-        withContext(Dispatchers.Main) {
-          if (!replaceIfGuiding(r)) return@withContext
-        }
-        say(if (via) "Percorso ricalcolato: passi da quel punto e prosegui verso la destinazione." else "Tappa aggiunta: $label.")
+        if (withContext(Dispatchers.Main) { applyIfLatest(seq, r) })
+          say(if (via) "Percorso ricalcolato: passi da quel punto e prosegui verso la destinazione." else "Tappa aggiunta: $label.")
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "add stop: $e")
-        say(if (via) "Da quel punto non trovo un percorso verso la destinazione." else "Non riesco ad aggiungere la tappa.")
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
+        if (recalcs.isLatest(seq)) say(if (via) "Da quel punto non trovo un percorso verso la destinazione." else "Non riesco ad aggiungere la tappa.")
       }
     }
   }
+
+  /** [stops] without the intermediate ones reached (the destination always stays). */
+  private fun notReached(stops: List<Stop>): List<Stop> =
+      stops.filterIndexed { i, st -> i == stops.size - 1 || stopKey(st.coordinate) !in reachedStops }
 
   /**
    * Go to a point off the route and then back onto the route computed at the start, to drive the
@@ -2044,24 +2135,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     }
     Log.i(TAG, "detour to ${target.lat},${target.lng}, back on the route at ${rejoin.toInt()} m, ${vias.size} points of the old route")
     _plan.value = _plan.value.copy(stops = listOf(Stop(target, label), dest))
-    _nav.update { it.copy(recalculating = true) }
-    viewModelScope.launch(Dispatchers.IO) {
+    launchRecalc { seq ->
       try {
         val opts = AppGraph.trip.value.copy(viaHeadings = headings, alternates = 0)
         val waypoints = listOf(Waypoint(coordinate = target, kind = WaypointKind.BREAK)) +
             vias.map { Waypoint(coordinate = it, kind = WaypointKind.VIA) } +
             Waypoint(coordinate = dest.coordinate, kind = WaypointKind.BREAK)
         val r = AppGraph.routes.routes(from, waypoints, opts).firstOrNull() ?: throw IllegalStateException("nessun percorso")
-        AppGraph.trip.value = opts
-        withContext(Dispatchers.Main) {
-          if (!replaceIfGuiding(r)) return@withContext
+        val applied = withContext(Dispatchers.Main) {
+          applyIfLatest(seq, r).also { if (it) AppGraph.trip.value = opts }
         }
-        say("Ti porto al punto scelto, poi torni sul percorso di prima.")
+        if (applied) say("Ti porto al punto scelto, poi torni sul percorso di prima.")
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "detour: $e")
-        say("Non trovo un percorso per quel punto.")
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
+        if (recalcs.isLatest(seq)) say("Non trovo un percorso per quel punto.")
       }
     }
   }
@@ -2089,24 +2178,20 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val from = navigationUiState.value.location ?: lastLocation.value ?: return
     // the points of an old "go there and come back" do not count any more
     AppGraph.trip.value = AppGraph.trip.value.copy(viaHeadings = emptyMap())
-    _nav.update { it.copy(recalculating = true) }
-    viewModelScope.launch(Dispatchers.IO) {
+    val stops = _plan.value.stops
+    launchRecalc { seq ->
       try {
-        val stops = _plan.value.stops
         val waypoints = stops.mapIndexed { i, st ->
           Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK)
         }
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value.copy(alternates = 0)).firstOrNull()
             ?: throw IllegalStateException("nessun percorso")
-        withContext(Dispatchers.Main) {
-          if (!replaceIfGuiding(r)) return@withContext
-        }
-        say(message)
+        if (withContext(Dispatchers.Main) { applyIfLatest(seq, r) }) say(message)
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "reroute: $e")
-        say("Non riesco a ricalcolare il percorso.")
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
+        if (recalcs.isLatest(seq)) say("Non riesco a ricalcolare il percorso.")
       }
     }
   }
@@ -2301,7 +2386,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   /** Start a guidance to a single place right away (from the POI list or a search while driving). */
   fun goTo(target: GeographicCoordinate, label: String, simulate: Boolean = false) {
     _plan.value = PlanState(stops = listOf(Stop(target, label)))
-    planRoutes { state -> if (state.variants.isNotEmpty()) start(simulate) }
+    // the guidance moves to the new place as soon as its best route is there (no variants to choose)
+    planRoutes(startsGuidance = true) { state -> if (state.variants.isNotEmpty()) start(simulate) }
   }
 
   /** Answer to the tight ramp question: false = take the next exit instead. */
@@ -2318,6 +2404,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val p = _nav.value.prompt as? DriverPrompt.TollChoice ?: return dismissPrompt()
     dismissPrompt()
     if (!avoid) return
+    // the driver's choice is the newest: a recalculation under way does not overwrite it
+    if (guiding) cancelRecalc()
     if (!replaceIfGuiding(p.tollFree)) return
     AppGraph.trip.value = AppGraph.trip.value.copy(avoidTolls = true)
     say("Percorso senza pedaggio.")
@@ -2382,6 +2470,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val o = _offer.value ?: return
     val r = o.route ?: return
     _offer.value = null
+    // the driver's choice is the newest: a recalculation under way does not overwrite it
+    if (guiding) cancelRecalc()
     if (!replaceIfGuiding(r)) return
     AppGraph.trip.value = o.options
     say("Va bene: percorso ${o.title}.")
@@ -2444,23 +2534,44 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     return true
   }
 
+  /**
+   * A recalculation of the guided route (a wrong turn, a stop added, a detour, a closed road…): the
+   * one under way is cancelled and waited for, [work] gets its number and hands its route over with
+   * [applyIfLatest]; only the newest puts "recalculating" back to false.
+   */
+  private fun launchRecalc(work: suspend (seq: Long) -> Unit) = recalcs.launch(work)
+
+  /** No recalculation under way counts any more (the guidance stopped, started, or the driver chose a route). */
+  private fun cancelRecalc() {
+    recalcs.cancel()
+    // a wrong-turn reroute cancelled here no longer blocks the off-route check
+    offRouteAskedKey = null
+    _nav.update { if (it.recalculating) it.copy(recalculating = false) else it }
+  }
+
+  /** [r], from the recalculation [seq], becomes the guided route only if no newer one was asked (main thread). */
+  private fun applyIfLatest(seq: Long, r: Route): Boolean {
+    if (!recalcs.isLatest(seq)) {
+      Log.i(TAG, "route of an older recalculation not handed over")
+      return false
+    }
+    return replaceIfGuiding(r).also { if (it) recalcs.handedOver(seq) }
+  }
+
   private fun recalcFromHere(message: String) {
     val from = navigationUiState.value.location ?: lastLocation.value ?: return
-    _nav.update { it.copy(recalculating = true) }
     say(message)
-    viewModelScope.launch(Dispatchers.IO) {
+    launchRecalc { seq ->
       try {
         // every stop still to make, not only the last one (the others were silently skipped)
         val waypoints = remainingStops()
         val r = AppGraph.routes.routes(from, waypoints, AppGraph.trip.value).firstOrNull() ?: throw IllegalStateException("nessun percorso")
-        withContext(Dispatchers.Main) {
-          if (!replaceIfGuiding(r)) return@withContext
-        }
+        withContext(Dispatchers.Main) { applyIfLatest(seq, r) }
+      } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
       } catch (e: Exception) {
         Log.w(TAG, "recalc: $e")
-        say("Non trovo un'alternativa: prosegui con attenzione.")
-      } finally {
-        _nav.update { it.copy(recalculating = false) }
+        if (recalcs.isLatest(seq)) say("Non trovo un'alternativa: prosegui con attenzione.")
       }
     }
   }
@@ -2573,7 +2684,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       Log.i(TAG, "autoRun verso ${dest.lat},${dest.lng}, attendo la posizione")
       while (lastLocation.value == null) delay(500)
       _plan.value = PlanState(stops = listOf(Stop(dest, label ?: "Prova")))
-      planRoutes { state ->
+      // a variant to choose: all the routes first; else the guidance starts on the best one at once
+      planRoutes(startsGuidance = variant == null) { state ->
         if (state.variants.isNotEmpty()) {
           if (variant != null) selectVariant(variant)
           start(simulate)
@@ -2693,6 +2805,55 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   companion object {
     private const val TAG = "NavMasterVM"
+
+    /**
+     * Where a new point [c] goes among [stops] (the last one is the destination) so that it
+     * lengthens the trip from [start] the least: the index it takes (between the start and the first
+     * stop, between two stops, ..., never after the destination). Without a start, before the destination.
+     */
+    internal fun bestInsertion(start: GeographicCoordinate?, stops: List<GeographicCoordinate>, c: GeographicCoordinate): Int {
+      if (start == null) return (stops.size - 1).coerceAtLeast(0)
+      val pts = listOf(start) + stops
+      var best = 0
+      var bestCost = Double.MAX_VALUE
+      for (i in stops.indices) {
+        val prev = pts[i]
+        val next = pts[i + 1]
+        val cost = Geo.dist(prev, c) + Geo.dist(c, next) - Geo.dist(prev, next)
+        if (cost < bestCost) {
+          bestCost = cost
+          best = i
+        }
+      }
+      return best
+    }
+
+    /** [stops] with [stop] in its best place (see [bestInsertion]): none of them lost. */
+    internal fun withStop(start: GeographicCoordinate?, stops: List<Stop>, stop: Stop): List<Stop> =
+        stops.toMutableList().apply { add(bestInsertion(start, stops.map { it.coordinate }, stop.coordinate), stop) }
+
+    /**
+     * The title of a variant of the engine: its road and its differences from the best route
+     * ("via A21 · +4 min, −6 km"); "Altri percorsi" ([more]) also says when it is clearly longer,
+     * only when it really has more km (a shorter but slower one has only its differences: "più
+     * lunga · +14 min, −8 km" read as a road with more km).
+     */
+    internal fun variantTitle(info: VariantInfo?, n: Int, more: Boolean): String {
+      val label = info?.label?.takeIf { it.isNotBlank() } ?: "Alternativa $n"
+      val diff = info?.diff?.takeIf { it.isNotBlank() } ?: info?.let { diffWords(it.extraS, it.extraM) }
+      val longer = more && info != null && info.longer && info.extraM > 0
+      return listOfNotNull(label, if (longer) "più lunga" else null, diff?.takeIf { it.isNotBlank() }).joinToString(" · ")
+    }
+
+    /** "+4 min, −6 km" (empty when the same). */
+    internal fun diffWords(extraS: Double, extraM: Double): String {
+      val min = (extraS / 60).roundToInt()
+      val km = (extraM / 1000).roundToInt()
+      return listOfNotNull(
+          if (min != 0) (if (min > 0) "+$min min" else "−${-min} min") else null,
+          if (km != 0) (if (km > 0) "+$km km" else "−${-km} km") else null,
+      ).joinToString(", ")
+    }
     /** The shortest route is looked for only on trips up to this distance (as the crow flies). */
     private const val SHORTEST_MAX_KM = 200.0
     /** The toll-free route is looked for only on trips up to this distance (as the crow flies). */

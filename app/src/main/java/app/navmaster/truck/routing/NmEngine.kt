@@ -15,15 +15,33 @@ import it.navmaster.engine.api.DirectionsLimits
 import it.navmaster.engine.api.DirectionsRequest
 import it.navmaster.engine.api.DirectionsService
 import it.navmaster.engine.api.Json
+import it.navmaster.engine.api.RequestContext
 import it.navmaster.engine.api.ResponseFormat
 import it.navmaster.engine.api.RoadsService
+import it.navmaster.engine.api.SearchSlots
 import it.navmaster.engine.api.Transfer
 import it.navmaster.engine.api.Transfers
+import it.navmaster.engine.routing.CancelToken
 import java.io.File
+import java.util.concurrent.Executors
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.zip.GZIPInputStream
 import kotlin.concurrent.read
 import kotlin.concurrent.write
+
+/**
+ * How a computation is asked of the engine: [priority] MAIN for the route on screen (or guided),
+ * BACKGROUND for what is computed next to it (the variants, the other kinds, the toll-free one),
+ * which gives way to a MAIN one; [deadlineMs] the time it may take (null: no limit).
+ */
+class EngineCall(val priority: Int = RequestContext.MAIN, val deadlineMs: Long? = null)
+
+/**
+ * The engine's answer to one request: [text] (GeoJSON or openrouteservice's error object), or null
+ * when the trip cannot be computed here, then [problem] says why. Returned with the answer, not kept
+ * in the engine: several requests run at the same time and one cleared or overwrote another's reason.
+ */
+class EngineReply(val text: String?, val problem: String? = null)
 
 /**
  * navmaster-engine on the tablet: the graphs of the downloaded countries (nm.tar.gz in each
@@ -47,17 +65,19 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
 
   private val lock = ReentrantReadWriteLock()
   private val open = LinkedHashMap<String, Open>()
+  // at most 2 core searches at a time in the whole app (the tablet's memory and cores), one of them
+  // at most for the work in the background: a route on screen always finds one free
+  private val slots = SearchSlots(2)
+  // the engine's helper thread (legs, candidates of the variants): used only inside lock.read, so a
+  // graph is never closed under it
+  private val pool = Executors.newFixedThreadPool(1) { r -> Thread(r, "nm-leg").apply { isDaemon = true } }
   private val transfers = HashMap<String, List<Transfer>>()
 
-  /** Why the last route could not use the engine (shown under the routes), null when it could. */
-  @Volatile var problem: String? = null
-    private set
-
-  /** The graph of [region], opened if needed (null when it has none or it does not open; [problem] says why). */
-  private fun graphOf(region: InstalledRegion): Open? {
+  /** The graph of [region], opened if needed (null when it has none or it does not open; [why] gets the reason). */
+  private fun graphOf(region: InstalledRegion, why: (String) -> Unit = {}): Open? {
     val dir = ready(region.dir)
     if (dir == null) {
-      problem = "${region.label}: manca il grafo del motore NavMaster. In «Mappe d'Europa» tocca «Aggiorna»"
+      why("${region.label}: manca il grafo del motore NavMaster. In «Mappe d'Europa» tocca «Aggiorna»")
       Log.w(TAG, "engine: no graph in ${region.id}")
       return null
     }
@@ -84,7 +104,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
         Log.i(TAG, "engine graph of ${region.id} opened in ${SystemClock.elapsedRealtime() - started} ms: ${g.profileNames} ch=${g.chStorages.keys}")
         o
       } catch (e: Throwable) {
-        problem = "${region.label}: il grafo del motore non si apre (${e.javaClass.simpleName}: ${e.message?.take(80)}). In «Mappe d'Europa» tocca «Aggiorna»"
+        why("${region.label}: il grafo del motore non si apre (${e.javaClass.simpleName}: ${e.message?.take(80)}). In «Mappe d'Europa» tocca «Aggiorna»")
         Log.e(TAG, "engine graph of ${region.id} not opened", e)
         null
       }
@@ -94,34 +114,48 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
   /**
    * openrouteservice's directions, computed here: [body] is the JSON openrouteservice would receive
    * (points [lat, lon] in [points]), the answer its GeoJSON (or its error object,
-   * `{"error":{"code":2009,...}}`). Null when a country of the trip has no graph on the tablet
-   * ([problem] says which).
+   * `{"error":{"code":2009,...}}`). No text when a country of the trip has no graph on the tablet
+   * (the reply's problem says which). [cancel] stops the search (it then throws the engine's
+   * SearchCancelledException); [call] says its priority and time limit.
    */
-  fun directions(points: List<DoubleArray>, profile: String, body: String): String? {
+  fun directions(points: List<DoubleArray>, profile: String, body: String, call: EngineCall = EngineCall(), cancel: CancelToken = CancelToken.NEVER): EngineReply {
+    var problem: String? = null
+    val why = { w: String -> problem = w }
+    val text = directionsText(points, profile, body, call, cancel, why)
+    return EngineReply(text, if (text == null) problem else null)
+  }
+
+  private fun directionsText(points: List<DoubleArray>, profile: String, body: String, call: EngineCall, cancel: CancelToken, why: (String) -> Unit): String? {
+    val t0 = SystemClock.elapsedRealtime()
     @Suppress("UNCHECKED_CAST")
     val parsed = Json.parse(body) as Map<String, Any?>
+    val parseMs = SystemClock.elapsedRealtime() - t0
     val countries = regions.installed.value.filter { present(it.dir) }
-    if (countries.isEmpty()) { problem = "nessuna mappa scaricata in questa zona"; return null }
+    if (countries.isEmpty()) { why("nessuna mappa scaricata in questa zona"); return null }
     val at = points.map { regions.regionAt(it[0], it[1]) }
     // a point in a country not on the tablet: the trip cannot be computed here
     val missing = points.indices.firstOrNull { i -> at[i] == null && catalog?.countryAt(points[i][0], points[i][1]) != null }
     if (missing != null) {
-      problem = "${catalog?.countryAt(points[missing][0], points[missing][1])?.name ?: "Un Paese del viaggio"}: mappa non scaricata. In «Mappe d'Europa» scaricala"
+      why("${catalog?.countryAt(points[missing][0], points[missing][1])?.name ?: "Un Paese del viaggio"}: mappa non scaricata. In «Mappe d'Europa» scaricala")
       return null
     }
     val known = at.filterNotNull().distinctBy { it.id }
+    // the engine's lines of this request (variants, measures) go to the log only, never to the bar
+    // of the search (RouteProgress reads the lines of the main route)
+    val rc = RequestContext(cancel = cancel, priority = call.priority, executor = pool, slots = slots, log = { Log.i(TAG, it) })
     // one country: its graph (a point just outside every outline goes with the others)
     if (known.size <= 1) {
       val region = known.firstOrNull() ?: countries.first()
       // the graph may be closed by another thread between opening and reading it: then opened again
       repeat(3) {
-        val o = graphOf(region) ?: return null
-        problem = null
+        val o = graphOf(region, why) ?: return null
         lock.read {
           if (open[region.id] === o) {
             o.used = SystemClock.elapsedRealtime()
-            return try { Json.stringify(o.service.handle(DirectionsRequest.fromJson(profile, parsed), ResponseFormat.GEOJSON)) }
-            catch (e: ApiException) { Json.stringify(o.service.errorBody(e)) }
+            return measured(rc, parseMs) {
+              try { o.service.handle(DirectionsRequest.fromJson(profile, parsed), ResponseFormat.GEOJSON, rc) }
+              catch (e: ApiException) { o.service.errorBody(e) }
+            }
           }
         }
       }
@@ -131,21 +165,64 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     val knownIds = known.map { it.id }.toSet()
     val near = countries.filter { r -> r.id in knownIds || nearTrip(r, points) }
     repeat(3) {
-      val graphs = near.sortedBy { r -> if (r.id in knownIds) 0 else 1 }.take(MAX_OPEN).mapNotNull { graphOf(it) }
+      val graphs = near.sortedBy { r -> if (r.id in knownIds) 0 else 1 }.take(MAX_OPEN).mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }) }
       if (knownIds.any { k -> graphs.none { it.region.id == k } }) return null
-      problem = null
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
-          // the engine's messages also move the bar of the search (RouteProgress)
-          RouteProgress.names = countries.associate { it.id to it.label }
-          val cb = CrossBorderDirections(graphs.map { it.country }, { a, b -> transfersBetween(a, b) }, { Log.i(TAG, it); RouteProgress.onEngineLog(it) })
-          return try {
-            Json.stringify(cb.handle(DirectionsRequest.fromJson(profile, parsed), at.map { it?.id }))
-          } catch (e: ApiException) { Json.stringify(graphs.first().service.errorBody(e)) }
+          // the engine's messages also move the bar of the search (RouteProgress), for the route on screen only
+          val main = call.priority == RequestContext.MAIN
+          if (main) RouteProgress.names = countries.associate { it.id to it.label }
+          val cb = CrossBorderDirections(graphs.map { it.country }, { a, b -> transfersBetween(a, b) }, { Log.i(TAG, it); if (main) RouteProgress.onEngineLog(it) })
+          return measured(rc, parseMs) {
+            try { cb.handle(DirectionsRequest.fromJson(profile, parsed), at.map { it?.id }, rc) }
+            catch (e: ApiException) { graphs.first().service.errorBody(e) }
+          }
         }
       }
     }
     return null
+  }
+
+  /**
+   * The answer of [handle] as text, with the measures of the request in the log ("stats …": the
+   * engine's, plus reading the request and writing the answer here), also when it was cancelled.
+   */
+  private inline fun measured(rc: RequestContext, parseMs: Long, handle: () -> Map<String, Any?>): String {
+    val t0 = SystemClock.elapsedRealtime()
+    var handleMs = -1L
+    var stringifyMs = -1L
+    try {
+      val doc = handle()
+      handleMs = SystemClock.elapsedRealtime() - t0
+      val t1 = SystemClock.elapsedRealtime()
+      return Json.stringify(doc).also { stringifyMs = SystemClock.elapsedRealtime() - t1 }
+    } finally {
+      if (handleMs < 0) handleMs = SystemClock.elapsedRealtime() - t0
+      Log.i(TAG, runCatching { rc.stats.line() }.getOrDefault("stats") +
+          " | app: json $parseMs ms, motore $handleMs ms, testo ${if (stringifyMs < 0) "-" else "$stringifyMs ms"}")
+    }
+  }
+
+  /**
+   * The system is short of memory: the engine's caches of legs and snaps go. Called on the main
+   * thread: it never waits for the lock (a search holding it and a graph waiting to open behind it
+   * froze the screen for seconds, "NavMaster non risponde"). The open services are read with
+   * tryLock; when a graph is being opened or closed, on a thread of its own. The caches themselves
+   * are synchronized: no engine lock is needed to clear them.
+   */
+  fun trimMemory(level: Int) {
+    val now = lock.readLock()
+    if (now.tryLock()) {
+      val services = try { open.values.map { it.service } } finally { now.unlock() }
+      clear(services, level)
+    } else {
+      Thread({ clear(lock.read { open.values.map { it.service } }, level) }, "nm-trim").apply { isDaemon = true }.start()
+    }
+  }
+
+  private fun clear(services: List<DirectionsService>, level: Int) {
+    for (s in services) runCatching { s.clearCaches() }
+    Log.i(TAG, "engine caches cleared (trim memory $level)")
   }
 
   /** The country's outline (catalog bbox) is within reach of the way between the points. */
@@ -314,7 +391,6 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       open.clear()
     }
     synchronized(transfers) { transfers.clear() }
-    problem = null
   }
 
   companion object {
