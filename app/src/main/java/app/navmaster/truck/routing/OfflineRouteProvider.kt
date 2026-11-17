@@ -45,6 +45,41 @@ class OfflineRouteProvider(
   @Volatile var note: String? = null
     private set
 
+  /**
+   * The points of the last trip's main route the vehicle could not reach within 400 m, moved onto
+   * the nearest road it may drive (NmRouting's wider radii); empty when none was.
+   */
+  @Volatile var moved: List<MovedPoint> = emptyList()
+    private set
+
+  /**
+   * Where each point moved by the engine is really reached, by the coordinate asked (the stop's):
+   * from every request of this provider, the last [MAX_REACH_POINTS] kept. The guidance counts the
+   * stop as reached there (the route never comes within 80 m of the coordinate asked: before, a
+   * delivery made at the moved point stayed in the trip and every recalculation went back to it).
+   */
+  private val reachPoints = object : LinkedHashMap<String, uniffi.ferrostar.GeographicCoordinate>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, uniffi.ferrostar.GeographicCoordinate>?): Boolean = size > MAX_REACH_POINTS
+  }
+
+  /** The point of the route where a stop at [c] is really reached when the engine moved it; null when it was not. */
+  fun reachPointOf(c: uniffi.ferrostar.GeographicCoordinate): uniffi.ferrostar.GeographicCoordinate? =
+      synchronized(reachPoints) { reachPoints[TripOptions.pointKey(c.lat, c.lng)] }
+
+  private fun rememberReachPoints(moved: List<MovedPoint>, points: List<DoubleArray>) = synchronized(reachPoints) {
+    for (m in moved) {
+      val p = points.getOrNull(m.index) ?: continue
+      if (m.lat.isNaN() || m.lon.isNaN()) continue
+      reachPoints[TripOptions.pointKey(p[0], p[1])] = uniffi.ferrostar.GeographicCoordinate(m.lat, m.lon)
+    }
+  }
+
+  /**
+   * A point of the trip with no road for the vehicle even within the widest radius tried
+   * ([radiusM], 5 km): [index] its place among the [nPoints] points of the request (0 the start).
+   */
+  class UnreachablePointException(val index: Int, val radiusM: Double, val nPoints: Int, message: String) : IllegalStateException(message)
+
   private fun mark(list: List<Route>, source: String) = synchronized(sources) {
     for (r in list) sources.addLast(java.lang.ref.WeakReference(r) to source)
     while (sources.size > 64) sources.removeFirst()
@@ -164,8 +199,12 @@ class OfflineRouteProvider(
         if (answer.results == null) {
           val why = answer.note ?: "il motore non ha trovato un percorso"
           Log.w(TAG, "no route: $why")
+          val u = answer.unreachable
+          if (u != null) throw UnreachablePointException(u.index, u.radiusM, stops.points.size, "Nessun percorso: $why.")
           throw IllegalStateException("Nessun percorso: $why.")
         }
+        moved = answer.moved
+        rememberReachPoints(answer.moved, stops.points)
         if (answer.text == null) throw IllegalStateException("Nessun percorso: risposta del motore assente.")
         val out = guide(answer, spec.hgv, stops.kinds, started).map { it.first }
         if (out.isEmpty()) throw IllegalStateException("Nessun percorso: la guida del percorso non è stata calcolata.")
@@ -202,5 +241,7 @@ class OfflineRouteProvider(
 
   companion object {
     private const val TAG = "NavMasterRoute"
+    /** The points moved by the engine remembered (by the coordinate asked). */
+    const val MAX_REACH_POINTS = 64
   }
 }

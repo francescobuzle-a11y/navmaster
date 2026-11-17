@@ -600,6 +600,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   private fun stopKey(c: GeographicCoordinate) = "%.5f,%.5f".format(java.util.Locale.ROOT, c.lat, c.lng)
 
+  /**
+   * Where the route really arrives for [st]: the point of the nearest road the vehicle may drive
+   * when the engine moved the stop there (a town centre closed to lorries, up to 5 km away: the
+   * route never comes within 80 m of the coordinate asked), else the stop's own coordinate.
+   */
+  private fun reachPoint(st: Stop): GeographicCoordinate = reachPoint(st.coordinate)
+  private fun reachPoint(c: GeographicCoordinate): GeographicCoordinate = AppGraph.routes.reachPointOf(c) ?: c
+
   private fun remainingStops(): List<Waypoint> {
     val stops = remainingStopList()
     return stops.mapIndexed { i, st -> Waypoint(coordinate = st.coordinate, kind = if (st.via && i < stops.size - 1) WaypointKind.VIA else WaypointKind.BREAK) }
@@ -618,10 +626,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       if (i < stops.size - 1 && a != null) {
         // an intermediate stop already passed on the old route does not count any more
         val g = a.route.geometry
+        val reach = reachPoint(st)
         var best = Double.MAX_VALUE
         var at = -1.0
         for (k in g.indices) {
-          val d = Geo.dist(g[k], st.coordinate)
+          val d = Geo.dist(g[k], reach)
           if (d < best) {
             best = d
             at = a.cum[k]
@@ -701,7 +710,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           val p = a.pointAt(m)
           val q = a.pointAt(minOf(m + 30, a.length))
           // not next to a stop: the stop itself is the point there
-          if (stops.none { Geo.dist(it.coordinate, p) < 600 }) {
+          if (stops.none { Geo.dist(reachPoint(it.coordinate), p) < 600 }) {
             vias += m to Waypoint(coordinate = p, kind = WaypointKind.VIA)
             headings[TripOptions.pointKey(p.lat, p.lng)] = Geo.bearing(p, q)
           }
@@ -712,8 +721,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           var best = Double.MAX_VALUE
           var at = a.length
           val g = a.route.geometry
+          val reach = reachPoint(st.coordinate)
           for (k in g.indices) {
-            val d = Geo.dist(g[k], st.coordinate)
+            val d = Geo.dist(g[k], reach)
             if (d < best) {
               best = d
               at = a.cum[k]
@@ -943,7 +953,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
             (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0)
         val main = AppGraph.routes.routes(from, waypoints, base.copy(alternates = 0))
         if (main.isNotEmpty()) app.navmaster.truck.routing.RouteProgress.routeFound()
-        val routeNote = AppGraph.routes.note
+        // a stop the vehicle cannot reach (a town centre closed to lorries), moved by the engine onto
+        // the nearest road it may drive: said under the routes, and aloud
+        val movedNote = movedNote(AppGraph.routes.moved, p.stops, if (v.isHgv) "il camion" else if (v.isBus) "il bus" else "il mezzo")
+        val routeNote = listOfNotNull(movedNote, AppGraph.routes.note).takeIf { it.isNotEmpty() }?.joinToString("\n")
+        if (movedNote != null) { Log.i(TAG, "moved: $movedNote"); say(movedNote) }
         val req = Triple(from, waypoints, base)
         planRequest = req
         val departure = LocalDateTime.now()
@@ -1806,10 +1820,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       offRouteSince = 0L
       lastOnRouteTraveled = traveled
     }
-    // the intermediate stops reached
+    // the intermediate stops reached (a stop moved by the engine: where the route really arrives)
     ui.location?.coordinates?.let { here ->
       val stops = _plan.value.stops
-      for (st in stops.dropLast(1)) if (Geo.dist(here, st.coordinate) < 80.0) reachedStops += stopKey(st.coordinate)
+      for (st in stops.dropLast(1)) if (Geo.dist(here, reachPoint(st)) < 80.0) reachedStops += stopKey(st.coordinate)
     }
     // the vehicle reached the route (within 25 m of its line): from now on leaving it is a wrong turn
     if (joinedKey != lastGeometryKey) {
@@ -2178,7 +2192,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val from = navigationUiState.value.location ?: lastLocation.value ?: return
     // the points of an old "go there and come back" do not count any more
     AppGraph.trip.value = AppGraph.trip.value.copy(viaHeadings = emptyMap())
-    val stops = _plan.value.stops
+    // the stops still ahead: not the ones already reached (a stop moved by the engine onto the
+    // nearest road counts as reached there, and the route must not go back to it)
+    val stops = notReached(_plan.value.stops)
     launchRecalc { seq ->
       try {
         val waypoints = stops.mapIndexed { i, st ->
@@ -2795,6 +2811,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   private fun friendly(e: Exception): String {
     val m = e.message ?: e.toString()
+    if (e is app.navmaster.truck.routing.OfflineRouteProvider.UnreachablePointException) {
+      return unreachableWords(e.index, e.nPoints, e.radiusM, _plan.value.stops)
+    }
     return when {
       "non installate" in m -> m
       "171" in m || "No suitable edges" in m -> "Nessuna strada percorribile vicino alla partenza o alla destinazione"
@@ -2805,6 +2824,50 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   companion object {
     private const val TAG = "NavMasterVM"
+
+    /**
+     * The name of point [index] of a request with [nPoints] points for the driver: "la partenza",
+     * the label of the stop (the points after the start are [stops] when the request is the plan's),
+     * else "la tappa N" / "la destinazione".
+     */
+    internal fun pointName(index: Int, nPoints: Int, stops: List<Stop>): String = when {
+      index == 0 -> "la partenza"
+      nPoints == stops.size + 1 && index - 1 in stops.indices -> "«${stops[index - 1].label}»"
+      index == nPoints - 1 -> "la destinazione"
+      else -> "la tappa $index"
+    }
+
+    /**
+     * The note under the routes for the points moved onto the nearest road the vehicle may drive
+     * ([moved], from the plan's request: the start, then [stops]): "Brescia: il camion non può
+     * entrare, tappa spostata di 1,3 km sulla strada percorribile più vicina"; null when none was.
+     */
+    internal fun movedNote(moved: List<app.navmaster.truck.routing.MovedPoint>, stops: List<Stop>, vehicle: String = "il camion"): String? {
+      if (moved.isEmpty()) return null
+      val nPoints = stops.size + 1
+      return moved.joinToString("\n") { m ->
+        val km = app.navmaster.truck.routing.NmRouting.metres(m.meters)
+        when {
+          m.index == 0 -> "Partenza: $vehicle non può passare di lì, partenza spostata di $km sulla strada percorribile più vicina"
+          m.index - 1 in stops.indices -> {
+            val st = stops[m.index - 1]
+            val what = if (m.index == nPoints - 1) "destinazione" else "tappa"
+            "${st.label}: $vehicle non può entrare, $what spostata di $km sulla strada percorribile più vicina"
+          }
+          else -> "Tappa ${m.index}: $vehicle non può entrare, tappa spostata di $km sulla strada percorribile più vicina"
+        }
+      }
+    }
+
+    /** The error for a point with no road for the vehicle even within [radiusM]: the point by its name, what to do. */
+    internal fun unreachableWords(index: Int, nPoints: Int, radiusM: Double, stops: List<Stop>): String {
+      val name = pointName(index, nPoints, stops)
+      val km = app.navmaster.truck.routing.NmRouting.metres(radiusM)
+      // "da «Brescia»", "dalla tappa 2", "dalla destinazione"
+      val from = if (name.startsWith("la ")) "dal$name" else "da $name"
+      return if (index == 0) "Nessuna strada per il mezzo entro $km dalla partenza: spostala"
+      else "Nessuna strada per il mezzo entro $km $from: toglila dal viaggio o spostala"
+    }
 
     /**
      * Where a new point [c] goes among [stops] (the last one is the destination) so that it

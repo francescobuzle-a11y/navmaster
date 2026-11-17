@@ -11,7 +11,9 @@ import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.Executors
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -70,6 +72,63 @@ class EngineContractTest {
           println("app → engine ${ask.count}: ${found.size} variants ${found.map { it.variant?.label + " " + it.variant?.diff }}")
         }
         assertTrue("no variant from the app bodies on Heidelberg", variants > 0)
+      }
+    } finally {
+      pool.shutdownNow()
+      dir.deleteRecursively()
+    }
+  }
+
+  /**
+   * A destination in the woods east of the city, about 1.3 km from the nearest road the lorry may
+   * drive: with openrouteservice's 400 m the engine answers its error 2010 for that point, with the
+   * app's wider radius (2 km) a route, and the app measures how far the point was moved.
+   */
+  @Test
+  fun stopFarFromTheLorrysRoadsReachedWithAWiderRadius() {
+    val pbf = File("../../navmaster-engine/data/heidelberg.test.pbf")
+    assumeTrue("no Heidelberg extract at ${pbf.absolutePath}", pbf.isFile)
+    val dir = Files.createTempDirectory("nm-app-contract-far").toFile()
+    val pool = Executors.newFixedThreadPool(1) { r -> Thread(r, "nm-leg").also { it.isDaemon = true } }
+    try {
+      RoutingGraph.build(pbf, dir, listOf(HgvProfile())).first.use { it.prepareCH(landmarkCount = 4) }
+      RoutingGraph.load(dir, mmap = false).use { graph ->
+        val service = DirectionsService(graph)
+        fun answer(body: String): String {
+          @Suppress("UNCHECKED_CAST")
+          val parsed = it.navmaster.engine.api.Json.parse(body) as Map<String, Any?>
+          val rc = RequestContext(executor = pool, slots = SearchSlots(2))
+          return try {
+            it.navmaster.engine.api.Json.stringify(service.handle(DirectionsRequest.fromJson("driving-hgv", parsed), ResponseFormat.GEOJSON, rc))
+          } catch (e: it.navmaster.engine.api.ApiException) {
+            it.navmaster.engine.api.Json.stringify(service.errorBody(e))
+          }
+        }
+        val far = listOf(doubleArrayOf(49.4036, 8.6757), doubleArrayOf(49.36757, 8.79347))
+        val kinds2 = listOf("break", "break")
+        // openrouteservice's request: the point has no road within 400 m
+        val plain = Json.parseToJsonElement(answer(NmRouting.request(far, spec, kinds2, 0, null).toString())).jsonObject
+        val error = checkNotNull(plain["error"]?.jsonObject) { "a route to the woods within 400 m?" }
+        assertEquals(2010, error["code"]!!.jsonPrimitive.int)
+        val message = error["message"]!!.jsonPrimitive.content
+        assertEquals(1, NmRouting.pointOf(message))
+        assertEquals("nessuna strada percorribile entro 400 m dalla destinazione", NmRouting.words(2010, message, 2))
+        // the app's second try: the same body with the wider radius for that point
+        val radii = SnapRadii().also { it.widen(far[1][0], far[1][1]) }.radiiOf(far)
+        assertTrue(radii.contentEquals(doubleArrayOf(400.0, 2000.0)))
+        val text = answer(NmRouting.request(far, spec, kinds2, 0, null, radiuses = radii).toString())
+        val root = Json.parseToJsonElement(text).jsonObject
+        assertTrue("engine error: ${root["error"]}", root["error"] == null)
+        val found = checkNotNull(NmRouting.parse(root, 2)) { "no route with the wider radius" }
+        val moved = NmRouting.moved(far, radii, found[0])
+        assertEquals(1, moved.size)
+        assertEquals(1, moved[0].index)
+        assertTrue("moved by ${moved[0].meters} m", moved[0].meters in 1000.0..2000.0)
+        // where the guidance really arrives: the route's last point (the stop counts as reached there)
+        assertEquals(found[0].lat.last(), moved[0].lat, 1e-9)
+        assertEquals(found[0].lon.last(), moved[0].lon, 1e-9)
+        assertTrue(checkNotNull(OrsGuide.build(text, 0, true, null, kinds2)) { "far route not guided" }.osrm.contains("\"routes\""))
+        println("app → engine: destination in the woods moved by ${moved[0].meters.toInt()} m, route ${found[0].distanceM.toInt()} m")
       }
     } finally {
       pool.shutdownNow()

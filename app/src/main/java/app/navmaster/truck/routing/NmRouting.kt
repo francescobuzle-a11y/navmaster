@@ -51,11 +51,75 @@ class RouteResult(
 )
 
 /**
- * The engine's answer to one request: the routes (null when there is none, then [note] says why)
- * and the answer itself ([text], GeoJSON: its instructions guide the routes, OrsGuide). Returned,
- * not kept: several requests may run at the same time.
+ * A point of the trip the vehicle cannot reach within openrouteservice's 400 m (a stop in a town
+ * centre closed to lorries, a point pressed on the map in the mountains), asked again with a wider
+ * radius ([radiusM]) and moved by [meters] onto the nearest road the vehicle may drive: [index] is
+ * the point's place in the request (0 the start, the last one the destination), [lat]/[lon] the
+ * point of the route it was moved to (where the guidance really arrives: the stop counts as
+ * reached there, not at the coordinate asked).
  */
-class NmAnswer(val results: List<RouteResult>?, val text: String?, val note: String?)
+class MovedPoint(val index: Int, val meters: Double, val radiusM: Double, val lat: Double = Double.NaN, val lon: Double = Double.NaN)
+
+/** A point with no road for the vehicle even within [radiusM] (the widest radius tried). */
+class UnreachablePoint(val index: Int, val radiusM: Double)
+
+/**
+ * The engine's answer to one request: the routes (null when there is none, then [note] says why)
+ * and the answer itself ([text], GeoJSON: its instructions guide the routes, OrsGuide); [moved] the
+ * points reached only with a wider snapping radius, [unreachable] the point no radius was enough
+ * for. Returned, not kept: several requests may run at the same time.
+ */
+class NmAnswer(
+    val results: List<RouteResult>?, val text: String?, val note: String?,
+    val moved: List<MovedPoint> = emptyList(), val unreachable: UnreachablePoint? = null,
+)
+
+/**
+ * The snapping radius of each point of the trip, by its coordinate: openrouteservice's 400 m
+ * ([DEFAULT]) until the engine finds no road for the vehicle within it, then the next of [WIDER]
+ * (2 km, then 5 km). Remembered by coordinate: every request of the same plan (the variants, the
+ * other kinds, the toll-free one, «Altri percorsi», the recalculations while driving, where the
+ * stops keep their coordinates) uses the radius already found, else each one would fail again. A
+ * wider radius never changes a point that has a road within 400 m (the nearest road is the same),
+ * so an entry left from an older plan is harmless; the map keeps the last [MAX_KEPT] points.
+ */
+class SnapRadii {
+  private val radii = object : LinkedHashMap<String, Double>(16, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Double>?): Boolean = size > MAX_KEPT
+  }
+
+  /** The radius in use for the point (metres). */
+  @Synchronized fun radiusOf(lat: Double, lon: Double): Double = radii[key(lat, lon)] ?: DEFAULT
+
+  /** The radii of [points] ([lat, lon]), one per point. */
+  @Synchronized fun radiiOf(points: List<DoubleArray>): DoubleArray = DoubleArray(points.size) { radiusOf(points[it][0], points[it][1]) }
+
+  /** Widens the point's radius to the next step; null (nothing changed) when the widest was already in use. */
+  @Synchronized fun widen(lat: Double, lon: Double): Double? {
+    val now = radiusOf(lat, lon)
+    val next = WIDER.firstOrNull { it > now } ?: return null
+    radii[key(lat, lon)] = next
+    return next
+  }
+
+  @Synchronized fun clear() = radii.clear()
+
+  private fun key(lat: Double, lon: Double) = String.format(java.util.Locale.ROOT, "%.5f,%.5f", lat, lon)
+
+  companion object {
+    /** openrouteservice's maximum snapping radius (DirectionsLimits.maximumSnappingRadius). */
+    const val DEFAULT = 400.0
+    /** The wider radii tried, in order, for a point with no road within the one in use. */
+    val WIDER = doubleArrayOf(2000.0, 5000.0)
+    /**
+     * At most so many requests asked again for the stops of one trip: each stop takes at most
+     * [WIDER].size, so four stops with no road within 400 m are tried up to 5 km (with a lower cap
+     * the last stop stayed at 2 km and the same plan asked again went on from there).
+     */
+    const val MAX_RETRIES = 8
+    const val MAX_KEPT = 64
+  }
+}
 
 /**
  * The engine's own variants of a trip (`navmaster.alternatives`), with any number of points: [count]
@@ -106,7 +170,41 @@ class NmRouting(
   ): NmAnswer {
     if (points.size < 2) return NmAnswer(null, null, "meno di due punti")
     val started = SystemClock.elapsedRealtime()
-    val body = request(points, spec, kinds, alternates, headings, variants).toString()
+    // a stop with no road for the vehicle within its radius (openrouteservice's error 2010): the
+    // same request again with a wider radius for that stop (2 km, then 5 km), at most MAX_RETRIES
+    // times for the trip; the radius found stays with the stop (SnapRadii) for the next requests.
+    // Only the stops: not the start (the vehicle's position while driving, a new one at every fix:
+    // a route from a road up to 5 km away is at once off route, and every recalculation would pay
+    // the retries again) and not a point only passed through (the recalculations' own point ahead
+    // on the road, with its bearing: moved elsewhere it would force the route from there; a point
+    // the driver put on the map is passed through too, but has no bearing and is widened)
+    var retries = 0
+    while (true) {
+      val radii = snapRadii.radiiOf(points)
+      val answer = once(points, spec, kinds, alternates, headings, variants, radii, call, cancel, started)
+      val u = answer.unreachable
+      if (u == null || retries >= SnapRadii.MAX_RETRIES) return answer
+      if (!widens(u.index, kinds, headings)) return answer
+      val p = points.getOrNull(u.index) ?: return answer
+      val wider = snapRadii.widen(p[0], p[1]) ?: return answer
+      retries++
+      Log.i(TAG, "point ${u.index}: no road within ${u.radiusM.toInt()} m, asked again within ${wider.toInt()} m (retry $retries)")
+      cancel.check()
+    }
+  }
+
+  /** The radius of each point of the trip, by coordinate, widened where the vehicle had no road within it. */
+  val snapRadii = SnapRadii()
+
+  /** One request with the given [radii]: the engine's answer read, a point without a road as [NmAnswer.unreachable]. */
+  private fun once(
+      points: List<DoubleArray>, spec: RouteSpec, kinds: List<String>, alternates: Int, headings: List<Double?>?,
+      variants: VariantAsk?, radii: DoubleArray, call: EngineCall, cancel: CancelToken, started: Long,
+  ): NmAnswer {
+    // the radii go in the body only where a wider one is in use: without them the request is
+    // openrouteservice's own (its answers stay the same)
+    val radiuses = radii.takeIf { r -> r.any { it != SnapRadii.DEFAULT } }
+    val body = request(points, spec, kinds, alternates, headings, variants, radiuses = radiuses).toString()
     // the engine on the tablet (also across borders, with the graphs of the countries crossed); the
     // NavMaster server when a country of the trip is not on the tablet and a server is set
     var from = "engine"
@@ -125,7 +223,7 @@ class NmRouting(
         Log.i(TAG, "variants: not asked of the server (${points.size} points${if (far) ", far" else ""})")
         return NmAnswer(emptyList(), null, note)
       }
-      val serverBody = request(points, spec, kinds, if (wanted > 0 && far) 0 else wanted, headings, forServer = true).toString()
+      val serverBody = request(points, spec, kinds, if (wanted > 0 && far) 0 else wanted, headings, forServer = true, radiuses = radiuses).toString()
       cancel.check()
       text = server.directions(spec.profile, serverBody)
       from = "server"
@@ -143,12 +241,16 @@ class NmRouting(
         val code = error["code"]?.jsonPrimitive?.intOrNull ?: 0
         val message = error["message"]?.jsonPrimitive?.contentOrNullSafe() ?: ""
         Log.w(TAG, "engine $code: $message")
-        NmAnswer(null, null, words(code, message, points.size))
+        val which = if (code == 2010) pointOf(message)?.takeIf { it in points.indices } else null
+        NmAnswer(null, null, words(code, message, points.size, which?.let { radii[it] } ?: SnapRadii.DEFAULT),
+            unreachable = which?.let { UnreachablePoint(it, radii[it]) })
       } else if (variants == null) {
         val found = parse(root, points.size)
         Log.i(TAG, "$from ${spec.profile}: ${found?.size ?: 0} routes in ${SystemClock.elapsedRealtime() - started} ms " +
             found?.joinToString { r -> String.format(java.util.Locale.US, "%.1f km/%d min", r.distanceM / 1000, r.timeMs / 60000) })
-        NmAnswer(found, text, if (found == null) "risposta del motore senza percorsi" else null)
+        val moved = found?.firstOrNull()?.let { moved(points, radii, it) } ?: emptyList()
+        for (m in moved) Log.i(TAG, "point ${m.index} moved by ${m.meters.toInt()} m onto the nearest road (radius ${m.radiusM.toInt()} m)")
+        NmAnswer(found, text, if (found == null) "risposta del motore senza percorsi" else null, moved)
       } else {
         // the variants: none is an answer, not an error. The server answers with openrouteservice's
         // alternatives: the best one (already on screen) left out
@@ -161,7 +263,7 @@ class NmRouting(
         Log.i(TAG, "$from ${spec.profile}: ${found.size} variants in ${SystemClock.elapsedRealtime() - started} ms " +
             "(${(alt?.get("candidates") as? JsonPrimitive)?.contentOrNullSafe() ?: "-"}${why?.let { "; $it" } ?: ""}) " +
             found.joinToString { r -> String.format(java.util.Locale.US, "%s %.1f km/%d min", r.variant?.label ?: "?", r.distanceM / 1000, r.timeMs / 60000) })
-        NmAnswer(found, text, why)
+        NmAnswer(found, text, why, found.firstOrNull()?.let { moved(points, radii, it) } ?: emptyList())
       }
     } catch (e: Exception) {
       val note = "risposta del motore non leggibile: $e"
@@ -172,20 +274,55 @@ class NmRouting(
 
   private fun JsonPrimitive.contentOrNullSafe(): String? = runCatching { content }.getOrNull()
 
-  /** openrouteservice's error in words for the driver. */
-  private fun words(code: Int, message: String, nPoints: Int): String = when (code) {
-    2009 -> "nessun percorso tra i punti con le misure e le scelte del mezzo"
-    2010 -> {
-      val which = Regex("coordinate (\\d+)").find(message)?.groupValues?.get(1)?.toIntOrNull()
-      val where = when (which) { 0 -> "dalla partenza"; nPoints - 1 -> "dalla destinazione"; null -> "da un punto"; else -> "dalla tappa $which" }
-      "nessuna strada percorribile entro 400 m $where"
-    }
-    2004 -> "percorso troppo lungo per il calcolo sul tablet"
-    else -> "errore del motore ($code): ${message.take(120)}"
-  }
-
   companion object {
     private const val TAG = "NavMasterRoute"
+
+    /** The point of openrouteservice's error 2010 ("... of specified coordinate 2: ..."), null when the message does not say it. */
+    internal fun pointOf(message: String): Int? = Regex("coordinate (\\d+)").find(message)?.groupValues?.get(1)?.toIntOrNull()
+
+    /**
+     * Whether point [index] of a request with [kinds] and [headings] may be asked again with a wider
+     * radius: a stop or a point the driver put on the map, not the start nor the recalculations' own
+     * point ahead on the road (passed through with a bearing: moved elsewhere it would force the route from there).
+     */
+    internal fun widens(index: Int, kinds: List<String>, headings: List<Double?>? = null): Boolean =
+        index > 0 && (kinds.getOrNull(index) != "via" || headings?.getOrNull(index) == null)
+
+    /** Metres as the driver reads them: "650 m", "1,3 km". */
+    internal fun metres(m: Double): String =
+        if (m < 950) "${Math.round(m / 10.0) * 10} m" else String.format(java.util.Locale.ITALY, "%.1f km", m / 1000.0)
+
+    /**
+     * openrouteservice's error in words for the driver; for a point without a road (2010) with the
+     * radius tried last ([radiusM]: the widest when nothing was found even there).
+     */
+    internal fun words(code: Int, message: String, nPoints: Int, radiusM: Double = SnapRadii.DEFAULT): String = when (code) {
+      2009 -> "nessun percorso tra i punti con le misure e le scelte del mezzo"
+      2010 -> {
+        val which = pointOf(message)
+        val where = when (which) { 0 -> "dalla partenza"; nPoints - 1 -> "dalla destinazione"; null -> "da un punto"; else -> "dalla tappa $which" }
+        if (radiusM > SnapRadii.DEFAULT) "nessuna strada per il mezzo entro ${metres(radiusM)} $where: toglila dal viaggio o spostala"
+        else "nessuna strada percorribile entro ${metres(radiusM)} $where"
+      }
+      2004 -> "percorso troppo lungo per il calcolo sul tablet"
+      else -> "errore del motore ($code): ${message.take(120)}"
+    }
+
+    /**
+     * How far each point asked with a wider radius ([radii], one per point) was moved: the distance
+     * from the coordinate asked to the point of [route] it was snapped to (its way point), when it
+     * is beyond openrouteservice's 400 m (within them the point was never moved for the vehicle).
+     */
+    internal fun moved(points: List<DoubleArray>, radii: DoubleArray, route: RouteResult): List<MovedPoint> {
+      val out = mutableListOf<MovedPoint>()
+      for (i in points.indices) {
+        if (radii.getOrNull(i)?.let { it > SnapRadii.DEFAULT } != true) continue
+        val wp = route.waypointIndex.getOrNull(i)?.takeIf { it in route.lat.indices } ?: continue
+        val d = app.navmaster.truck.core.Geo.dist(points[i][0], points[i][1], route.lat[wp], route.lon[wp])
+        if (d > SnapRadii.DEFAULT) out += MovedPoint(i, d, radii[i], route.lat[wp], route.lon[wp])
+      }
+      return out
+    }
 
     /** The server can give variants only as openrouteservice's alternatives: between two points, not far apart. */
     internal fun serverHasVariants(nPoints: Int, far: Boolean): Boolean = nPoints == 2 && !far
@@ -210,7 +347,7 @@ class NmRouting(
      */
     internal fun request(
         points: List<DoubleArray>, s: RouteSpec, kinds: List<String>, alternates: Int, headings: List<Double?>?,
-        variants: VariantAsk? = null, forServer: Boolean = false,
+        variants: VariantAsk? = null, forServer: Boolean = false, radiuses: DoubleArray? = null,
     ): JsonObject {
       val options = mutableMapOf<String, JsonElement>()
       val avoid = mutableListOf<JsonElement>()
@@ -276,6 +413,8 @@ class NmRouting(
           "navmaster" to JsonObject(nav),
       )
       if (options.isNotEmpty()) o["options"] = JsonObject(options)
+      // openrouteservice's radiuses (one per point): only when a point needed a wider one than its 400 m
+      if (radiuses != null && radiuses.size == points.size) o["radiuses"] = JsonArray(radiuses.map { JsonPrimitive(it) })
       // ORS bearings: the direction of travel at the start and at the points passed through ([] where none)
       if (headings != null && headings.size == points.size && headings.any { it != null }) {
         o["bearings"] = JsonArray(headings.map { h ->
