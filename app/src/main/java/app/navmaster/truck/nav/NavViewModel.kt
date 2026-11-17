@@ -1003,7 +1003,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           // "along the same roads" (it shares most of its roads on purpose)
           if ((_plan.value.variants + engineVariants).any { duplicate(it, r, info) }) continue
           nVar++
-          engineVariants += build(VariantKind.ALTERNATIVE, variantTitle(info, nVar, more = false), r, base, info?.signature)
+          engineVariants += build(VariantKind.ALTERNATIVE, variantTitle(info, nVar, more = false, taken = (_plan.value.variants + engineVariants).map { it.title }), r, base, info?.signature)
         }
         if (planRequest !== req) return@launch
         Log.i(TAG, "plan: ${found.size} variant(s) from the engine, ${engineVariants.size} added")
@@ -1151,7 +1151,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           // another one, or as long and as slow, is another way on purpose
           if ((cur.variants + added).any { duplicate(it, r, info) }) continue
           n++
-          added += buildVariant(VariantKind.ALTERNATIVE, variantTitle(info, n, more = true), r, base, departure, info?.signature)
+          added += buildVariant(VariantKind.ALTERNATIVE, variantTitle(info, n, more = true, taken = (cur.variants + added).map { it.title }), r, base, departure, info?.signature)
         }
         Log.i(TAG, "more routes (engine): ${routes.size} found, ${added.size} new")
         app.navmaster.truck.routing.RouteProgress.end()
@@ -2834,16 +2834,29 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
     /**
      * The title of a variant of the engine: its road and its differences from the best route
-     * ("via A21 · +4 min, −6 km"); "Altri percorsi" ([more]) also says when it is clearly longer,
-     * only when it really has more km (a shorter but slower one has only its differences: "più
-     * lunga · +14 min, −8 km" read as a road with more km).
+     * ("via A21 · +4 min, −6 km"); the engine names first the roads the best route does not use
+     * ("via A50 + A24"), or the same road on another line ("via A1, altro tracciato · +11 min,
+     * +19 km"). "Altri percorsi" ([more]) also says when it is clearly longer, only when it really
+     * has more km (a shorter but slower one has only its differences: "più lunga · +14 min, −8 km"
+     * read as a road with more km). A road already on screen ([taken]: their titles, from another
+     * request of variants) gets a number after it ("via A24 (2) · …"), whatever the differences:
+     * two routes never name the same road the same way. A road the engine numbered already
+     * ("via A24 (2)") goes on from its number ("via A24 (3)"), never "via A24 (2) (2)".
      */
-    internal fun variantTitle(info: VariantInfo?, n: Int, more: Boolean): String {
+    internal fun variantTitle(info: VariantInfo?, n: Int, more: Boolean, taken: Collection<String> = emptyList()): String {
       val label = info?.label?.takeIf { it.isNotBlank() } ?: "Alternativa $n"
       val diff = info?.diff?.takeIf { it.isNotBlank() } ?: info?.let { diffWords(it.extraS, it.extraM) }
       val longer = more && info != null && info.longer && info.extraM > 0
-      return listOfNotNull(label, if (longer) "più lunga" else null, diff?.takeIf { it.isNotBlank() }).joinToString(" · ")
+      val shown = taken.map { it.substringBefore(" · ") }.toSet()
+      val numbered = NUMBERED.find(label)
+      val root = numbered?.let { label.substring(0, it.range.first) } ?: label
+      val first = numbered?.groupValues?.get(1)?.toInt() ?: 1
+      val road = generateSequence(first) { it + 1 }.map { k -> if (k == 1) root else "$root ($k)" }.first { it !in shown }
+      return listOfNotNull(road, if (longer) "più lunga" else null, diff?.takeIf { it.isNotBlank() }).joinToString(" · ")
     }
+
+    /** A road title the engine numbered already: "via A24 (2)". */
+    private val NUMBERED = Regex(""" \((\d+)\)$""")
 
     /** "+4 min, −6 km" (empty when the same). */
     internal fun diffWords(extraS: Double, extraM: Double): String {

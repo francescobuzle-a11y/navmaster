@@ -53,6 +53,22 @@ class StopInsertionTest {
     val slower = app.navmaster.truck.routing.VariantInfo(3, 2, "penalty", "via SS45", "+14 min, −8 km", "", emptyList(), 840.0, -8000.0, true)
     assertEquals("via SS45 · +14 min, −8 km", NavViewModel.variantTitle(slower, 3, more = true))
     assertEquals("Alternativa 3", NavViewModel.variantTitle(null, 3, more = true))
+    // the engine's titles: the roads the best does not use, or the same road on another line
+    val other = app.navmaster.truck.routing.VariantInfo(2, 1, "motorway", "via A1, altro tracciato", "+11 min, +19 km", "A1 · A24", emptyList(), 660.0, 19000.0, false)
+    assertEquals("via A1, altro tracciato · +11 min, +19 km", NavViewModel.variantTitle(other, 2, more = false))
+    val a24 = app.navmaster.truck.routing.VariantInfo(1, 1, "motorway", "via A24", "+11 min, +19 km", "A1 · A24", emptyList(), 660.0, 19000.0, false)
+    // a title already on screen (another request of variants): a number after the road
+    assertEquals("via A24 (2) · +11 min, +19 km", NavViewModel.variantTitle(a24, 4, more = true, taken = listOf("via A24 · +11 min, +19 km")))
+    assertEquals("via A24 (3) · +11 min, +19 km",
+        NavViewModel.variantTitle(a24, 5, more = true, taken = listOf("via A24 · +11 min, +19 km", "via A24 (2) · +11 min, +19 km")))
+    assertEquals("via A24 · +11 min, +19 km", NavViewModel.variantTitle(a24, 4, more = true, taken = listOf("via A50 + A24 · +28 min, +45 km")))
+    // the same road with other differences ("Altri percorsi", a separate request): numbered all the same
+    val a24b = app.navmaster.truck.routing.VariantInfo(1, 2, "motorway", "via A24", "+25 min, +30 km", "A1 · A24", emptyList(), 1500.0, 30000.0, true)
+    assertEquals("via A24 (2) · più lunga · +25 min, +30 km", NavViewModel.variantTitle(a24b, 4, more = true, taken = listOf("via A24 · +11 min, +19 km")))
+    // a road the engine numbered already: on from its number, never "(2) (2)"
+    val a24n = app.navmaster.truck.routing.VariantInfo(1, 2, "motorway", "via A24 (2)", "+25 min, +30 km", "A1 · A24", emptyList(), 1500.0, 30000.0, false)
+    assertEquals("via A24 (2) · +25 min, +30 km", NavViewModel.variantTitle(a24n, 4, more = false))
+    assertEquals("via A24 (3) · +25 min, +30 km", NavViewModel.variantTitle(a24n, 4, more = false, taken = listOf("via A24 (2) · +11 min, +19 km")))
     assertEquals("", NavViewModel.diffWords(10.0, 200.0))
   }
 }
