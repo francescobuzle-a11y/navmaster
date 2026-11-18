@@ -142,8 +142,12 @@ class VariantAsk(
     val budgetMs: Long? = null,
 ) {
   companion object {
-    /** Computed by itself right after the best route: three more as good as it (≤ 1.10×, else ≤ 1.20×). */
-    val AUTO = VariantAsk(count = 4, tier1Factor = 1.10, tier1KmFactor = 1.10, maxFactor = 1.20, maxKmFactor = 1.20, budgetMs = 25_000)
+    /**
+     * Computed by itself right after the best route: three more as good as it (≤ 1.10×, else ≤ 1.20×).
+     * The engine keeps every phase inside budget_ms (its guaranteed minimums included); 1 s of the 25 s
+     * the driver waits at most is left to what the time does not stop (building a piece's road net, the answer).
+     */
+    val AUTO = VariantAsk(count = 4, tier1Factor = 1.10, tier1KmFactor = 1.10, maxFactor = 1.20, maxKmFactor = 1.20, budgetMs = 24_000)
     /** "Altri percorsi": more, also longer (up to 1.5× the time), and the shorter ones even when slower. */
     val MORE = VariantAsk(count = 6, tier1Factor = 1.25, tier1KmFactor = 1.25, maxFactor = 1.5, maxKmFactor = 1.6, allowFewerKm = true)
     /** The routes the engine gives at most (the best one included): navmaster.alternatives.count up to 9. */

@@ -58,7 +58,8 @@ class NmRoutingRequestTest {
     assertEquals(1.10, a["tier1_km_factor"]!!.jsonPrimitive.double, 1e-9)
     assertEquals(1.20, a["max_factor"]!!.jsonPrimitive.double, 1e-9)
     assertEquals(1.20, a["max_km_factor"]!!.jsonPrimitive.double, 1e-9)
-    assertEquals(25_000, a["budget_ms"]!!.jsonPrimitive.int)
+    // 1 s under the 25 s rule for what the engine's time does not stop
+    assertEquals(24_000, a["budget_ms"]!!.jsonPrimitive.int)
     assertEquals(true, a["exclude_best"]!!.jsonPrimitive.boolean)
     assertNull(a["allow_fewer_km"])
     // any number of points, never openrouteservice's alternatives towards the engine
@@ -100,7 +101,7 @@ class NmRoutingRequestTest {
     val pts = listOf(doubleArrayOf(49.4036, 8.6757), doubleArrayOf(49.4094, 8.6937), doubleArrayOf(49.4186, 8.7606))
     val kinds = listOf("break", "via", "break")
     assertEquals(
-        """{"coordinates":[[8.6757,49.4036],[8.6937,49.4094],[8.7606,49.4186]],"preference":"recommended","units":"m","instructions":true,"language":"it","maneuvers":true,"extra_info":["tollways","waycategory","waytype"],"geometry":true,"navmaster":{"roads":true,"avoid_penalty":true,"pass_through":[false,true,false],"alternatives":{"count":4,"tier1_factor":1.1,"tier1_km_factor":1.1,"max_factor":1.2,"max_km_factor":1.2,"budget_ms":25000,"exclude_best":true}},"options":{"avoid_features":["ferries"],"vehicle_type":"hgv","profile_params":{"restrictions":{"height":4.0,"width":2.55,"length":16.5,"weight":27.0,"axleload":11.5}}},"maximum_speed":80.0}""",
+        """{"coordinates":[[8.6757,49.4036],[8.6937,49.4094],[8.7606,49.4186]],"preference":"recommended","units":"m","instructions":true,"language":"it","maneuvers":true,"extra_info":["tollways","waycategory","waytype"],"geometry":true,"navmaster":{"roads":true,"avoid_penalty":true,"pass_through":[false,true,false],"alternatives":{"count":4,"tier1_factor":1.1,"tier1_km_factor":1.1,"max_factor":1.2,"max_km_factor":1.2,"budget_ms":24000,"exclude_best":true}},"options":{"avoid_features":["ferries"],"vehicle_type":"hgv","profile_params":{"restrictions":{"height":4.0,"width":2.55,"length":16.5,"weight":27.0,"axleload":11.5}}},"maximum_speed":80.0}""",
         NmRouting.request(pts, spec, kinds, 0, null, VariantAsk.AUTO).toString())
     assertEquals(
         """{"coordinates":[[8.6757,49.4036],[8.6937,49.4094],[8.7606,49.4186]],"preference":"recommended","units":"m","instructions":true,"language":"it","maneuvers":true,"extra_info":["tollways","waycategory","waytype"],"geometry":true,"navmaster":{"roads":true,"avoid_penalty":true,"pass_through":[false,true,false],"alternatives":{"count":6,"tier1_factor":1.25,"tier1_km_factor":1.25,"max_factor":1.5,"max_km_factor":1.6,"allow_fewer_km":true,"exclude_best":true}},"options":{"avoid_features":["ferries"],"vehicle_type":"hgv","profile_params":{"restrictions":{"height":4.0,"width":2.55,"length":16.5,"weight":27.0,"axleload":11.5}}},"bearings":[[90.0,45],[],[]],"maximum_speed":80.0}""",
