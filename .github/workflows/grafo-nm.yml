@@ -15,6 +15,9 @@ on:
       engine_ref:
         description: "Ramo o tag di navmaster-engine"
         default: "main"
+      parallel:
+        description: "Paesi costruiti insieme (3 lascia posto alle altre prove; fino a 8 per finire prima)"
+        default: "3"
   push:
     branches: [main]
     paths: [".github/workflows/grafo-nm.yml"]
@@ -57,7 +60,7 @@ jobs:
     timeout-minutes: 360
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: ${{ fromJSON(inputs.parallel || '3') }}
       matrix:
         region: ${{ fromJson(needs.plan.outputs.regions) }}
     steps:
