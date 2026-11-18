@@ -173,4 +173,11 @@ class NmEngineOpenPlanTest {
     // a route (not the warm-up) still closes the oldest one when it has to
     assertTrue(NmEngine.toClose(trip, emptySet()) != null)
   }
+
+  @Test
+  fun aFullStorageIsRecognisedAlsoAsACause() {
+    assertTrue(NmEngine.outOfSpace(java.io.IOException("write failed: ENOSPC (No space left on device)")))
+    assertTrue(NmEngine.outOfSpace(RuntimeException("x", java.io.IOException("No space left on device"))))
+    assertTrue(!NmEngine.outOfSpace(java.io.IOException("unexpected end of stream")))
+  }
 }

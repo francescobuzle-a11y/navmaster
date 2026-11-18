@@ -647,6 +647,10 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     /** A graph (unpacked or still packed) is there. */
     fun present(regionDir: File): Boolean = installed(regionDir) || File(regionDir, PACKAGE).let { it.exists() && it.length() > 0 }
 
+    /** Whether [e] (or a cause of it) says the storage is full. */
+    internal fun outOfSpace(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.any { "ENOSPC" in (it.message ?: "") || "No space left" in (it.message ?: "") }
+
     /** The graph of a removed country goes too. */
     fun deleteGraph(regionDir: File) {
       runCatching { internal(regionDir).deleteRecursively() }
@@ -667,7 +671,20 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
         tmp.deleteRecursively()
         tmp.mkdirs()
         try {
-          GZIPInputStream(gz.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, tmp) }
+          try {
+            GZIPInputStream(gz.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, tmp) }
+          } catch (e: java.io.IOException) {
+            // no room for the new graph next to the old one (Italy: 2.3 GB package plus the graph
+            // unpacked, with the old graph still there): the old one goes first, then the new one is
+            // unpacked again; the package stays until it is in place, so a failure is retried at the
+            // next start (meanwhile the country has no graph)
+            if (!outOfSpace(e) || !dir.exists()) throw e
+            Log.w(TAG, "graph of ${regionDir.name}: no room next to the old one, the old one goes first")
+            tmp.deleteRecursively()
+            dir.deleteRecursively()
+            tmp.mkdirs()
+            GZIPInputStream(gz.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, tmp) }
+          }
           if (!complete(tmp)) throw IllegalStateException("grafo incompleto")
           dir.deleteRecursively()
           if (!tmp.renameTo(dir)) throw IllegalStateException("impossibile installare il grafo")
