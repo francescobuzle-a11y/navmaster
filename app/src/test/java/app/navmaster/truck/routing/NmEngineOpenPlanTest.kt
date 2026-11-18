@@ -103,4 +103,22 @@ class NmEngineOpenPlanTest {
     assertTrue(plan.sequences.toString(), plan.sequences.any { it == listOf("italy", "switzerland", "austria") })
     assertEquals(plan.excluded.toString(), setOf("switzerland", "germany"), plan.excluded.toSet())
   }
+
+  @Test
+  fun aRecalculationFromAustriaClosesItalyNotItsOwnTransitGraphs() {
+    // after Canneto → Bielsko: italy and poland routed, the transit graphs never routed; past the Brenner
+    // the recalculation from Austria plans austria, poland, czech-republic, slovakia, germany
+    val installed = listOf("italy", "austria", "germany", "czech-republic", "slovakia", "poland")
+    val innsbruck = doubleArrayOf(47.2692, 11.4041)
+    val plan = NmEngine.openPlan(installed, listOf("austria", "poland"), listOf(innsbruck, bielsko), listOf("austria", "poland"), bounds, linked)
+    assertEquals(plan.open.toString(), setOf("austria", "poland", "czech-republic", "slovakia", "germany"), plan.open.toSet())
+    val open = listOf(NmEngine.Slot("italy", 100, 100), NmEngine.Slot("poland", 100, 200), NmEngine.Slot("austria", 0, 200),
+        NmEngine.Slot("czech-republic", 0, 200), NmEngine.Slot("slovakia", 0, 200))
+    // opening germany: italy goes (the only one outside the plan), not a transit graph with routed 0
+    assertEquals("italy", NmEngine.toClose(open, plan.open.toSet()))
+    // without the plan the old rule would have closed a graph of the plan itself
+    assertTrue(NmEngine.toClose(open, emptySet()) in plan.open)
+    // every open graph in the plan: nothing to close
+    assertEquals(null, NmEngine.toClose(open.filter { it.id != "italy" }, plan.open.toSet()))
+  }
 }

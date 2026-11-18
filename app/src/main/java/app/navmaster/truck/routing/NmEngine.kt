@@ -78,8 +78,11 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
   private val pool = Executors.newFixedThreadPool(1) { r -> Thread(r, "nm-leg").apply { isDaemon = true } }
   private val transfers = HashMap<String, List<Transfer>>()
 
-  /** The graph of [region], opened if needed (null when it has none or it does not open; [why] gets the reason). */
-  private fun graphOf(region: InstalledRegion, why: (String) -> Unit = {}): Open? {
+  /**
+   * The graph of [region], opened if needed (null when it has none or it does not open; [why] gets the reason).
+   * [keep]: the graphs the same request needs (its plan): never closed to make room for this one.
+   */
+  private fun graphOf(region: InstalledRegion, why: (String) -> Unit = {}, keep: Set<String> = emptySet()): Open? {
     val dir = ready(region.dir)
     if (dir == null) {
       why("${region.label}: manca il grafo del motore NavMaster. In «Mappe d'Europa» tocca «Aggiorna»")
@@ -94,9 +97,11 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       open.remove(region.id)?.let { runCatching { it.graph.close() } }
       // a few graphs open at a time (each is mapped from its files: little memory of its own)
       while (open.size >= MAX_OPEN) {
-        // first the graphs no route used (or used longest ago), then the least recently opened
-        val oldest = open.values.minWithOrNull(compareBy<Open>({ it.routed }, { it.used })) ?: break
-        open.remove(oldest.region.id)
+        // first the graphs no route used (or used longest ago), then the least recently opened; never
+        // one of the request's own plan (a transit graph has routed 0: closing it to open the next one
+        // of the same plan went round three times and gave up)
+        val id = toClose(open.values.map { Slot(it.region.id, it.routed, it.used) }, keep) ?: break
+        val oldest = open.remove(id) ?: break
         runCatching { oldest.graph.close() }
       }
       val started = SystemClock.elapsedRealtime()
@@ -177,7 +182,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     Log.i(TAG, "grafi aperti: ${plan.open.joinToString()}" + (if (plan.excluded.isEmpty()) "" else "; esclusi: ${plan.excluded.joinToString()} (oltre $MAX_OPEN)") +
         "; sequenze candidate: ${plan.sequences.joinToString(" | ") { it.joinToString("-") }.ifEmpty { "nessuna" }}")
     repeat(3) {
-      val graphs = plan.open.mapNotNull { id -> countries.firstOrNull { it.id == id } }.mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }) }
+      val keep = plan.open.toSet()
+      val graphs = plan.open.mapNotNull { id -> countries.firstOrNull { it.id == id } }.mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }, keep) }
       if (knownIds.any { k -> graphs.none { it.region.id == k } }) return null
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
@@ -437,6 +443,9 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     synchronized(transfers) { transfers.clear() }
   }
 
+  /** An open graph as [toClose] sees it: its country, the last route on it (0: none), its last use. */
+  internal data class Slot(val id: String, val routed: Long, val used: Long)
+
   /** The graphs a trip opens ([openPlan]): in order, those left out, the sequences of countries found. */
   internal class OpenPlan(val open: List<String>, val excluded: List<String>, val sequences: List<List<String>>)
 
@@ -445,6 +454,14 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     const val ENGINE_VERSION = "0.2.0"
     /** Graphs kept open at the same time (a trip through a few countries). */
     internal const val MAX_OPEN = 5
+
+    /**
+     * The open graph to close to make room for another: outside [keep] (the graphs of the same
+     * request), the one no route used (or used longest ago), then the least recently used; null when
+     * every open graph is in [keep].
+     */
+    internal fun toClose(open: List<Slot>, keep: Set<String>): String? =
+      open.filter { it.id !in keep }.minWithOrNull(compareBy<Slot>({ it.routed }, { it.used }))?.id
 
     /**
      * Which graphs a trip opens, [MAX_OPEN] at most: the countries of the points ([pointCountries],
