@@ -87,10 +87,10 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
           if [ "${{ matrix.region }}" = "test" ]; then
-            curl -fsSL -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
             osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
           else
-            curl -fsSL -o src.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
+            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o src.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
             mv src.osm.pbf region.osm.pbf
           fi
           rm -f src.osm.pbf
