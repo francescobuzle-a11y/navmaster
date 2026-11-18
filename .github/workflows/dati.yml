@@ -69,11 +69,11 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
           if [ "${{ matrix.region }}" = "test" ]; then
-            curl -fsSL -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
             osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
             rm src.osm.pbf
           else
-            curl -fsSL -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
+            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
           fi
           ls -la region.osm.pbf
           echo "PBF_MB=$(( $(stat -c%s region.osm.pbf) / 1000000 ))" >> $GITHUB_ENV
@@ -152,7 +152,7 @@ jobs:
           python3 -m pip install --quiet --break-system-packages shapely 2>/dev/null || python3 -m pip install --quiet shapely
           mkdir -p poly
           for c in $(python3 -c "import json; print(' '.join(x['id'] for x in json.load(open('data/countries.json'))))"); do
-            curl -fsSL -o poly/$c.poly "$GEOFABRIK/$c.poly" || rm -f poly/$c.poly
+            curl -fsSL --retry 5 --retry-delay 30 --retry-all-errors --retry-connrefused -o poly/$c.poly "$GEOFABRIK/$c.poly" || rm -f poly/$c.poly
           done
           ls poly | wc -l
           python3 tools/gh/build_crossings.py roads.geojsonseq out/valichi.json "${{ matrix.region }}" poly \
