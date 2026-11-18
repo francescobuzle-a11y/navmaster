@@ -121,4 +121,21 @@ class NmEngineOpenPlanTest {
     // every open graph in the plan: nothing to close
     assertEquals(null, NmEngine.toClose(open.filter { it.id != "italy" }, plan.open.toSet()))
   }
+
+  @Test
+  fun theWarmUpNeverClosesAGraphARouteJustUsed() {
+    // after Canneto → Bielsko every graph of the trip has routed set (transit ones too); the warm-up
+    // opening monaco (background: protectAfter = now − 15 min) finds nothing it may close, and skips it
+    val now = 10_000_000L
+    val trip = listOf("italy", "poland", "austria", "slovakia", "czech-republic").map { NmEngine.Slot(it, now - 60_000, now - 60_000) }
+    assertEquals(null, NmEngine.toClose(trip, emptySet(), now - NmEngine.ROUTED_KEEP_MS))
+    // a graph never routed (an earlier warm-up) goes first, as before
+    val withWarm = trip.drop(1) + NmEngine.Slot("hungary", 0, now)
+    assertEquals("hungary", NmEngine.toClose(withWarm, emptySet(), now - NmEngine.ROUTED_KEEP_MS))
+    // a trip older than 15 minutes is no longer protected
+    val old = trip.map { it.copy(routed = now - NmEngine.ROUTED_KEEP_MS - 1) }
+    assertEquals("italy", NmEngine.toClose(old, emptySet(), now - NmEngine.ROUTED_KEEP_MS))
+    // a route (not the warm-up) still closes the oldest one when it has to
+    assertTrue(NmEngine.toClose(trip, emptySet()) != null)
+  }
 }

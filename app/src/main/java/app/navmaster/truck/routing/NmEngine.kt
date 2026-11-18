@@ -82,7 +82,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
    * The graph of [region], opened if needed (null when it has none or it does not open; [why] gets the reason).
    * [keep]: the graphs the same request needs (its plan): never closed to make room for this one.
    */
-  private fun graphOf(region: InstalledRegion, why: (String) -> Unit = {}, keep: Set<String> = emptySet()): Open? {
+  private fun graphOf(region: InstalledRegion, why: (String) -> Unit = {}, keep: Set<String> = emptySet(), background: Boolean = false): Open? {
     val dir = ready(region.dir)
     if (dir == null) {
       why("${region.label}: manca il grafo del motore NavMaster. In «Mappe d'Europa» tocca «Aggiorna»")
@@ -100,7 +100,12 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
         // first the graphs no route used (or used longest ago), then the least recently opened; never
         // one of the request's own plan (a transit graph has routed 0: closing it to open the next one
         // of the same plan went round three times and gave up)
-        val id = toClose(open.values.map { Slot(it.region.id, it.routed, it.used) }, keep) ?: break
+        // the work in the background (the warm-up of the other countries) never closes a graph a route
+        // used in the last minutes: it would lose that trip's engine caches (the legs, the crossings'
+        // weights the variants start from); that country is not warmed instead
+        val protect = if (background) SystemClock.elapsedRealtime() - ROUTED_KEEP_MS else null
+        val id = toClose(open.values.map { Slot(it.region.id, it.routed, it.used) }, keep, protect)
+        if (id == null) { if (background) return@write null else break }
         val oldest = open.remove(id) ?: break
         runCatching { oldest.graph.close() }
       }
@@ -188,7 +193,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
           val now = SystemClock.elapsedRealtime()
-          for (g in graphs) { g.used = now; if (g.region.id in knownIds) g.routed = now }
+          // every graph of the trip, the transit ones too: the warm-up must not close them (their caches)
+          for (g in graphs) { g.used = now; g.routed = now }
           // the engine's messages also move the bar of the search (RouteProgress), for the route on screen only
           val main = call.priority == RequestContext.MAIN
           if (main) RouteProgress.names = countries.associate { it.id to it.label }
@@ -338,7 +344,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     var left = budget
     for (part in listOf(RoutingGraph.WARM_CORE, RoutingGraph.WARM_GRAPH)) for (r in list) {
       if (left <= 0) break
-      val o = graphOf(r) ?: continue
+      val o = graphOf(r, background = true) ?: continue
       val b = runCatching { lock.read { if (open[r.id] === o) o.graph.warmBytes(profile, budget = left, parts = part) else 0L } }.getOrDefault(0L)
       if (b > 0) { plan += Item(r, part, b); left -= b }
     }
@@ -349,7 +355,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     for (item in plan.asReversed()) {
       val r = item.region
       progress?.invoke(r, done.toFloat() / total)
-      val o = graphOf(r) ?: continue
+      val o = graphOf(r, background = true) ?: continue
       try {
         val base = done
         val line = lock.read {
@@ -369,7 +375,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     // the first route to Komjatice cost 13 s, 5.9 s with the app compiled)
     list.firstOrNull()?.let { r ->
       progress?.invoke(r, 0.97f)
-      val o = graphOf(r) ?: return@let
+      val o = graphOf(r, background = true) ?: return@let
       runCatching { lock.read { if (open[r.id] === o) o.graph.warmCode(profile) else null } }
           .onSuccess { line -> line?.let { Log.i(TAG, "${r.id}: $it") } }
           .onFailure { Log.w(TAG, "${r.id}: riscaldamento del codice fallito: $it") }
@@ -460,8 +466,12 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
      * request), the one no route used (or used longest ago), then the least recently used; null when
      * every open graph is in [keep].
      */
-    internal fun toClose(open: List<Slot>, keep: Set<String>): String? =
-      open.filter { it.id !in keep }.minWithOrNull(compareBy<Slot>({ it.routed }, { it.used }))?.id
+    internal fun toClose(open: List<Slot>, keep: Set<String>, protectAfter: Long? = null): String? =
+      open.filter { it.id !in keep && !(protectAfter != null && it.routed > 0 && it.routed > protectAfter) }
+          .minWithOrNull(compareBy<Slot>({ it.routed }, { it.used }))?.id
+
+    /** How long a graph a route used stays out of reach of the warm-up (see [graphOf]). */
+    internal const val ROUTED_KEEP_MS = 15 * 60_000L
 
     /**
      * Which graphs a trip opens, [MAX_OPEN] at most: the countries of the points ([pointCountries],
