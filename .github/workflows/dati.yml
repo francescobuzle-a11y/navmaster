@@ -73,7 +73,8 @@ jobs:
             osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
             rm src.osm.pbf
           else
-            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf"
+            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf" \
+              || { echo "Geofabrik non risponde: copia di openstreetmap.fr"; curl -fsSL --retry 5 --retry-delay 30 --retry-all-errors -o region.osm.pbf "https://download.openstreetmap.fr/extracts/europe/$(echo ${{ matrix.region }} | tr - _)-latest.osm.pbf"; }
           fi
           ls -la region.osm.pbf
           echo "PBF_MB=$(( $(stat -c%s region.osm.pbf) / 1000000 ))" >> $GITHUB_ENV
