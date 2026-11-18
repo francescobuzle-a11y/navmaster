@@ -11,7 +11,7 @@ App Android per tablet dedicata a **camion, autobus e camper**: calcola percorsi
 | Calcolo percorso | **navmaster-engine** sul tablet (`app/libs/navmaster-engine-core.jar`, repository `navmaster-engine`): la logica di calcolo di openrouteservice riscritta da zero (profili `driving-hgv` / `driving-car`, misure e peso del mezzo, CH, core, landmark) | percorsi per camion, autobus e camper con misure e peso del viaggio, sempre offline |
 | Navigazione | Ferrostar | guida, istruzioni, ricalcolo, uscita dal percorso |
 | Voce | Text-to-Speech di Android | istruzioni in italiano |
-| Limiti | `limiti.sqlite` (da OSM) | avviso anticipato di sottopassi, ponti, divieti sul percorso |
+| Limiti | grafo del motore (da OSM) e file settimanale degli autovelox | avviso anticipato di sottopassi, ponti, divieti e autovelox sul percorso |
 
 ```
 GPS → Ferrostar (guida) → navmaster-engine (percorso con la logica di openrouteservice, istruzioni e fatti sulle strade) → OrsGuide (guida) → avvisi sui limiti
@@ -35,7 +35,9 @@ GPS → Ferrostar (guida) → navmaster-engine (percorso con la logica di openro
 Il workflow **Dati offline** (`.github/workflows/dati.yml`) prepara:
 
 - `mappa.pmtiles` — Planetiler, schema OpenMapTiles, zoom 0–14
-- `limiti.sqlite` — `maxheight`, `maxweight`, `maxwidth`, `maxlength`, `maxaxleload`, `hgv`, `hazmat`, `motorhome`, `bus/psv` e divieti a orario (`*:conditional`), indicizzati su una griglia di 0,01°
+- `poi.sqlite`, `luoghi.sqlite`, `indirizzi.sqlite` — punti di interesse, luoghi e indirizzi per la ricerca offline
+
+I limiti per mezzi pesanti e le criticità delle strade stanno nel grafo del motore (`grafo-nm.yml`); `limiti.sqlite` e `criticita.sqlite` non si costruiscono più.
 
 per **Italia** (`dati-italia`) e per una piccola zona di prova Rimini/San Marino (`dati-test`, usata dall'emulatore). I file oltre 1,9 GB sono divisi in parti; l'app le riunisce. Il grafo GraphHopper di ogni Paese (`gh.tar.gz` + landmark `gh-camion.tar.gz` / `gh-auto.tar.gz`, con `valichi.json` per i viaggi tra Paesi) viene dal workflow **Grafo GraphHopper** (`grafo-gh.yml`).
 
