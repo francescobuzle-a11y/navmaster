@@ -121,11 +121,16 @@ class NmRoutingRequestTest {
          "properties":{"way_points":[0,1,2],"summary":{"distance":240000.0,"duration":10200.0},
            "navmaster":{"variant":{"rank":2,"tier":2,"source":"penalty","label":"via SS9","diff":"+24 min, +19 km","longer":true}}}},
         {"type":"Feature","geometry":{"type":"LineString","coordinates":[[9.19,45.46],[11.34,44.49]]},
-         "properties":{"way_points":[0,1],"summary":{"distance":230000.0,"duration":9600.0}}}
-      ],"metadata":{"navmaster":{"alternatives":{"asked":4,"found":3,"variants":2,"note":null}}}}
+         "properties":{"way_points":[0,1],"summary":{"distance":230000.0,"duration":9600.0}}},
+        {"type":"Feature","geometry":{"type":"LineString","coordinates":[[10.38,45.15],[16.6,48.8],[19.04,49.82]]},
+         "properties":{"way_points":[0,2],"summary":{"distance":1180000.0,"duration":58000.0},
+           "navmaster":{"variant":{"rank":3,"tier":1,"source":"crossing","label":"via D2 + D1, per la Cechia","diff":"+16 min, +24 km",
+             "countries":["italy","austria","czech-republic","poland"],
+             "crossings":[{"lat":47.0,"lon":11.5},{"lat":48.75,"lon":16.65},{"lat":49.9,"lon":18.3}],"crossing":{"lat":47.0,"lon":11.5}}}}}
+      ],"metadata":{"countries":["italy","austria","slovakia","poland"],"navmaster":{"alternatives":{"asked":4,"found":3,"variants":2,"note":null}}}}
     """.trimIndent()
     val routes = NmRouting.parse(Json.parseToJsonElement(text).jsonObject, 3)!!
-    assertEquals(3, routes.size)
+    assertEquals(4, routes.size)
     val v = routes[0].variant!!
     assertEquals(1, v.rank)
     assertEquals(1, v.tier)
@@ -148,5 +153,13 @@ class NmRoutingRequestTest {
     assertNull(routes[2].variant)
     assertEquals(3, routes[2].feature)
     assertEquals(listOf(0, 1), routes[2].waypointIndex.toList())
+    // no countries said: empty
+    assertTrue(v.countries.isEmpty() && v.crossings.isEmpty() && v.newCountries.isEmpty())
+    // a variant through another country: its countries, its crossings, the countries the best does not cross
+    val across = routes[3].variant!!
+    assertEquals(listOf("italy", "austria", "czech-republic", "poland"), across.countries)
+    assertEquals(listOf(47.0 to 11.5, 48.75 to 16.65, 49.9 to 18.3), across.crossings)
+    assertEquals(listOf("czech-republic"), across.newCountries)
+    assertEquals("via D2 + D1, per la Cechia", across.label)
   }
 }

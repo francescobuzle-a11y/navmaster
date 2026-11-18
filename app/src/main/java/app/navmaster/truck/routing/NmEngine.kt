@@ -20,6 +20,7 @@ import it.navmaster.engine.api.ResponseFormat
 import it.navmaster.engine.api.RoadsService
 import it.navmaster.engine.api.SearchSlots
 import it.navmaster.engine.api.Transfer
+import it.navmaster.engine.storage.BBox
 import it.navmaster.engine.api.Transfers
 import it.navmaster.engine.routing.CancelToken
 import java.io.File
@@ -167,11 +168,16 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       }
       return null
     }
-    // across borders: the countries of the points and those near the way between them
+    // across borders: the countries of the points, then those on the sequences of countries the
+    // engine will weigh (the same rule: CrossBorderDirections.countrySequences), then those near the way
     val knownIds = known.map { it.id }.toSet()
-    val near = countries.filter { r -> r.id in knownIds || nearTrip(r, points) }
+    val near = countries.filter { r -> r.id in knownIds || nearTrip(r, points) }.sortedBy { r -> if (r.id in knownIds) 0 else 1 }.map { it.id }
+    val installed = countries.filter { installed(it.dir) }
+    val plan = openPlan(installed.map { it.id }, at.map { it?.id }, points, near, { id -> bboxOf(id) }, { a, b -> linkedByCrossings(installed, a, b) })
+    Log.i(TAG, "grafi aperti: ${plan.open.joinToString()}" + (if (plan.excluded.isEmpty()) "" else "; esclusi: ${plan.excluded.joinToString()} (oltre $MAX_OPEN)") +
+        "; sequenze candidate: ${plan.sequences.joinToString(" | ") { it.joinToString("-") }.ifEmpty { "nessuna" }}")
     repeat(3) {
-      val graphs = near.sortedBy { r -> if (r.id in knownIds) 0 else 1 }.take(MAX_OPEN).mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }) }
+      val graphs = plan.open.mapNotNull { id -> countries.firstOrNull { it.id == id } }.mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }) }
       if (knownIds.any { k -> graphs.none { it.region.id == k } }) return null
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
@@ -249,11 +255,41 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     return false
   }
 
+  /** The catalog's outline of a country as the engine's box (null without one). */
+  private fun bboxOf(id: String): BBox? = catalog?.country(id)?.bbox?.takeIf { it.size == 4 }?.let { b -> BBox(b[0], b[2], b[1], b[3]) }
+
+  /**
+   * Two installed countries are linked when their outlines touch and the file of their border
+   * crossings (transfersBetween, written after the start) is not empty; a file not written yet
+   * counts as linked (the graphs are not opened here to find out: the engine decides then).
+   */
+  private fun linkedByCrossings(installed: List<InstalledRegion>, a: String, b: String): Boolean {
+    val ba = bboxOf(a) ?: return false
+    val bb = bboxOf(b) ?: return false
+    if (!ba.intersects(bb)) return false
+    val ra = installed.firstOrNull { it.id == a } ?: return false
+    val rb = installed.firstOrNull { it.id == b } ?: return false
+    val da = graphDir(ra.dir) ?: return false
+    val db = graphDir(rb.dir) ?: return false
+    val name = transfersName(a, da, b, db)
+    synchronized(transfers) { transfers[name]?.let { return it.isNotEmpty() } }
+    val file = File(File(context.filesDir, "valichi"), name)
+    val list = runCatching { Transfers.read(file) }.getOrNull() ?: return true
+    synchronized(transfers) { transfers[name] = list }
+    return list.isNotEmpty()
+  }
+
+  /** The file of the crossings between two graphs: the ids and a stamp of each graph (a new graph, a new file). */
+  private fun transfersName(a: String, aDir: File, b: String, bDir: File): String {
+    val (x, xd, y, yd) = if (a < b) listOf(a, aDir, b, bDir) else listOf(b, bDir, a, aDir)
+    fun stamp(dir: File) = (File(dir, "edges").length() xor File(dir, "profiles").lastModified()).toULong().toString(16)
+    return "${x}_${stamp(xd as File)}-${y}_${stamp(yd as File)}.txt"
+  }
+
   /** The border crossings between two graphs: from the files, else found now and kept. */
   private fun transfersBetween(a: CountryGraph, b: CountryGraph): List<Transfer> {
     val (x, y) = if (a.id < b.id) a to b else b to a
-    fun stamp(g: CountryGraph) = (File(g.graph.dir, "edges").length() xor File(g.graph.dir, "profiles").lastModified()).toULong().toString(16)
-    val name = "${x.id}_${stamp(x)}-${y.id}_${stamp(y)}.txt"
+    val name = transfersName(x.id, x.graph.dir, y.id, y.graph.dir)
     synchronized(transfers) { transfers[name]?.let { return it } }
     val dir = File(context.filesDir, "valichi")
     val file = File(dir, name)
@@ -401,11 +437,54 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     synchronized(transfers) { transfers.clear() }
   }
 
+  /** The graphs a trip opens ([openPlan]): in order, those left out, the sequences of countries found. */
+  internal class OpenPlan(val open: List<String>, val excluded: List<String>, val sequences: List<List<String>>)
+
   companion object {
     private const val TAG = "NavMasterRoute"
     const val ENGINE_VERSION = "0.2.0"
     /** Graphs kept open at the same time (a trip through a few countries). */
-    private const val MAX_OPEN = 5
+    internal const val MAX_OPEN = 5
+
+    /**
+     * Which graphs a trip opens, [MAX_OPEN] at most: the countries of the points ([pointCountries],
+     * null for a point outside every country), then the countries on the sequences of countries
+     * between consecutive points in different countries (CrossBorderDirections.countrySequences over
+     * the [installed] countries, with their outlines [bounds] and [linked] by crossings: the same
+     * rule the engine weighs them with, so that a sequence it could weigh is never left without its
+     * graph), then the other countries [near] the way (as before, the countries of the points first).
+     * Each pair's sequences come shortest first, then those that stray least from the line; across
+     * the pairs (a stop in another country) first every pair's sequences as long as its shortest
+     * (the other ways through, by rank), then those with a country more (the detours): the detours
+     * of the first leg never take the places of the only sequences of the next leg. On the real trip
+     * Canneto → Bielsko-Biała they bring Austria, the Czech Republic, Slovakia and Poland in, and
+     * leave Germany out (said in the log).
+     */
+    internal fun openPlan(installed: List<String>, pointCountries: List<String?>, points: List<DoubleArray>, near: List<String>,
+                          bounds: (String) -> BBox?, linked: (String, String) -> Boolean): OpenPlan {
+      // the sequences of every pair of consecutive points in different countries, in the engine's order
+      val perPair = ArrayList<List<List<String>>>()
+      var prev = -1
+      for (i in points.indices) {
+        val c = pointCountries[i] ?: continue
+        if (prev >= 0 && pointCountries[prev] != c) {
+          perPair += CrossBorderDirections.countrySequences(installed, bounds, linked, points[prev][0], points[prev][1], points[i][0], points[i][1], pointCountries[prev]!!, c)
+        }
+        prev = i
+      }
+      // across the pairs: by countries more than the pair's shortest, then by rank in the pair, then by pair
+      val ranked = perPair.flatMapIndexed { p, seqs ->
+        val shortest = seqs.minOfOrNull { it.size } ?: 0
+        seqs.mapIndexed { rank, seq -> Triple(seq.size - shortest, rank, p) to seq }
+      }.sortedWith(compareBy({ it.first.first }, { it.first.second }, { it.first.third })).map { it.second }
+      val sequences = ArrayList<List<String>>()
+      for (seq in ranked) if (seq !in sequences) sequences += seq
+      val ordered = LinkedHashSet<String>()
+      pointCountries.filterNotNull().forEach { ordered += it }
+      for (seq in sequences) ordered += seq
+      ordered += near
+      return OpenPlan(ordered.take(MAX_OPEN), ordered.drop(MAX_OPEN), sequences)
+    }
     /** The graph of a country, packed (release dati-<country>). */
     const val PACKAGE = "nm.tar.gz"
     /** The folder it is unpacked into. */

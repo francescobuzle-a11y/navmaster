@@ -53,6 +53,32 @@ class StopInsertionTest {
     val slower = app.navmaster.truck.routing.VariantInfo(3, 2, "penalty", "via SS45", "+14 min, −8 km", "", emptyList(), 840.0, -8000.0, true)
     assertEquals("via SS45 · +14 min, −8 km", NavViewModel.variantTitle(slower, 3, more = true))
     assertEquals("Alternativa 3", NavViewModel.variantTitle(null, 3, more = true))
+    // across borders: a variant through a country the best route does not cross says so; the engine's own
+    // label first, else the catalog's name (with its article)
+    val czech = app.navmaster.truck.routing.VariantInfo(3, 1, "crossing", "via D2 + D1, per la Cechia", "+16 min, +24 km", "", emptyList(), 960.0, 24000.0, false,
+        countries = listOf("italy", "austria", "czech-republic", "poland"), newCountries = listOf("czech-republic"))
+    assertEquals("via D2 + D1, per la Cechia · +16 min, +24 km", NavViewModel.variantTitle(czech, 3, more = false))
+    val unnamed = app.navmaster.truck.routing.VariantInfo(3, 1, "crossing", "via D2 + D1", "+16 min, +24 km", "", emptyList(), 960.0, 24000.0, false,
+        countries = listOf("italy", "austria", "czech-republic", "poland"), newCountries = listOf("czech-republic"))
+    assertEquals("via D2 + D1, per la Repubblica Ceca · +16 min, +24 km", NavViewModel.variantTitle(unnamed, 3, more = false, names = mapOf("czech-republic" to "Repubblica Ceca")))
+    assertEquals("via D2 + D1, per l'Austria · +16 min, +24 km",
+        NavViewModel.variantTitle(unnamed, 3, more = false, names = mapOf("czech-republic" to "Austria")))
+    assertEquals("via D2 + D1, per la Czech-republic · +16 min, +24 km", NavViewModel.variantTitle(unnamed, 3, more = false, names = emptyMap()))
+    // what the engine really writes for a country it has no name for: the bare id, replaced by the catalog's name
+    val bareId = app.navmaster.truck.routing.VariantInfo(3, 1, "crossing", "via D2 + D1, per czech-republic", "+16 min, +24 km", "", emptyList(), 960.0, 24000.0, false,
+        countries = listOf("italy", "austria", "czech-republic", "poland"), newCountries = listOf("czech-republic"))
+    assertEquals("via D2 + D1, per la Repubblica Ceca · +16 min, +24 km", NavViewModel.variantTitle(bareId, 3, more = false, names = mapOf("czech-republic" to "Repubblica Ceca")))
+    assertEquals("via D2 + D1, per czech-republic · +16 min, +24 km", NavViewModel.variantTitle(bareId, 3, more = false, names = emptyMap()))
+    // the engine's own name stays as it is (nothing to replace), also with the catalog's name at hand
+    assertEquals("via D2 + D1, per la Cechia · +16 min, +24 km", NavViewModel.variantTitle(czech, 3, more = false, names = mapOf("czech-republic" to "Repubblica Ceca")))
+    val twoIds = app.navmaster.truck.routing.VariantInfo(3, 1, "crossing", "altro valico, per czech-republic e slovakia", "+16 min, +24 km", "", emptyList(), 960.0, 24000.0, false,
+        countries = listOf("italy", "austria", "czech-republic", "slovakia", "poland"), newCountries = listOf("czech-republic", "slovakia"))
+    assertEquals("altro valico, per la Repubblica Ceca e slovakia · +16 min, +24 km",
+        NavViewModel.variantTitle(twoIds, 3, more = false, names = mapOf("czech-republic" to "Repubblica Ceca")))
+    // the same countries as the best: nothing added
+    val same = app.navmaster.truck.routing.VariantInfo(3, 1, "crossing", "altro valico", "+6 min, +4 km", "", emptyList(), 360.0, 4000.0, false,
+        countries = listOf("italy", "austria"), newCountries = emptyList())
+    assertEquals("altro valico · +6 min, +4 km", NavViewModel.variantTitle(same, 3, more = false))
     // the engine's titles: the roads the best does not use, or the same road on another line
     val other = app.navmaster.truck.routing.VariantInfo(2, 1, "motorway", "via A1, altro tracciato", "+11 min, +19 km", "A1 · A24", emptyList(), 660.0, 19000.0, false)
     assertEquals("via A1, altro tracciato · +11 min, +19 km", NavViewModel.variantTitle(other, 2, more = false))

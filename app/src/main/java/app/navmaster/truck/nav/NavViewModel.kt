@@ -2904,10 +2904,27 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
      * read as a road with more km). A road already on screen ([taken]: their titles, from another
      * request of variants) gets a number after it ("via A24 (2) · …"), whatever the differences:
      * two routes never name the same road the same way. A road the engine numbered already
-     * ("via A24 (2)") goes on from its number ("via A24 (3)"), never "via A24 (2) (2)".
+     * ("via A24 (2)") goes on from its number ("via A24 (3)"), never "via A24 (2) (2)". A variant
+     * through a country the best route does not cross says so ("via D2 + D1, per la Cechia"): the
+     * engine's label when it has the name; for a country it has no name for it writes the graph's
+     * id ("per czech-republic"), replaced here by the catalog's name ([names], RouteProgress.names);
+     * a label without the suffix at all gets it here.
      */
-    internal fun variantTitle(info: VariantInfo?, n: Int, more: Boolean, taken: Collection<String> = emptyList()): String {
-      val label = info?.label?.takeIf { it.isNotBlank() } ?: "Alternativa $n"
+    internal fun variantTitle(info: VariantInfo?, n: Int, more: Boolean, taken: Collection<String> = emptyList(),
+                              names: Map<String, String> = app.navmaster.truck.routing.RouteProgress.names): String {
+      val label = (info?.label?.takeIf { it.isNotBlank() } ?: "Alternativa $n").let { l ->
+        if (info == null || info.newCountries.isEmpty()) l
+        else {
+          val at = l.indexOf(", per ")
+          if (at < 0) l + ", per " + info.newCountries.joinToString(" e ") { id -> countryPhrase(names[id] ?: id.replaceFirstChar { it.uppercase() }) }
+          else {
+            // the engine's suffix: a bare id (a country it has no name for) becomes the catalog's name
+            var suffix = l.substring(at)
+            for (id in info.newCountries) names[id]?.let { name -> suffix = suffix.replace(Regex("(?<![\\w-])" + Regex.escape(id) + "(?![\\w-])")) { countryPhrase(name) } }
+            l.substring(0, at) + suffix
+          }
+        }
+      }
       val diff = info?.diff?.takeIf { it.isNotBlank() } ?: info?.let { diffWords(it.extraS, it.extraM) }
       val longer = more && info != null && info.longer && info.extraM > 0
       val shown = taken.map { it.substringBefore(" · ") }.toSet()
@@ -2920,6 +2937,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
     /** A road title the engine numbered already: "via A24 (2)". */
     private val NUMBERED = Regex(""" \((\d+)\)$""")
+
+    /** "la Cechia", "l'Austria": the article before a country name the engine did not know. */
+    internal fun countryPhrase(name: String): String = if (name.isNotEmpty() && name[0].lowercaseChar() in "aeiou") "l'$name" else "la $name"
 
     /** "+4 min, −6 km" (empty when the same). */
     internal fun diffWords(extraS: Double, extraM: Double): String {

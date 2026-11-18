@@ -21,7 +21,9 @@ import kotlinx.serialization.json.jsonPrimitive
  * What the engine says of one of its variants (`properties.navmaster.variant`): [rank] 0 the best,
  * 1.. the variants in order; [tier] 1 as good as the best, 2 a little longer (or not on motorways);
  * [label] the road ("via A21", "via A4 + A22"), [diff] the differences from the best
- * ("+4 min, −6 km"), [longer] only for a variant clearly longer than the best.
+ * ("+4 min, −6 km"), [longer] only for a variant clearly longer than the best. Across borders:
+ * [countries] the graphs of its pieces, [crossings] its border crossings (lat, lon), [newCountries]
+ * the countries the best route does not cross (`metadata.countries`); empty when the engine says nothing.
  */
 class VariantInfo(
     val rank: Int,
@@ -34,6 +36,9 @@ class VariantInfo(
     val extraS: Double,
     val extraM: Double,
     val longer: Boolean,
+    val countries: List<String> = emptyList(),
+    val crossings: List<Pair<Double, Double>> = emptyList(),
+    val newCountries: List<String> = emptyList(),
 )
 
 /**
@@ -443,6 +448,7 @@ class NmRouting(
     /** The routes of an answer (GeoJSON), with the engine's variant of each one when it says it. */
     internal fun parse(root: JsonObject, nPoints: Int): List<RouteResult>? {
       val features = root["features"]?.jsonArray ?: return null
+      val bestCountries = (root["metadata"] as? JsonObject)?.get("countries")?.let { it as? JsonArray }?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }.orEmpty()
       val out = mutableListOf<RouteResult>()
       for ((n, f) in features.withIndex()) {
         val fo = f.jsonObject
@@ -454,16 +460,23 @@ class NmRouting(
         val lon = DoubleArray(coords.size) { coords[it].jsonArray[0].jsonPrimitive.double }
         val wp = props?.get("way_points")?.jsonArray?.map { it.jsonPrimitive.int }
         val idx = if (wp != null && wp.size == nPoints) wp.toIntArray() else intArrayOf(0, coords.size - 1)
-        val variant = ((props?.get("navmaster") as? JsonObject)?.get("variant") as? JsonObject)?.let { variant(it) }
+        val variant = ((props?.get("navmaster") as? JsonObject)?.get("variant") as? JsonObject)?.let { variant(it, bestCountries) }
         out += RouteResult(lat, lon, idx, summary?.get("distance")?.jsonPrimitive?.doubleOrNull ?: 0.0,
             ((summary?.get("duration")?.jsonPrimitive?.doubleOrNull ?: 0.0) * 1000).toLong(), variant, n)
       }
       return out.takeIf { it.isNotEmpty() }
     }
 
-    private fun variant(v: JsonObject): VariantInfo {
+    internal fun variant(v: JsonObject, bestCountries: List<String> = emptyList()): VariantInfo {
       fun str(k: String) = (v[k] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
       fun num(k: String) = (v[k] as? JsonPrimitive)?.doubleOrNull ?: 0.0
+      val countries = (v["countries"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }.orEmpty()
+      val crossings = (v["crossings"] as? JsonArray)?.mapNotNull { e ->
+        val c = e as? JsonObject ?: return@mapNotNull null
+        val lat = (c["lat"] as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
+        val lon = (c["lon"] as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
+        lat to lon
+      }.orEmpty()
       val refs = (v["refs"] as? JsonArray)?.mapNotNull { e ->
         val r = e as? JsonObject ?: return@mapNotNull null
         val ref = (r["ref"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return@mapNotNull null
@@ -474,7 +487,8 @@ class NmRouting(
           tier = (v["tier"] as? JsonPrimitive)?.intOrNull ?: 0,
           source = str("source"), label = str("label"), diff = str("diff"), signature = str("signature"), refs = refs,
           extraS = num("extra_s"), extraM = num("extra_m"),
-          longer = (v["longer"] as? JsonPrimitive)?.booleanOrNull ?: false)
+          longer = (v["longer"] as? JsonPrimitive)?.booleanOrNull ?: false,
+          countries = countries, crossings = crossings, newCountries = countries.filter { it !in bestCountries }.distinct())
     }
   }
 }
