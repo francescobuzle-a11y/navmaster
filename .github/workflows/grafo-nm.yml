@@ -105,7 +105,12 @@ jobs:
           # the big countries: the graph files on disk (memory-mapped) instead of in RAM
           MMAP=""
           case "${{ matrix.region }}" in germany|france|great-britain|poland|spain|turkey|ukraine|italy|sweden|norway|finland) MMAP="--mmap" ;; esac
-          date; JAVA_OPTS="-Xmx${MEM}g -XX:+UseParallelGC" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP 2>&1 | awk '{ print strftime("%H:%M:%S"), $0; fflush() }'; date
+          # the country (ISO code of data/countries.json; the test area, Rimini and San Marino, is Italy) for the
+          # truck's legal speed limits of the engine's speed model (navmaster, the default)
+          ISO=$(python3 -c 'import json,sys; r=sys.argv[1]; print("IT" if r=="test" else next((c["iso"] for c in json.load(open(sys.argv[2])) if c["id"]==r), ""))' "${{ matrix.region }}" "$GITHUB_WORKSPACE/data/countries.json")
+          COUNTRY=""; [ -n "$ISO" ] && COUNTRY="--country=$ISO"
+          echo "Paese dei limiti legali: ${ISO:-nessuno}"
+          date; JAVA_OPTS="-Xmx${MEM}g -XX:+UseParallelGC" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP $COUNTRY 2>&1 | awk '{ print strftime("%H:%M:%S"), $0; fflush() }'; date
           test -f nm/profiles && test -f nm/edges && test -f nm/guidance
           rm -f roads.osm.pbf
           du -sh nm; ls -la nm
