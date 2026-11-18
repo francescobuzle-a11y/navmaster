@@ -105,6 +105,41 @@ class NmEngineOpenPlanTest {
   }
 
   @Test
+  fun aTripThroughSixCountriesOpensThemAll() {
+    // Canneto → Oslo: no sequence of 4 or 5 graphs (Germany and Sweden, Denmark and Norway only by ferry): the
+    // engine weighs italy-austria-germany-denmark-sweden-norway; before, MAX_OPEN cut Sweden and no route was found
+    val far = boxes + mapOf("denmark" to listOf(8.0, 54.5, 15.2, 57.8), "sweden" to listOf(11.0, 55.3, 24.2, 69.1), "norway" to listOf(4.5, 57.9, 31.2, 71.2))
+    val b = { id: String -> far[id]?.let { x -> BBox(x[0], x[2], x[1], x[3]) } }
+    val farBorders = borders + setOf("germany-denmark", "denmark-sweden", "sweden-norway")
+    val l = { x: String, y: String -> b(x)!!.intersects(b(y)!!) && ("$x-$y" in farBorders || "$y-$x" in farBorders) }
+    val oslo = doubleArrayOf(59.9139, 10.7522)
+    val installed = listOf("italy", "austria", "germany", "denmark", "sweden", "norway")
+    val plan = NmEngine.openPlan(installed, listOf("italy", "norway"), listOf(canneto, oslo), installed, b, l)
+    assertEquals(listOf(listOf("italy", "austria", "germany", "denmark", "sweden", "norway")), plan.sequences)
+    assertEquals(plan.open.toString(), installed.toSet(), plan.open.toSet())
+    assertTrue(plan.open.size <= NmEngine.MAX_PLAN_OPEN)
+    assertTrue(plan.excluded.isEmpty())
+  }
+
+  @Test
+  fun theVariantsOpenTheOtherSequencesCountriesWithoutChangingTheBestOnes() {
+    // Canneto → Vienna (stop) → Bielsko: the route on screen opens the same graphs as before; the variants
+    // also the countries of the detours (Slovenia, ...) for the engine's step 2, up to MAX_VARIANTS_OPEN
+    val installed = listOf("italy", "austria", "germany", "czech-republic", "slovakia", "poland", "hungary", "slovenia")
+    val vienna = doubleArrayOf(48.2082, 16.3738)
+    val pts = listOf(canneto, vienna, bielsko)
+    val best = NmEngine.openPlan(installed, listOf("italy", "austria", "poland"), pts, installed, bounds, linked)
+    val v = NmEngine.openPlan(installed, listOf("italy", "austria", "poland"), pts, installed, bounds, linked, variants = true)
+    assertEquals(best.open, v.open)
+    assertTrue(best.extra.isEmpty())
+    assertTrue(v.extra.toString(), v.extra.isNotEmpty() && v.extra.none { it in v.open })
+    assertTrue(v.open.size + v.extra.size <= NmEngine.MAX_VARIANTS_OPEN)
+    // countries of the other sequences (Germany for austria-germany-poland, ...), installed, never one of the best's
+    assertTrue(v.extra.toString(), v.extra.all { it in installed && it !in best.open })
+    assertTrue(v.extra.toString(), "germany" in v.extra)
+  }
+
+  @Test
   fun aRecalculationFromAustriaClosesItalyNotItsOwnTransitGraphs() {
     // after Canneto → Bielsko: italy and poland routed, the transit graphs never routed; past the Brenner
     // the recalculation from Austria plans austria, poland, czech-republic, slovakia, germany

@@ -1153,7 +1153,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
             alternatives = true)
         // the engine's variants with any number of points, also longer ones (up to 1.5 times the
         // time) and the shorter ones even when slower
-        val routes = AppGraph.routes.variants(from, waypoints, base, VariantAsk.MORE)
+        // the variants already on screen are asked for too (the engine does not know them): 3 new ones beyond them
+        val routes = AppGraph.routes.variants(from, waypoints, base, VariantAsk.more(p.variants.count { it.kind == VariantKind.ALTERNATIVE }))
         app.navmaster.truck.routing.RouteProgress.phase("Altre strade trovate: controllo limiti, pedaggi e svincoli…", 0.9f)
         val departure = LocalDateTime.now()
         val cur = _plan.value

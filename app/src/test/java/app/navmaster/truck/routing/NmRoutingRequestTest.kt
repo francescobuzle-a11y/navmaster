@@ -77,6 +77,14 @@ class NmRoutingRequestTest {
     assertEquals(true, a["allow_fewer_km"]!!.jsonPrimitive.boolean)
     assertNull(a["budget_ms"])
     assertNull(o["alternative_routes"])
+    // with the variants already on screen: those plus 3 new ones (the engine does not know them), at most 9
+    assertEquals(6, VariantAsk.more(0).count)
+    assertEquals(7, VariantAsk.more(3).count)
+    assertEquals(VariantAsk.MAX_COUNT, VariantAsk.more(8).count)
+    assertEquals(1.6, VariantAsk.more(3).maxKmFactor, 1e-9)
+    assertEquals(true, VariantAsk.more(3).allowFewerKm)
+    val o7 = NmRouting.request(two, spec, listOf("break", "break"), 0, null, VariantAsk.more(3))
+    assertEquals(7, nav(o7)["alternatives"]!!.jsonObject["count"]!!.jsonPrimitive.int)
     // the server gets openrouteservice's alternatives instead
     val server = NmRouting.request(two, spec, listOf("break", "break"), 2, null, VariantAsk.MORE, forServer = true)
     assertNull(nav(server)["alternatives"])

@@ -159,8 +159,14 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     // the engine's lines of this request (variants, measures) go to the log only, never to the bar
     // of the search (RouteProgress reads the lines of the main route)
     val rc = RequestContext(cancel = cancel, priority = call.priority, executor = pool, slots = slots, log = { Log.i(TAG, it) })
+    // the request of the variants (navmaster.alternatives): it may look at more countries than the route on screen
+    val variants = (parsed["navmaster"] as? Map<*, *>)?.get("alternatives") != null
+    // a trip in one country, its variants: also a way through a neighbouring country (A-B-A: Innsbruck →
+    // Salzburg by the German A93/A8), when two of its crossings lie near the way (geometry only, no graph opened)
+    val around = if (variants && known.size == 1 && points.size == 2) aroundCountries(known[0], countries, points) else emptyList()
+    if (around.isNotEmpty()) Log.i(TAG, "varianti: giri per i Paesi vicini: ${around.joinToString()}")
     // one country: its graph (a point just outside every outline goes with the others)
-    if (known.size <= 1) {
+    if (known.size <= 1 && around.isEmpty()) {
       val region = known.firstOrNull() ?: countries.first()
       // the graph may be closed by another thread between opening and reading it: then opened again
       repeat(3) {
@@ -183,12 +189,16 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     val knownIds = known.map { it.id }.toSet()
     val near = countries.filter { r -> r.id in knownIds || nearTrip(r, points) }.sortedBy { r -> if (r.id in knownIds) 0 else 1 }.map { it.id }
     val installed = countries.filter { installed(it.dir) }
-    val plan = openPlan(installed.map { it.id }, at.map { it?.id }, points, near, { id -> bboxOf(id) }, { a, b -> linkedByCrossings(installed, a, b) })
-    Log.i(TAG, "grafi aperti: ${plan.open.joinToString()}" + (if (plan.excluded.isEmpty()) "" else "; esclusi: ${plan.excluded.joinToString()} (oltre $MAX_OPEN)") +
+    val plan = if (around.isNotEmpty()) OpenPlan(listOf(known[0].id) + around, emptyList(), emptyList())
+      else openPlan(installed.map { it.id }, at.map { it?.id }, points, near, { id -> bboxOf(id) }, { a, b -> linkedByCrossings(installed, a, b) }, variants)
+    Log.i(TAG, "grafi aperti: ${plan.open.joinToString()}" + (if (plan.extra.isEmpty()) "" else "; per le sole varianti: ${plan.extra.joinToString()}") +
+        (if (plan.excluded.isEmpty()) "" else "; esclusi: ${plan.excluded.joinToString()} (oltre $MAX_OPEN)") +
         "; sequenze candidate: ${plan.sequences.joinToString(" | ") { it.joinToString("-") }.ifEmpty { "nessuna" }}")
     repeat(3) {
-      val keep = plan.open.toSet()
-      val graphs = plan.open.mapNotNull { id -> countries.firstOrNull { it.id == id } }.mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }, keep) }
+      val keep = (plan.open + plan.extra).toSet()
+      // the graphs for the variants only: opened if they can be, never an error of the request
+      val graphs = (plan.open + plan.extra).mapNotNull { id -> countries.firstOrNull { it.id == id } }
+          .mapNotNull { r -> graphOf(r, if (r.id in knownIds) why else { _ -> }, keep) }
       if (knownIds.any { k -> graphs.none { it.region.id == k } }) return null
       lock.read {
         if (graphs.all { open[it.region.id] === it }) {
@@ -198,7 +208,15 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
           // the engine's messages also move the bar of the search (RouteProgress), for the route on screen only
           val main = call.priority == RequestContext.MAIN
           if (main) RouteProgress.names = countries.associate { it.id to it.label }
-          val cb = CrossBorderDirections(graphs.map { it.country }, { a, b -> transfersBetween(a, b) }, { Log.i(TAG, it); if (main) RouteProgress.onEngineLog(it) })
+          // a border with a graph for the variants only: the crossings already written (prepareBorders), never found
+          // now inside the request (seconds on the tablet taken from the variants' time); none until the file is there
+          val extraIds = plan.extra.toSet()
+          val cb = CrossBorderDirections(graphs.map { it.country },
+              { a, b -> if (a.id in extraIds || b.id in extraIds) transfersWritten(a, b) else transfersBetween(a, b) },
+              { Log.i(TAG, it); if (main) RouteProgress.onEngineLog(it) })
+          // the best is weighed only on the graphs the route on screen opens: the ones for the variants only
+          // add sequences to their step 2 (the best on screen does not change)
+          if (plan.extra.isNotEmpty()) cb.bestGraphs = plan.open.toSet()
           return measured(rc, parseMs) {
             try { cb.handle(DirectionsRequest.fromJson(profile, parsed), at.map { it?.id }, rc) }
             catch (e: ApiException) { graphs.first().service.errorBody(e) }
@@ -291,11 +309,48 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
     return list.isNotEmpty()
   }
 
+  /**
+   * The neighbours of [home] worth a way round for a trip in [home] alone (A-B-A, the variants only):
+   * installed countries whose outline touches [home]'s and whose crossings file has two crossings in
+   * different places near the way (Transfers.aroundOk: p → t1 → t2 → q within 1.2 times the line),
+   * at most CrossBorderDirections.AROUND_MAX, nearest the line first. Only the files of the crossings
+   * already written are read (no graph opened): a border never prepared is not looked at.
+   */
+  private fun aroundCountries(home: InstalledRegion, countries: List<InstalledRegion>, points: List<DoubleArray>): List<String> {
+    val p = points.first(); val q = points.last()
+    val hb = bboxOf(home.id) ?: return emptyList()
+    val hd = graphDir(home.dir) ?: return emptyList()
+    val out = ArrayList<Pair<String, Double>>()
+    for (r in countries) {
+      if (r.id == home.id || !installed(r.dir)) continue
+      val rb = bboxOf(r.id) ?: continue
+      if (!hb.intersects(rb)) continue
+      val rd = graphDir(r.dir) ?: continue
+      val name = transfersName(home.id, hd, r.id, rd)
+      val list = synchronized(transfers) { transfers[name] } ?: runCatching { Transfers.read(File(File(context.filesDir, "valichi"), name)) }.getOrNull()
+          ?.also { l -> synchronized(transfers) { transfers[name] = l } } ?: continue
+      if (!Transfers.aroundOk(list, p[0], p[1], q[0], q[1])) continue
+      val c = doubleArrayOf((rb.minLat + rb.maxLat) / 2, (rb.minLon + rb.maxLon) / 2)
+      out += r.id to app.navmaster.truck.core.Geo.dist(p[0], p[1], c[0], c[1]) + app.navmaster.truck.core.Geo.dist(c[0], c[1], q[0], q[1])
+    }
+    return out.sortedBy { it.second }.take(CrossBorderDirections.AROUND_MAX).map { it.first }
+  }
+
   /** The file of the crossings between two graphs: the ids and a stamp of each graph (a new graph, a new file). */
   private fun transfersName(a: String, aDir: File, b: String, bDir: File): String {
     val (x, xd, y, yd) = if (a < b) listOf(a, aDir, b, bDir) else listOf(b, bDir, a, aDir)
     fun stamp(dir: File) = (File(dir, "edges").length() xor File(dir, "profiles").lastModified()).toULong().toString(16)
     return "${x}_${stamp(xd as File)}-${y}_${stamp(yd as File)}.txt"
+  }
+
+  /** The border crossings between two graphs from the files only (none when not written yet: nothing found now). */
+  private fun transfersWritten(a: CountryGraph, b: CountryGraph): List<Transfer> {
+    val (x, y) = if (a.id < b.id) a to b else b to a
+    val name = transfersName(x.id, x.graph.dir, y.id, y.graph.dir)
+    synchronized(transfers) { transfers[name]?.let { return it } }
+    val list = runCatching { Transfers.read(File(File(context.filesDir, "valichi"), name)) }.getOrNull() ?: return emptyList()
+    synchronized(transfers) { transfers[name] = list }
+    return list
   }
 
   /** The border crossings between two graphs: from the files, else found now and kept. */
@@ -452,14 +507,25 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
   /** An open graph as [toClose] sees it: its country, the last route on it (0: none), its last use. */
   internal data class Slot(val id: String, val routed: Long, val used: Long)
 
-  /** The graphs a trip opens ([openPlan]): in order, those left out, the sequences of countries found. */
-  internal class OpenPlan(val open: List<String>, val excluded: List<String>, val sequences: List<List<String>>)
+  /**
+   * The graphs a trip opens ([openPlan]): in order, those left out, the sequences of countries found;
+   * [extra]: the graphs opened for the request of the variants only (their step 2), never for the best.
+   */
+  internal class OpenPlan(val open: List<String>, val excluded: List<String>, val sequences: List<List<String>>, val extra: List<String> = emptyList())
 
   companion object {
     private const val TAG = "NavMasterRoute"
     const val ENGINE_VERSION = "0.2.0"
     /** Graphs kept open at the same time (a trip through a few countries). */
     internal const val MAX_OPEN = 5
+    /**
+     * Graphs open at most when a pair of points has no whole sequence of countries within [MAX_OPEN]
+     * (Italy → Sweden or Bulgaria: 5-6 countries in a row): the shortest one is added, the countries
+     * only near the way go first. RAM per open graph: to be measured on the tablet ("stats", usedMb).
+     */
+    internal const val MAX_PLAN_OPEN = 7
+    /** Graphs open at most for the request of the variants (the other sequences' countries, for their step 2). */
+    internal const val MAX_VARIANTS_OPEN = 6
 
     /**
      * The open graph to close to make room for another: outside [keep] (the graphs of the same
@@ -488,7 +554,7 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
      * leave Germany out (said in the log).
      */
     internal fun openPlan(installed: List<String>, pointCountries: List<String?>, points: List<DoubleArray>, near: List<String>,
-                          bounds: (String) -> BBox?, linked: (String, String) -> Boolean): OpenPlan {
+                          bounds: (String) -> BBox?, linked: (String, String) -> Boolean, variants: Boolean = false): OpenPlan {
       // the sequences of every pair of consecutive points in different countries, in the engine's order
       val perPair = ArrayList<List<List<String>>>()
       var prev = -1
@@ -510,7 +576,41 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
       pointCountries.filterNotNull().forEach { ordered += it }
       for (seq in sequences) ordered += seq
       ordered += near
-      return OpenPlan(ordered.take(MAX_OPEN), ordered.drop(MAX_OPEN), sequences)
+      val open = LinkedHashSet(ordered.take(MAX_OPEN))
+      // every pair keeps one whole sequence (its shortest): without it the engine has no way at all, the
+      // best route included (Italy → Sweden: italy-austria-germany-denmark-sweden). Up to MAX_PLAN_OPEN,
+      // the countries only near the way (in no sequence, no point) leave first. Where a whole sequence was
+      // within MAX_OPEN nothing changes
+      val pointSet = pointCountries.filterNotNull().toSet()
+      val inSequences = sequences.flatten().toSet()
+      for (seqs in perPair) {
+        if (seqs.isEmpty() || seqs.any { s -> open.containsAll(s) }) continue
+        for (id in seqs.first()) {
+          if (id in open) continue
+          if (open.size >= MAX_OPEN) open.lastOrNull { it !in pointSet && it !in inSequences }?.let { open.remove(it) }
+          if (open.size >= MAX_PLAN_OPEN) break
+          open += id
+        }
+      }
+      // the variants only: the countries of the other sequences (also those beyond the first six of each
+      // pair, CrossBorderDirections.EXTRA_SEQUENCES), up to MAX_VARIANTS_OPEN, for the engine's step 2
+      val extra = LinkedHashSet<String>()
+      if (variants) {
+        var prevV = -1
+        val more = ArrayList<List<String>>()
+        for (i in points.indices) {
+          val c = pointCountries[i] ?: continue
+          if (prevV >= 0 && pointCountries[prevV] != c) more += CrossBorderDirections.countrySequences(installed, bounds, linked, points[prevV][0], points[prevV][1],
+              points[i][0], points[i][1], pointCountries[prevV]!!, c, CrossBorderDirections.EXTRA_SEQUENCES)
+          prevV = i
+        }
+        for (seq in (sequences + more).sortedBy { it.size }) for (id in seq) {
+          if (id in open || id in extra) continue
+          if (open.size + extra.size >= MAX_VARIANTS_OPEN) break
+          extra += id
+        }
+      }
+      return OpenPlan(open.toList(), ordered.filter { it !in open && it !in extra }, sequences, extra.toList())
     }
     /** The graph of a country, packed (release dati-<country>). */
     const val PACKAGE = "nm.tar.gz"

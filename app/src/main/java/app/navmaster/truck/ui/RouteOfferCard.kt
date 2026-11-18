@@ -140,15 +140,18 @@ private fun OfferMap(o: RouteOffer, styleUri: String, modifier: Modifier) {
         options = MapOptions(ornamentOptions = OrnamentOptions(isCompassEnabled = false, isScaleBarEnabled = false, isLogoEnabled = false,
             isAttributionEnabled = false)),
     ) {
-      if (o.current.size > 1) {
-        val now = rememberJsonSource(remember(o.current.size, o.current.first()) { line(o.current) })
-        LineLayer(id = "offer-now-casing", source = now, color = const(Color(0xFF4B5563)), width = const(9.dp), opacity = const(0.9f))
-        LineLayer(id = "offer-now", source = now, color = const(Color(0xFF9AA8B8)), width = const(6.dp), opacity = const(0.95f))
-      }
-      o.route?.geometry?.takeIf { it.size > 1 }?.let { g ->
-        val next = rememberJsonSource(remember(g.size, g.first(), g.last()) { line(g) })
-        LineLayer(id = "offer-new-casing", source = next, color = const(Nm.RouteBorder), width = const(10.dp))
-        LineLayer(id = "offer-new", source = next, color = const(Nm.Route), width = const(6.dp))
+      // the two routes under the names of roads and towns (the grey one under the blue one)
+      UnderLabels {
+        if (o.current.size > 1) {
+          val now = rememberJsonSource(remember(o.current.size, o.current.first()) { line(o.current) })
+          LineLayer(id = "offer-now-casing", source = now, color = const(Color(0xFF4B5563)), width = const(9.dp), opacity = const(0.9f))
+          LineLayer(id = "offer-now", source = now, color = const(Color(0xFF9AA8B8)), width = const(6.dp), opacity = const(0.95f))
+        }
+        o.route?.geometry?.takeIf { it.size > 1 }?.let { g ->
+          val next = rememberJsonSource(remember(g.size, g.first(), g.last()) { line(g) })
+          LineLayer(id = "offer-new-casing", source = next, color = const(Nm.RouteBorder), width = const(10.dp))
+          LineLayer(id = "offer-new", source = next, color = const(Nm.Route), width = const(6.dp))
+        }
       }
       first?.let { p ->
         val here = rememberJsonSource(remember(p) { """{"type":"Feature","geometry":{"type":"Point","coordinates":[${p.lng},${p.lat}]},"properties":{}}""" })

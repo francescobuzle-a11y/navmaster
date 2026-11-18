@@ -610,7 +610,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           // the route handed to the map once per route, not at every frame (see MapLines)
           navigationPath = { state ->
             // under the names of roads, towns and motorways (the style's slot), over the roads
-            org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
+            UnderLabels {
               // ahead in blue, behind lighter (or hidden), on the lane of the driving side as the arrow
               val g = state.routeGeometry
               NmDrivenRoute(g, smoothAlong.value.takeIf { it >= 0 } ?: routeTraveled.value, camShift.value, g?.firstOrNull()?.lat ?: 45.0,
@@ -654,7 +654,8 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         },
     ) { _ ->
       if (!navigating) {
-        org.maplibre.compose.layers.Anchor.Below(MapStyles.ROUTES_SLOT) {
+        // the grey variants, then the blue route over them, all under the names
+        UnderLabels {
           plan.variants.forEachIndexed { i, v ->
             if (i != plan.selected) NmRouteLine(v.route.geometry, "nm-alt-$i", Color(0xFF9AA8B8), 8f, 2f, Color(0xFF5B6878))
           }

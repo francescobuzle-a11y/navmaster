@@ -219,8 +219,10 @@ fun RouteFeaturePins(a: app.navmaster.truck.routing.RouteAnalysis) {
       append("]}")
     }
   }
-  if (tunnelJson != null) NmLine(tunnelJson, "nm-tunnels", androidx.compose.ui.graphics.Color(0xFF2B3138), 7f, 2f,
-      androidx.compose.ui.graphics.Color(0xFFB0B8C0))
+  // the tunnels over the blue route but under the names (they were over the names of the roads)
+  if (tunnelJson != null) UnderLabels {
+    NmLine(tunnelJson, "nm-tunnels", androidx.compose.ui.graphics.Color(0xFF2B3138), 7f, 2f, androidx.compose.ui.graphics.Color(0xFFB0B8C0))
+  }
   val startPin = remember { tagPin(0xFFF59F00.toInt(), "Inizio pedaggio", ::drawEuro) }
   val endPin = remember { tagPin(0xFF2E7D32.toInt(), "Fine pedaggio", ::drawEuro) }
   val tunnelPin = remember { tagPin(0xFF455A64.toInt(), null, ::drawTunnel) }

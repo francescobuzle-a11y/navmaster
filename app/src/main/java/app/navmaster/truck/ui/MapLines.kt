@@ -10,6 +10,7 @@ import org.maplibre.compose.expressions.dsl.gt
 import org.maplibre.compose.expressions.dsl.lt
 import org.maplibre.compose.expressions.value.LineCap
 import org.maplibre.compose.expressions.value.LineJoin
+import org.maplibre.compose.layers.Anchor
 import org.maplibre.compose.layers.LineLayer
 import org.maplibre.compose.sources.GeoJsonData
 import org.maplibre.compose.sources.GeoJsonSource
@@ -26,6 +27,21 @@ import uniffi.ferrostar.GeographicCoordinate
  * markers, 60 times a second; it re-cut its tiles over and over and could not keep up.
  * Here the text is made once per route and the same data object is kept, so nothing is redone.
  */
+
+/**
+ * The lines of routes drawn in [content] (the blue route, the grey variants, the tunnels on the
+ * route, the routes of the offer) go UNDER the names of the map: roads, motorway shields, villages
+ * and towns stay readable over the blue line, by day and by night, on the satellite too. They hang
+ * below the style's slot (MapStyles.ROUTES_SLOT, before the first layer of names), in the order
+ * they are composed; the map re-adds them there at every new style (day/night, satellite, a new
+ * map file). Points that must stay over the names (pins, markers, the vehicle) stay out of it.
+ * Only for maps drawn with MapStyles.styleUri (the slot must be in the style).
+ */
+@Composable
+@MaplibreComposable
+fun UnderLabels(content: @Composable @MaplibreComposable () -> Unit) {
+  Anchor.Below(MapStyles.ROUTES_SLOT, content)
+}
 
 /** A GeoJSON source whose data is set again only when [json] really changes. */
 @Composable

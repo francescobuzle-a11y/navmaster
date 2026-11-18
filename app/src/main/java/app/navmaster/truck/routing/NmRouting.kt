@@ -146,6 +146,16 @@ class VariantAsk(
     val AUTO = VariantAsk(count = 4, tier1Factor = 1.10, tier1KmFactor = 1.10, maxFactor = 1.20, maxKmFactor = 1.20, budgetMs = 25_000)
     /** "Altri percorsi": more, also longer (up to 1.5× the time), and the shorter ones even when slower. */
     val MORE = VariantAsk(count = 6, tier1Factor = 1.25, tier1KmFactor = 1.25, maxFactor = 1.5, maxKmFactor = 1.6, allowFewerKm = true)
+    /** The routes the engine gives at most (the best one included): navmaster.alternatives.count up to 9. */
+    const val MAX_COUNT = 9
+
+    /**
+     * "Altri percorsi" with [shown] variants already on screen: the engine does not know them, they come
+     * back among its first ones and the app drops them as duplicates; so it is asked for them plus 3 new
+     * ones (at least MORE's 6 routes, at most [MAX_COUNT]).
+     */
+    fun more(shown: Int): VariantAsk = VariantAsk(count = (1 + shown + 3).coerceIn(MORE.count, MAX_COUNT), tier1Factor = MORE.tier1Factor,
+        tier1KmFactor = MORE.tier1KmFactor, maxFactor = MORE.maxFactor, maxKmFactor = MORE.maxKmFactor, allowFewerKm = MORE.allowFewerKm, budgetMs = MORE.budgetMs)
   }
 }
 
@@ -397,7 +407,7 @@ class NmRouting(
       if (passThrough && !forServer) nav["pass_through"] = JsonArray(kinds.map { JsonPrimitive(it == "via") })
       // the engine's variants: any number of points, the best one not sent again (the app has it)
       if (variants != null && !forServer) nav["alternatives"] = JsonObject(buildMap {
-        put("count", JsonPrimitive(variants.count.coerceIn(2, 6)))
+        put("count", JsonPrimitive(variants.count.coerceIn(2, VariantAsk.MAX_COUNT)))
         put("tier1_factor", JsonPrimitive(variants.tier1Factor))
         put("tier1_km_factor", JsonPrimitive(variants.tier1KmFactor))
         put("max_factor", JsonPrimitive(variants.maxFactor))

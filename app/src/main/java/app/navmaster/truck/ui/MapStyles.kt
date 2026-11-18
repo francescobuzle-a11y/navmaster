@@ -65,14 +65,35 @@ object MapStyles {
 
   private fun build(context: Context, maps: List<InstalledRegion>, night: Boolean, satellite: Boolean, traffic: String?, online: Boolean = false): String {
     val asset = if (night) "style/style-night.json" else "style/style-day.json"
-    val base = json.parseToJsonElement(context.assets.open(asset).bufferedReader().use { it.readText() }).jsonObject
+    val text = context.assets.open(asset).bufferedReader().use { it.readText() }
+    return compose(text, maps.map { it.map.absolutePath }, satellite, traffic, online)
+  }
+
+  /**
+   * Where in the style's [layerTypes] (the "type" of each layer, in drawing order) the slot of the
+   * routes goes: before the first "symbol" layer, the first one with names (one-way arrows, rivers,
+   * roads, motorway shields, places), so that ALL of them are drawn over the routes; at the end when
+   * the style has no names at all. Everything before it (fields, water, roads, tunnels, bridges) is
+   * under the routes.
+   */
+  internal fun routesSlotIndex(layerTypes: List<String?>): Int =
+      layerTypes.indexOfFirst { it == "symbol" }.let { if (it < 0) layerTypes.size else it }
+
+  /**
+   * The style of the map from the style of the assets ([baseText]): one copy of each layer per map
+   * file ([mapFiles], absolute paths), the satellite, the traffic and the slot of the routes.
+   * Pure (no Android): the order of the layers is checked by MapLayerOrderTest.
+   */
+  internal fun compose(baseText: String, mapFiles: List<String>, satellite: Boolean, traffic: String?, online: Boolean = false): String {
+    val base = json.parseToJsonElement(baseText).jsonObject
     val omt = base["sources"]?.jsonObject?.get("omt")?.jsonObject
     val layers = base["layers"]?.jsonArray ?: JsonArray(emptyList())
+    val slotAt = routesSlotIndex(layers.map { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull })
     return buildJsonObject {
       for ((k, v) in base) if (k != "sources" && k != "layers") put(k, v)
       putJsonObject("sources") {
-        maps.forEachIndexed { i, r ->
-          if (omt != null) put("omt$i", JsonObject(omt + ("url" to JsonPrimitive("pmtiles://file://" + r.map.absolutePath))))
+        mapFiles.forEachIndexed { i, path ->
+          if (omt != null) put("omt$i", JsonObject(omt + ("url" to JsonPrimitive("pmtiles://file://" + path))))
         }
         if (online && omt != null) {
           put("online", JsonObject(omt + mapOf("url" to JsonPrimitive(ONLINE_TILES), "attribution" to JsonPrimitive(ONLINE_ATTRIBUTION))))
@@ -100,22 +121,17 @@ object MapStyles {
         }
       }
       putJsonArray("layers") {
-        var trafficAdded = traffic == null
-        var slotAdded = false
-        for (l in layers) {
+        // the traffic colours and the routes over the roads, UNDER the names (of roads, towns,
+        // motorways): the route lines of the app hang below ROUTES_SLOT (UnderLabels)
+        fun slot() {
+          if (traffic != null) add(json.parseToJsonElement(TRAFFIC_LAYER))
+          add(json.parseToJsonElement(SLOT_LAYER))
+        }
+        for ((at, l) in layers.withIndex()) {
           val layer = l.jsonObject
           val type = layer["type"]?.jsonPrimitive?.contentOrNull
           val src = layer["source"]?.jsonPrimitive?.contentOrNull
-          // the traffic colours and the routes over the roads, UNDER the names (of roads, towns,
-          // motorways): the route lines of the app hang below ROUTES_SLOT (Anchor.Below)
-          if (!slotAdded && type == "symbol") {
-            slotAdded = true
-            if (!trafficAdded) {
-              trafficAdded = true
-              add(json.parseToJsonElement(TRAFFIC_LAYER))
-            }
-            add(json.parseToJsonElement(SLOT_LAYER))
-          }
+          if (at == slotAt) slot()
           if (src == null) {
             add(layer)
             if (type == "background" && satellite) {
@@ -133,16 +149,33 @@ object MapStyles {
           if (online && omt != null) {
             add(JsonObject(layer + mapOf("id" to JsonPrimitive("${layer["id"]?.jsonPrimitive?.contentOrNull}-online"), "source" to JsonPrimitive("online"))))
           }
-          maps.forEachIndexed { i, _ ->
+          mapFiles.forEachIndexed { i, _ ->
             add(JsonObject(layer + mapOf("id" to JsonPrimitive("${layer["id"]?.jsonPrimitive?.contentOrNull}-$i"), "source" to JsonPrimitive("omt$i"))))
           }
         }
-        if (!slotAdded) add(json.parseToJsonElement(SLOT_LAYER))
+        if (slotAt >= layers.size) slot()
       }
     }.toString()
   }
 
-  /** The layer the app's route lines are drawn below: under the names, over the roads. */
+  /**
+   * The layer the app's route lines are drawn below: under the names, over the roads.
+   *
+   * The order of the map, from the bottom (see also UnderLabels in MapLines):
+   *  1. the style: background, satellite, fields, water, buildings, tunnels, roads, bridges, 3D buildings;
+   *  2. the traffic colours (TomTom, beside the road);
+   *  3. the app's lines, below this slot, in the order they are composed: the grey variants, the blue
+   *     route (in planning nm-alt-*, nm-preview, nm-tunnels; while driving nm-route-*; the routes of
+   *     the offer card offer-*);
+   *  4. this slot (an empty, invisible line);
+   *  5. the names of the style: one-way arrows, rivers, roads, the shields with the motorway's ref,
+   *     petrol stations and car parks, house numbers, places (villages, towns, cities), with their halo;
+   *  6. the app's points, added on top of the style: alerts and speed cameras, toll and tunnel pins,
+   *     limits, difficult points, stops, the departure, the pins of the road and of the places;
+   *  7. the vehicle's arrow (the location puck of Ferrostar), last.
+   * The names are symbols: a line never pushes them away (in MapLibre only symbols collide with
+   * symbols), so over the route they stay where they would be without it.
+   */
   const val ROUTES_SLOT = "nm-routes-slot"
   private const val EMPTY_SOURCE = """{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}"""
   private const val SLOT_LAYER = """{"id":"$ROUTES_SLOT","type":"line","source":"nm-empty","paint":{"line-opacity":0}}"""
