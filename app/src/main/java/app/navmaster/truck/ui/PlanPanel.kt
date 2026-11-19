@@ -40,11 +40,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.navmaster.truck.nav.MoreRoutes
+import app.navmaster.truck.nav.NavViewModel
 import app.navmaster.truck.nav.PlanState
 import app.navmaster.truck.nav.RouteVariant
 import app.navmaster.truck.nav.VariantKind
@@ -65,7 +67,8 @@ fun PlanPanel(
     plan: PlanState,
     vehicleName: String,
     modifier: Modifier = Modifier,
-    onSelect: (Int) -> Unit,
+    /** The card tapped, by itself (NavViewModel.selectVariant): the cards can move while the row is drawn. */
+    onSelect: (RouteVariant) -> Unit,
     onCrit: (Criticality) -> Unit,
     onUnavoid: (Criticality) -> Unit,
     onAddStop: () -> Unit,
@@ -90,7 +93,8 @@ fun PlanPanel(
     // rest of the screen stays free to move and zoom the map
     Panel(modifier, padding = 10.dp) {
       Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        plan.variants.forEachIndexed { i, v -> VariantChip(v, i == plan.selected) { onSelect(i) } }
+        val fast = plan.fastest
+        plan.variants.forEachIndexed { i, v -> VariantChip(v, i == plan.selected, fastest = i == fast) { onSelect(v) } }
         if (!plan.computing) MoreRoutesCard(plan.more, compact = true, onClick = onMore)
       }
       Spacer(Modifier.height(8.dp))
@@ -161,7 +165,8 @@ fun PlanPanel(
       if (plan.variants.isNotEmpty()) {
         Spacer(Modifier.height(8.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-          plan.variants.forEachIndexed { i, v -> VariantCard(v, i == plan.selected) { onSelect(i) } }
+          val fast = plan.fastest
+          plan.variants.forEachIndexed { i, v -> VariantCard(v, i == plan.selected, fastest = i == fast) { onSelect(v) } }
           if (!plan.computing) MoreRoutesCard(plan.more, compact = false, onClick = onMore)
         }
         plan.routeNote?.let {
@@ -229,9 +234,9 @@ fun PlanPanel(
   }
 }
 
-/** A route in one line: its name, how long, and a dot for how difficult (red, amber, green). */
+/** A route in one line: its name, how long, and a dot for how difficult (red, amber, green); [fastest]: «PIÙ VELOCE». */
 @Composable
-private fun VariantChip(v: RouteVariant, selected: Boolean, onClick: () -> Unit) {
+private fun VariantChip(v: RouteVariant, selected: Boolean, fastest: Boolean, onClick: () -> Unit) {
   Row(
       Modifier.clip(RoundedCornerShape(14.dp)).background(if (selected) Nm.Raised else Color(0x14FFFFFF))
           .border(2.dp, if (selected) Nm.Accent else Color.Transparent, RoundedCornerShape(14.dp)).clickable(onClick = onClick)
@@ -241,7 +246,13 @@ private fun VariantChip(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
     Box(Modifier.size(10.dp).clip(CircleShape).background(if (v.critical > 0) Nm.Red else if (v.warnings > 0) Nm.Amber else Nm.Accent))
     Spacer(Modifier.width(8.dp))
     Column {
-      Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        if (fastest) {
+          Spacer(Modifier.width(6.dp))
+          Badge("PIÙ VELOCE", FastestColor, small = true)
+        }
+      }
       Caption("${v.title} · ${Fmt.distanceText(v.distanceM)}" + (if (v.analysis.tollKm > 0.5) " · 💶" else "") +
           (v.source?.let { " · $it" } ?: ""), size = 12, lines = 1)
     }
@@ -278,8 +289,18 @@ private fun MoreRoutesCard(state: MoreRoutes, compact: Boolean, onClick: () -> U
   }
 }
 
+/** The colour of «PIÙ VELOCE»: a violet, apart from the blue «NM» tag and the green «CONSIGLIATO». */
+private val FastestColor = Color(0xFFB197FC)
+
+/**
+ * A route before departure. Badges under the title (a long title is not squeezed by them):
+ * «PIÙ VELOCE» on the card with the fewest minutes shown ([fastest], PlanState.fastest),
+ * «CONSIGLIATO» on the recommended card when its title does not say it already, «CONVIENE» on the
+ * toll-free card the toll advice recommends (NavViewModel.recommendedBadge). The row of the badges
+ * keeps its height on every card, also without badges, so the cards of the row stay aligned.
+ */
 @Composable
-private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit) {
+private fun VariantCard(v: RouteVariant, selected: Boolean, fastest: Boolean, onClick: () -> Unit) {
   Column(
       Modifier.widthIn(min = 170.dp).clip(RoundedCornerShape(18.dp)).background(if (selected) Nm.Raised else Color(0x14FFFFFF))
           .border(2.dp, if (selected) Nm.Accent else Color.Transparent, RoundedCornerShape(18.dp)).clickable(onClick = onClick).padding(12.dp),
@@ -287,12 +308,16 @@ private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
     Row(verticalAlignment = Alignment.CenterVertically) {
       Caption(v.title, color = if (selected) Nm.Accent else Nm.Muted, size = 13)
       v.source?.let { SourceTag(it) }
-      if (v.recommended) {
-        Spacer(Modifier.width(6.dp))
-        Text("CONSIGLIATO", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Nm.Accent).padding(horizontal = 5.dp, vertical = 1.dp))
-      }
     }
+    val recommended = if (v.recommended) NavViewModel.recommendedBadge(v.kind, v.title) else null
+    // the height of a small badge (its 12 sp line and 1 dp above and below), the same with or without
+    val badgeRow = with(LocalDensity.current) { 12.sp.toDp() } + 2.dp
+    if (fastest || recommended != null) Row(Modifier.padding(top = 3.dp).height(badgeRow),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+      if (fastest) Badge("PIÙ VELOCE", FastestColor, small = true)
+      recommended?.let { Badge(it, Nm.Accent, small = true) }
+    }
+    else Spacer(Modifier.padding(top = 3.dp).height(badgeRow))
     Text(Fmt.duration(v.durationS), color = Nm.Text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
     Caption("${Fmt.distanceText(v.distanceM)} · arrivo ${Fmt.eta(v.durationS)}", size = 13)
     // a booth counts as a toll too (the ramps to it are often not tagged in OpenStreetMap); with
@@ -317,9 +342,15 @@ private fun VariantCard(v: RouteVariant, selected: Boolean, onClick: () -> Unit)
   }
 }
 
+/**
+ * Black words on a colour. [small]: the 10 sp marks of a route card («PIÙ VELOCE», «CONSIGLIATO»),
+ * with their own line height (the theme's would make it 24 sp: memory compose-theme-text-line-height).
+ */
 @Composable
-fun Badge(text: String, color: Color) {
-  Text(text, color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+fun Badge(text: String, color: Color, small: Boolean = false) {
+  if (small) Text(text, color = Color.Black, fontSize = 10.sp, lineHeight = 12.sp, letterSpacing = 0.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+      modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(color).padding(horizontal = 5.dp, vertical = 1.dp))
+  else Text(text, color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold,
       modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(color).padding(horizontal = 6.dp, vertical = 2.dp))
 }
 

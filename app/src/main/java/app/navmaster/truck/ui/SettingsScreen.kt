@@ -767,11 +767,14 @@ private fun AboutPage() {
         "Punti di interesse aggiuntivi © Overture Maps Foundation (CDLA Permissive 2.0). " +
         "Foto stradali: Panoramax, KartaView, Mapillary. Immagini satellitari © Esri (uso personale). " +
         "Pendenze stimate dal terreno: Terrain Tiles su AWS (SRTM, NASA). " +
+        "Pendenze del camion nel calcolo dei percorsi: produced using Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and " +
+        "© Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved " +
+        "(in riserva Tilezen Terrain Tiles: EU-DEM © Copernicus, SRTM © NASA). " +
         "Traffico: Autobahn GmbH (dati aperti), Waze (mappa pubblica), TomTom e HERE. " +
         "Dati ufficiali: DGT (CC BY), Servei Català de Trànsit, Open Data Euskadi, NDW, Vlaams Verkeerscentrum, CITA (CC0), " +
         "Bison Futé (Licence Ouverte 2.0), Fintraffic / digitraffic.fi (CC BY 4.0), GDDKiA, Via Lietuva, Trafikverket. " +
         "Segnalazioni: autisti NavMaster via ntfy. " +
-        "Waze: segnalazioni dalla mappa pubblica, solo se attivate.", size = 14, lines = 10)
+        "Waze: segnalazioni dalla mappa pubblica, solo se attivate.", size = 14, lines = 14)
   }
   Card("Avvertenze") {
     Caption("I divieti nazionali di circolazione sono indicativi: verifica sempre il calendario ufficiale. " +

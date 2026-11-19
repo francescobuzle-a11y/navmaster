@@ -629,6 +629,23 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
 
     private fun complete(d: File) = File(d, "profiles").exists() && File(d, "edges").exists()
 
+    /**
+     * Throws if the graph in [d] has a format this engine cannot read (`graph.format_version` in its
+     * `properties`, e.g. «5.navmaster-transito»): the package stays, the working graph is kept.
+     */
+    private fun checkFormat(d: File) {
+      val props = java.util.Properties()
+      runCatching { File(d, "properties").inputStream().use { props.load(it) } }
+      val format = props.getProperty("graph.format_version").orEmpty()
+      val major = format.substringBefore('.').toIntOrNull()
+      // the engine's top-level isReadableGraphFormat (the Android jar has no Kotlin module metadata: by reflection)
+      val readable = major != null && runCatching {
+        Class.forName("it.navmaster.engine.EngineKt").getMethod("isReadableGraphFormat", Int::class.javaPrimitiveType).invoke(null, major) as Boolean
+      }.getOrElse { major in 4..5 }
+      if (!readable)
+        throw IllegalStateException("formato del grafo «$format» non leggibile da questo motore: aggiorna l'app")
+    }
+
     /** The internal folder of a country's graph (or its folder next to the country without one). */
     private fun internal(regionDir: File): File = internalRoot?.let { File(it, regionDir.name) } ?: File(regionDir, DIR)
 
@@ -679,6 +696,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
             // unpacked again; the package stays until it is in place, so a failure is retried at the
             // next start (meanwhile the country has no graph)
             if (!outOfSpace(e) || !dir.exists()) throw e
+            // a format this engine cannot read must not cost the working graph (checked again below)
+            if (File(tmp, "properties").exists()) checkFormat(tmp)
             Log.w(TAG, "graph of ${regionDir.name}: no room next to the old one, the old one goes first")
             tmp.deleteRecursively()
             dir.deleteRecursively()
@@ -686,6 +705,8 @@ class NmEngine(private val context: Context, private val regions: RegionManager,
             GZIPInputStream(gz.inputStream().buffered(1 shl 20), 1 shl 16).use { Tar.extract(it, tmp) }
           }
           if (!complete(tmp)) throw IllegalStateException("grafo incompleto")
+          // a graph of a newer format (an older APK than the graphs) is refused before the working one goes
+          checkFormat(tmp)
           dir.deleteRecursively()
           if (!tmp.renameTo(dir)) throw IllegalStateException("impossibile installare il grafo")
           gz.delete()

@@ -91,9 +91,15 @@ data class RouteVariant(
     val source: String? = null,
     /** The engine's roads of a variant ("A1 · A21 · A1"), to tell the same route offered twice; null for the others. */
     val signature: String? = null,
+    /** Found by «Altri percorsi»: its cards come after the automatic variants ([NavViewModel.cardOrder]). */
+    val more: Boolean = false,
 ) {
   val durationS: Double
     get() = analysis.durationS
+
+  /** What the order of the cards and the «PIÙ VELOCE» badge look at. */
+  val facts: CardFacts
+    get() = CardFacts(kind, durationS, distanceM, more, critical, title)
 
   val distanceM: Double
     get() = route.distance
@@ -104,6 +110,20 @@ data class RouteVariant(
   val warnings: Int
     get() = criticalities.count { it.severity == Severity.WARN }
 }
+
+/**
+ * A card as the driver sees it, for its place in the row and its badges: the kind, the time and the
+ * km (compared as shown: [NavViewModel.shownMinutes], [NavViewModel.shownMetres]), whether «Altri
+ * percorsi» found it, its critical points and its title.
+ */
+data class CardFacts(
+    val kind: VariantKind,
+    val durationS: Double,
+    val distanceM: Double,
+    val more: Boolean = false,
+    val critical: Int = 0,
+    val title: String = "",
+)
 
 /** The routes the driver asked for in addition (GraphHopper's alternatives): not asked yet, searching, found, none. */
 enum class MoreRoutes { NONE, LOADING, ADDED, NONE_FOUND }
@@ -136,9 +156,18 @@ data class PlanState(
     val routeNote: String? = null,
     /** The "more motorway" route is being computed again with another level of the slider. */
     val motorwayBusy: Boolean = false,
+    /**
+     * A car's or a camper's other kinds are still being computed (while [more] is LOADING the first
+     * time): its «Più veloce» card may still come, so no «PIÙ VELOCE» badge yet ([fastest]).
+     */
+    val kindsPending: Boolean = false,
 ) {
   val current: RouteVariant?
     get() = variants.getOrNull(selected)
+
+  /** The card with the «PIÙ VELOCE» badge ([NavViewModel.fastestCard]), -1 for none: read it once per drawing. */
+  val fastest: Int
+    get() = NavViewModel.fastestCard(variants.map { it.facts }, pending = kindsPending)
 }
 
 /** A question the app asks the driver while driving (big buttons, and by voice). */
@@ -860,7 +889,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     _plan.value = PlanState()
   }
 
+  /** By position: only for autoRun (nm_variant), the cards in their order on screen. */
   fun selectVariant(i: Int) = _plan.update { it.copy(selected = i.coerceIn(0, (it.variants.size - 1).coerceAtLeast(0))) }
+
+  /**
+   * The card the driver tapped, found by itself and not by its place: the cards are put in order
+   * again whenever one is added, so a place read when the row was drawn can be another card by the
+   * time of the tap. A card copied since (a badge moved) is the one with the same route; a card no
+   * longer there changes nothing.
+   */
+  fun selectVariant(v: RouteVariant) = _plan.update { st ->
+    val i = placeOf(st.variants, v) { it.route }
+    if (i >= 0) st.copy(selected = i) else st
+  }
 
 
 
@@ -927,7 +968,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     planJob?.cancel()
     moreJob?.cancel()
     planRequest = null
-    _plan.value = p.copy(computing = true, error = null, more = MoreRoutes.NONE, routeNote = null)
+    _plan.value = p.copy(computing = true, error = null, more = MoreRoutes.NONE, routeNote = null, kindsPending = false)
     planJob = viewModelScope.launch(Dispatchers.IO) {
       try {
         val settings = AppGraph.settings.settings.value
@@ -967,7 +1008,11 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
         val first = mutableListOf<RouteVariant>()
         val suffix = (if (avoidTolls) " · senza pedaggi" else "") + (if (avoidMotorways) " · senza autostrade" else "")
-        main.firstOrNull()?.let { first += build(kindOf(pref), pref.label + suffix, it, base) }
+        // for a lorry or a bus the engine's "fastest" is its "recommended" (WeightingFactory): the
+        // card says what was computed (the request keeps the driver's choice, unchanged)
+        val heavy = v.isHgv || v.isBus
+        val firstKind = honestKind(pref, heavy)
+        main.firstOrNull()?.let { first += build(kindOf(firstKind), firstKind.label + suffix, it, base) }
         var nAlt = 0
         for (r in main.drop(1)) {
           if (first.any { same(it.route, r) || alongSameRoads(r, it.route) }) continue
@@ -981,19 +1026,19 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         // and the toll-free one (only where it can be found in reasonable time), each with a
         // time limit and without the "fewest limits" retry
         val crowKm = (listOf(from.coordinates) + waypoints.map { it.coordinate }).zipWithNext { x, y -> Geo.dist(x, y) }.sum() / 1000.0
-        // for a lorry or a bus openrouteservice's "fastest" is its "recommended": the same route
-        // computed twice (on a trip across a border half a minute more on the tablet)
-        val heavy = AppGraph.profiles.garage.value.active.let { it.isHgv || it.isBus }
-        val twin = setOf(app.navmaster.truck.vehicle.RouteKind.FASTEST, app.navmaster.truck.vehicle.RouteKind.RECOMMENDED)
-        var kinds = app.navmaster.truck.vehicle.RouteKind.entries.filter { it != pref }
-            .filter { !(heavy && pref in twin && it in twin) }
-            .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
+        // for a lorry or a bus openrouteservice's "fastest" is its "recommended": never the same
+        // route computed twice (on a trip across a border half a minute more on the tablet)
+        var kinds = otherKinds(pref, heavy, crowKm)
         val tryNoToll = !viaOnly && !avoidTolls && fastest.analysis.tollKm > 0.5 && crowKm <= NO_TOLL_MAX_KM
         if (viaOnly) kinds = emptyList()
         val extras = kinds.isNotEmpty() || tryNoToll
         Log.i(TAG, "plan: ${first.size} route(s) shown, then variants${if (kinds.isNotEmpty()) ", " + kinds.joinToString { it.name } else ""}${if (tryNoToll) " + no toll" else ""} (crow ${crowKm.roundToInt()} km)")
-        val shown = _plan.value.copy(variants = first.mapIndexed { i, x -> if (i == 0) x.copy(recommended = true) else x }, selected = 0, computing = false, advice = null, routeNote = routeNote,
-            more = if (startsGuidance) MoreRoutes.NONE else MoreRoutes.LOADING)
+        // the CONSIGLIATO mark only on a recommended route (never on a «Più corto» first card)
+        val firstCards = arranged(first.mapIndexed { i, x -> if (i == 0 && firstRecommended(x.kind)) x.copy(recommended = true) else x }, 0).first
+        // a car or a camper: the «PIÙ VELOCE» badge only once its other kinds are there (no badge
+        // shown and taken away again by the «Più veloce» card arriving)
+        val shown = _plan.value.copy(variants = firstCards, selected = 0, computing = false, advice = null, routeNote = routeNote,
+            more = if (startsGuidance) MoreRoutes.NONE else MoreRoutes.LOADING, kindsPending = !startsGuidance && !heavy && kinds.isNotEmpty())
         _plan.value = shown
         app.navmaster.truck.routing.RouteProgress.end()
         if (startsGuidance) {
@@ -1017,11 +1062,18 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           // "along the same roads" (it shares most of its roads on purpose)
           if ((_plan.value.variants + engineVariants).any { duplicate(it, r, info) }) continue
           nVar++
-          engineVariants += build(VariantKind.ALTERNATIVE, variantTitle(info, nVar, more = false, taken = (_plan.value.variants + engineVariants).map { it.title }), r, base, info?.signature)
+          // its differences from the first card as the two cards show them (time and km)
+          val x = build(VariantKind.ALTERNATIVE, "", r, base, info?.signature)
+          engineVariants += x.copy(title = variantTitle(info, nVar, more = false, taken = (_plan.value.variants + engineVariants).map { it.title },
+              diff = info?.let { shownDiff(x.durationS, x.distanceM, fastest.durationS, fastest.distanceM) },
+              extraShownM = shownExtraM(x.distanceM, fastest.distanceM)))
         }
         if (planRequest !== req) return@launch
         Log.i(TAG, "plan: ${found.size} variant(s) from the engine, ${engineVariants.size} added")
-        val withVariants = _plan.updateAndGet { st -> st.copy(variants = st.variants + engineVariants, more = if (extras) MoreRoutes.LOADING else MoreRoutes.NONE) }
+        val withVariants = _plan.updateAndGet { st ->
+          val (cards, sel) = arranged(st.variants + engineVariants, st.selected)
+          st.copy(variants = cards, selected = sel, more = if (extras) MoreRoutes.LOADING else MoreRoutes.NONE)
+        }
         if (!extras) {
           withContext(Dispatchers.Main) { then?.invoke(withVariants) }
           return@launch
@@ -1041,13 +1093,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           }
           val added = build(kindOf(k), k.label, r, base.copy(route = k))
           if (planRequest !== req) return@launch
-          // after the kinds, before the alternatives
+          // after the kinds, before the alternatives (cardOrder), the selection with its card
           _plan.update { st ->
-            val at = st.variants.indexOfFirst { it.kind == VariantKind.ALTERNATIVE }.let { if (it < 0) st.variants.size else it }
-            val list = st.variants.toMutableList().apply { add(at, added) }
-            st.copy(variants = list, selected = if (st.selected >= at) st.selected + 1 else st.selected)
+            val (cards, sel) = arranged(st.variants + added, st.selected)
+            st.copy(variants = cards, selected = sel)
           }
         }
+        // the other kinds are all there: the «PIÙ VELOCE» badge can be worked out
+        _plan.update { it.copy(kindsPending = false) }
 
         // 3. without tolls: kept only when it really saves the toll, with the advice
         var advice: String? = null
@@ -1097,17 +1150,22 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           }
           val ntAt = ntVariant?.let { nv -> list.indexOfFirst { same(it.route, nv.route) } } ?: -1
           if (recommendNt && ntAt >= 0) {
-            list = list.mapIndexed { i, x -> x.copy(recommended = i == ntAt) }
+            // its mark says «CONVIENE» (recommendedBadge): the first card keeps «Consigliato»
+            list = list.mapIndexed { i, x -> if (i == ntAt) x.copy(recommended = true) else x }
             // the driver has not chosen yet and is not driving: the recommended one selected
             if (sel == 0 && !navigationUiState.value.isNavigating()) {
               sel = ntAt
               selectedNt = true
             }
           }
-          st.copy(variants = list, selected = sel, advice = advice, more = MoreRoutes.NONE)
+          // the toll-free card in its place (cardOrder), the selection with its card
+          val (cards, s) = arranged(list, sel)
+          st.copy(variants = cards, selected = s, advice = advice, more = MoreRoutes.NONE, kindsPending = false)
         }
-        for (x in state.variants) Log.i(TAG, "variant ${x.title} [${x.source}]: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
-            "toll ${"%.1f".format(x.analysis.tollKm)} km, booths ${x.analysis.tollBooths.size}, crit ${x.critical}/${x.warnings}${if (x.recommended) " CONSIGLIATO" else ""}")
+        val fast = state.fastest
+        for ((i, x) in state.variants.withIndex()) Log.i(TAG, "variant ${x.title} [${x.source}]: ${(x.durationS / 60).roundToInt()} min, ${"%.1f".format(x.distanceM / 1000)} km, " +
+            "toll ${"%.1f".format(x.analysis.tollKm)} km, booths ${x.analysis.tollBooths.size}, crit ${x.critical}/${x.warnings}${if (x.recommended) " " + (recommendedBadge(x.kind, x.title) ?: "CONSIGLIATO") else ""}" +
+            (if (i == fast) " PIÙ VELOCE" else ""))
         Log.i(TAG, "advice: $advice")
         if (advice != null && selectedNt && settings.voiceWarnings) say(advice)
         withContext(Dispatchers.Main) { then?.invoke(state) }
@@ -1117,10 +1175,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         Log.e(TAG, "route failed", e)
         app.navmaster.truck.routing.RouteProgress.clear()
         // the routes already on screen stay (a failure of the other choices is not an error)
-        _plan.update { if (it.variants.isNotEmpty() && !it.computing) it.copy(more = MoreRoutes.NONE) else it.copy(computing = false, error = friendly(e)) }
+        _plan.update { if (it.variants.isNotEmpty() && !it.computing) it.copy(more = MoreRoutes.NONE, kindsPending = false) else it.copy(computing = false, error = friendly(e), kindsPending = false) }
       }
     }
   }
+
+  /** [list] in the order of the cards ([cardOrder]) and [selected] following its card. */
+  private fun arranged(list: List<RouteVariant>, selected: Int): Pair<List<RouteVariant>, Int> =
+      arrange(list, selected, cardOrder(list.map { it.facts }))
 
   /** A route with its analysis: tolls, signed limits and difficulties for the active vehicle. */
   private fun buildVariant(kind: VariantKind, title: String, r: Route, opts: TripOptions, departure: LocalDateTime, signature: String? = null): RouteVariant {
@@ -1158,6 +1220,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         app.navmaster.truck.routing.RouteProgress.phase("Altre strade trovate: controllo limiti, pedaggi e svincoli…", 0.9f)
         val departure = LocalDateTime.now()
         val cur = _plan.value
+        val best = cur.variants.firstOrNull()
         val added = mutableListOf<RouteVariant>()
         var n = cur.variants.count { it.kind == VariantKind.ALTERNATIVE }
         for ((r, info) in routes) {
@@ -1166,12 +1229,20 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           // another one, or as long and as slow, is another way on purpose
           if ((cur.variants + added).any { duplicate(it, r, info) }) continue
           n++
-          added += buildVariant(VariantKind.ALTERNATIVE, variantTitle(info, n, more = true, taken = (cur.variants + added).map { it.title }), r, base, departure, info?.signature)
+          // marked as found by «Altri percorsi»: after the automatic variants; its differences from
+          // the first card as the two cards show them
+          val x = buildVariant(VariantKind.ALTERNATIVE, "", r, base, departure, info?.signature).copy(more = true)
+          added += x.copy(title = variantTitle(info, n, more = true, taken = (cur.variants + added).map { it.title },
+              diff = if (info != null && best != null) shownDiff(x.durationS, x.distanceM, best.durationS, best.distanceM) else null,
+              extraShownM = best?.let { shownExtraM(x.distanceM, it.distanceM) }))
         }
         Log.i(TAG, "more routes (engine): ${routes.size} found, ${added.size} new")
         app.navmaster.truck.routing.RouteProgress.end()
         if (planRequest !== req) return@launch
-        _plan.update { it.copy(variants = it.variants + added, more = if (added.isEmpty()) MoreRoutes.NONE_FOUND else MoreRoutes.ADDED) }
+        _plan.update { st ->
+          val (cards, sel) = arranged(st.variants + added, st.selected)
+          st.copy(variants = cards, selected = sel, more = if (added.isEmpty()) MoreRoutes.NONE_FOUND else MoreRoutes.ADDED)
+        }
       } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -1228,7 +1299,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     moreJob?.cancel()
     // a recalculation of the route driven before does not overwrite this one
     cancelRecalc()
-    if (_plan.value.more == MoreRoutes.LOADING) _plan.update { it.copy(more = MoreRoutes.NONE) }
+    if (_plan.value.more == MoreRoutes.LOADING) _plan.update { it.copy(more = MoreRoutes.NONE, kindsPending = false) }
     // a trip from a departure chosen on the map can only be simulated (the vehicle is elsewhere)
     val simulate = simulate0 || _plan.value.start != null
     _simulating.value = simulate
@@ -2909,10 +2980,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
      * through a country the best route does not cross says so ("via D2 + D1, per la Cechia"): the
      * engine's label when it has the name; for a country it has no name for it writes the graph's
      * id ("per czech-republic"), replaced here by the catalog's name ([names], RouteProgress.names);
-     * a label without the suffix at all gets it here.
+     * a label without the suffix at all gets it here. [diff]: the differences as the cards show them
+     * ([shownDiff]), in place of the engine's (worked out on its own best route, not on the first card);
+     * [extraShownM]: the km difference the cards show ([shownExtraM]), which then decides «più lunga»
+     * (none when the cards show no more km), so the title never says «più lunga» beside "−2 km".
      */
     internal fun variantTitle(info: VariantInfo?, n: Int, more: Boolean, taken: Collection<String> = emptyList(),
-                              names: Map<String, String> = app.navmaster.truck.routing.RouteProgress.names): String {
+                              names: Map<String, String> = app.navmaster.truck.routing.RouteProgress.names,
+                              diff: String? = null, extraShownM: Int? = null): String {
       val label = (info?.label?.takeIf { it.isNotBlank() } ?: "Alternativa $n").let { l ->
         if (info == null || info.newCountries.isEmpty()) l
         else {
@@ -2926,14 +3001,14 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           }
         }
       }
-      val diff = info?.diff?.takeIf { it.isNotBlank() } ?: info?.let { diffWords(it.extraS, it.extraM) }
-      val longer = more && info != null && info.longer && info.extraM > 0
+      val diffText = diff ?: info?.diff?.takeIf { it.isNotBlank() } ?: info?.let { diffWords(it.extraS, it.extraM) }
+      val longer = more && info != null && info.longer && (extraShownM?.let { it > 0 } ?: (info.extraM > 0))
       val shown = taken.map { it.substringBefore(" · ") }.toSet()
       val numbered = NUMBERED.find(label)
       val root = numbered?.let { label.substring(0, it.range.first) } ?: label
       val first = numbered?.groupValues?.get(1)?.toInt() ?: 1
       val road = generateSequence(first) { it + 1 }.map { k -> if (k == 1) root else "$root ($k)" }.first { it !in shown }
-      return listOfNotNull(road, if (longer) "più lunga" else null, diff?.takeIf { it.isNotBlank() }).joinToString(" · ")
+      return listOfNotNull(road, if (longer) "più lunga" else null, diffText?.takeIf { it.isNotBlank() }).joinToString(" · ")
     }
 
     /** A road title the engine numbered already: "via A24 (2)". */
@@ -2951,6 +3026,139 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
           if (km != 0) (if (km > 0) "+$km km" else "−${-km} km") else null,
       ).joinToString(", ")
     }
+    /** The minutes a card shows (Fmt.duration rounds the same way). */
+    internal fun shownMinutes(s: Double): Int = (s / 60.0).roundToInt()
+
+    /**
+     * The distance a card shows (Fmt.distance), in metres: 100.4 km and 100.6 km are "100 km" and
+     * "101 km" on screen, 100 000 and 101 000 here; 9.46 km is "9,5 km", 9 500.
+     */
+    internal fun shownMetres(m: Double): Int = when {
+      m < 100 -> (m / 10).roundToInt() * 10
+      m < 950 -> (m / 50).roundToInt() * 50
+      m < 10_000 -> (m / 100).roundToInt() * 100
+      else -> (m / 1000).roundToInt() * 1000
+    }
+
+    /**
+     * The kind a route of [k] really is: for a lorry or a bus ([heavy]) the engine computes
+     * "fastest" as "recommended" (WeightingFactory), so the card says «Consigliato». Cars and
+     * campers unchanged.
+     */
+    internal fun honestKind(k: app.navmaster.truck.vehicle.RouteKind, heavy: Boolean): app.navmaster.truck.vehicle.RouteKind =
+        if (heavy && k == app.navmaster.truck.vehicle.RouteKind.FASTEST) app.navmaster.truck.vehicle.RouteKind.RECOMMENDED else k
+
+    /**
+     * The other kinds computed after the first card ([pref]): each real kind once ([honestKind]: a
+     * lorry with «Più corto» gets only «Consigliato», not the same route twice), the shortest only
+     * on trips up to [SHORTEST_MAX_KM] as the crow flies ([crowKm]).
+     */
+    internal fun otherKinds(pref: app.navmaster.truck.vehicle.RouteKind, heavy: Boolean, crowKm: Double): List<app.navmaster.truck.vehicle.RouteKind> {
+      val first = honestKind(pref, heavy)
+      return app.navmaster.truck.vehicle.RouteKind.entries.map { honestKind(it, heavy) }.distinct()
+          .filter { it != first }
+          .filter { it != app.navmaster.truck.vehicle.RouteKind.SHORTEST || crowKm <= SHORTEST_MAX_KM }
+    }
+
+    /**
+     * The order of the cards, as positions in [cards]: the first card (the engine's best) stays first;
+     * then the other kinds (fastest, recommended, shortest) and the toll-free one, as they came; then
+     * the automatic variants, then those of «Altri percorsi», each group by the minutes shown, the km
+     * shown, then the order they came in (cards already in order keep it on a tie).
+     */
+    internal fun cardOrder(cards: List<CardFacts>): List<Int> {
+      fun group(i: Int): Int = when {
+        i == 0 -> 0
+        cards[i].kind == VariantKind.NO_TOLL -> 2
+        cards[i].kind != VariantKind.ALTERNATIVE -> 1
+        !cards[i].more -> 3
+        else -> 4
+      }
+      fun sorted(i: Int) = group(i) >= 3
+      return cards.indices.sortedWith(compareBy<Int>(
+          { group(it) },
+          { if (sorted(it)) shownMinutes(cards[it].durationS) else 0 },
+          { if (sorted(it)) shownMetres(cards[it].distanceM) else 0 },
+          { it }))
+    }
+
+    /** [list] put in [order] ([cardOrder]) and the new place of the card that was at [selected]. */
+    internal fun <T> arrange(list: List<T>, selected: Int, order: List<Int>): Pair<List<T>, Int> =
+        order.map { list[it] } to order.indexOf(selected).coerceAtLeast(0)
+
+    /**
+     * The card with «PIÙ VELOCE», -1 for none: the truly fastest card, the fewest minutes shown; on a
+     * tie the first card, then fewer km shown, then the earlier card. When that card has critical
+     * points no badge at all (never «più veloce» on a slower card). None with fewer than 2 cards, nor
+     * while a car's or a camper's other kinds are still coming ([pending]: its «Più veloce» card would
+     * take the badge away again), nor when a card already says it: a «Più veloce» card (a car whose
+     * driver chose it) or a title with «più veloce» (a car's recommended route that is also the
+     * fastest, "Consigliato = più veloce").
+     */
+    internal fun fastestCard(cards: List<CardFacts>, pending: Boolean = false): Int {
+      if (cards.size < 2 || pending) return -1
+      if (cards.any { it.kind == VariantKind.FASTEST || it.title.contains("più veloce", ignoreCase = true) }) return -1
+      val best = cards.indices.minWith(compareBy<Int>(
+          { shownMinutes(cards[it].durationS) },
+          { if (it == 0) 0 else 1 },
+          { shownMetres(cards[it].distanceM) },
+          { it }))
+      return if (cards[best].critical > 0) -1 else best
+    }
+
+    /**
+     * The km difference two cards show ([distanceM] against the first card's [bestM]), in metres:
+     * under 50 m none, under 10 km rounded to 100 m (one decimal), so it is never printed "0,0 km".
+     */
+    internal fun shownExtraM(distanceM: Double, bestM: Double): Int {
+      val m = shownMetres(distanceM) - shownMetres(bestM)
+      val a = kotlin.math.abs(m)
+      val r = when {
+        a < 50 -> 0
+        a < 10_000 -> ((a + 50) / 100) * 100
+        else -> a
+      }
+      return if (m < 0) -r else r
+    }
+
+    /**
+     * "−1 min, +0 km" (the engine's form, zeros included): the differences between the times and the
+     * km the two cards show ([durationS], [distanceM] against the first card's [bestS], [bestM]), so
+     * the subtitle never says "−2 min" between cards 1 minute apart. The km as [shownExtraM]: one
+     * decimal below 10 km, "+0 km" under 50 m (never "+0,0 km" or "−0,0 km").
+     */
+    internal fun shownDiff(durationS: Double, distanceM: Double, bestS: Double, bestM: Double): String {
+      fun signed(v: String) = if (v.startsWith("-")) "−" + v.substring(1) else "+$v"
+      val min = shownMinutes(durationS) - shownMinutes(bestS)
+      val m = shownExtraM(distanceM, bestM)
+      val km = if (m % 1000 == 0) (m / 1000).toString() else String.format(java.util.Locale.ITALY, "%.1f", m / 1000.0)
+      return "${signed(min.toString())} min, ${signed(km)} km"
+    }
+
+    /**
+     * Whether the first card of [kind] carries the CONSIGLIATO mark: only a recommended route (never a
+     * «Più corto» or a car's «Più veloce» first card).
+     */
+    internal fun firstRecommended(kind: VariantKind): Boolean = kind == VariantKind.RECOMMENDED
+
+    /**
+     * The words of the mark of a recommended card ([RouteVariant.recommended]) of [kind] titled
+     * [title], null for none: «CONVIENE» on the toll-free card the toll advice recommends (the first
+     * card stays «Consigliato»), «CONSIGLIATO» on the others unless the title says it already.
+     */
+    internal fun recommendedBadge(kind: VariantKind, title: String): String? = when {
+      kind == VariantKind.NO_TOLL -> "CONVIENE"
+      title.contains("consigliato", ignoreCase = true) -> null
+      else -> "CONSIGLIATO"
+    }
+
+    /**
+     * The place of [card] in [cards], -1 when no longer there: the same object first; else the card
+     * with the same route ([routeOf], by identity: a card copied since, a title or a badge changed).
+     */
+    internal fun <T> placeOf(cards: List<T>, card: T, routeOf: (T) -> Any?): Int =
+        cards.indexOfFirst { it === card }.takeIf { it >= 0 } ?: cards.indexOfFirst { routeOf(it) === routeOf(card) }
+
     /** The shortest route is looked for only on trips up to this distance (as the crow flies). */
     private const val SHORTEST_MAX_KM = 200.0
     /** The toll-free route is looked for only on trips up to this distance (as the crow flies). */

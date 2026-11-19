@@ -18,6 +18,9 @@ on:
       parallel:
         description: "Paesi costruiti insieme (3 lascia posto alle altre prove; fino a 8 per finire prima)"
         default: "3"
+      dem:
+        description: "Pendenze del camion: glo90 (Copernicus GLO-90, GDAL), skadi (riserva senza GDAL) o none"
+        default: "glo90"
   push:
     branches: [main]
     paths: [".github/workflows/grafo-nm.yml"]
@@ -102,6 +105,34 @@ jobs:
             -o roads.osm.pbf --overwrite
           rm region.osm.pbf
           ls -la
+      - name: Modello del terreno (pendenze del camion)
+        working-directory: /mnt/w
+        env:
+          DEM: ${{ inputs.dem || 'glo90' }}
+        run: |
+          set -euo pipefail
+          # the 1°×1° elevation tiles (.hgt, SRTM layout) over the roads' bounding box, for the truck's
+          # climbs and descents of the engine's speed model (navmaster only; the curves need no DEM):
+          # Copernicus GLO-90 converted with GDAL, the Tilezen "skadi" tiles as the fallback. Credits
+          # for the app: "produced using Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus
+          # Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA;
+          # all rights reserved" (skadi: https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
+          SCRIPT=$GITHUB_WORKSPACE/engine/tools/dem/scarica-dem.sh
+          if [ "$DEM" = "none" ]; then echo "senza DEM (dem=none): solo le curve"; exit 0; fi
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::warning::navmaster-engine ${{ inputs.engine_ref || 'main' }} has no tools/dem/scarica-dem.sh (nor --dem): graph without climbs"
+            exit 0
+          fi
+          if [ "$DEM" = "glo90" ]; then sudo apt-get install -y -qq gdal-bin >/dev/null || echo "GDAL non installato: si userà skadi"; fi
+          # both sources failed (the script exits non-zero with an empty folder): the country is built
+          # without the DEM (curves only) rather than not at all, and the run says so
+          if bash "$SCRIPT" "$DEM" roads.osm.pbf /mnt/w/dem; then
+            echo "DEM_OPT=--dem=/mnt/w/dem" >> "$GITHUB_ENV"
+          else
+            echo "::warning::${{ matrix.region }}: no DEM ($DEM and the skadi fallback failed): graph built without climbs and descents (curves only)"
+            rm -rf /mnt/w/dem
+          fi
+          df -h /mnt
       - name: Grafo del motore (import, CH, core, landmark, dati di guida)
         working-directory: /mnt/w
         run: |
@@ -114,9 +145,10 @@ jobs:
           ISO=$(python3 -c 'import json,sys; r=sys.argv[1]; print("IT" if r=="test" else next((c["iso"] for c in json.load(open(sys.argv[2])) if c["id"]==r), ""))' "${{ matrix.region }}" "$GITHUB_WORKSPACE/data/countries.json")
           COUNTRY=""; [ -n "$ISO" ] && COUNTRY="--country=$ISO"
           echo "Paese dei limiti legali: ${ISO:-nessuno}"
-          date; JAVA_OPTS="-Xmx${MEM}g -XX:+UseParallelGC" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP $COUNTRY 2>&1 | awk '{ print strftime("%H:%M:%S"), $0; fflush() }'; date
+          date; JAVA_OPTS="-Xmx${MEM}g -XX:+UseParallelGC" $GITHUB_WORKSPACE/engine/engine-cli/build/install/engine-cli/bin/engine-cli import roads.osm.pbf nm $MMAP $COUNTRY ${DEM_OPT:-} 2>&1 | awk '{ print strftime("%H:%M:%S"), $0; fflush() }'; date
           test -f nm/profiles && test -f nm/edges && test -f nm/guidance
           rm -f roads.osm.pbf
+          rm -rf /mnt/w/dem
           du -sh nm; ls -la nm
       - name: Prova del grafo con il motore
         working-directory: /mnt/w
@@ -134,7 +166,13 @@ jobs:
         working-directory: /mnt/w
         run: |
           mkdir -p pub
-          tar -C nm -cf - . | gzip -6 > pub/nm.tar.gz
+          # the plain CHs (shortcuts_<key>, levels_<key> without _core) are used only by requests without
+          # turn costs, which the app never sends (RoutingGraph.router: with turn costs the core); the engine
+          # loads them only when present (CHStorage.loadExisting). Germany: -1.4 GB on the tablet, -0.8 GB to download
+          for key in $(sed -n 's/^ch=//p' nm/profiles | tr ',' ' '); do
+            case "$key" in *_core) ;; *) rm -f "nm/shortcuts_$key" "nm/levels_$key"; echo "CH semplice tolta: $key" ;; esac
+          done
+          tar -C nm -cf - . | gzip -9 > pub/nm.tar.gz
           if [ $(stat -c%s pub/nm.tar.gz) -gt 1900000000 ]; then
             split -b 1900000000 -d -a 1 pub/nm.tar.gz pub/nm.tar.gz.part && rm pub/nm.tar.gz
           fi
