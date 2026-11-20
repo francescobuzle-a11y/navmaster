@@ -338,12 +338,18 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       kotlinx.coroutines.flow.combine(AppGraph.smartLocation.onRoute, AppGraph.smartLocation.raw) { f, r -> f to r }
           .collect { (f, r) -> onProviderFix(f, r) }
     }
-    // the guidance back on after the end (a route handed over late): ended again at once
+    // the guidance back on after the end (a route handed over late): ended again at once.
+    // Arrived at the destination: Ferrostar only marks the trip complete and leaves its foreground
+    // service (ongoing notification, satellite fixes, simulation) running, while the screen falls back
+    // to the route preview; the trip is ended here as with «Termina»
     viewModelScope.launch {
       core.state.collect { st ->
         if (st.tripState is uniffi.ferrostar.TripState.Navigating && !guiding) {
           Log.w(TAG, "guidance on after its end: stopped again")
           core.stopNavigation()
+        } else if (st.tripState is uniffi.ferrostar.TripState.Complete && guiding) {
+          Log.i(TAG, "arrived at the destination: guidance ended")
+          endTrip(stopVoice = false)
         }
       }
     }
@@ -1748,7 +1754,10 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     recalcFromHere("Cerco un percorso che eviti la strada chiusa")
   }
 
-  override fun stopNavigation() {
+  override fun stopNavigation() = endTrip(stopVoice = true)
+
+  /** The trip ended: by «Termina» ([stopVoice], everything said is cut) or by the arrival (the last words go on). */
+  private fun endTrip(stopVoice: Boolean) {
     // the guidance first, then the simulation: switching the simulation off gave the guidance a real
     // position far from the simulated one, its "wrong turn" started a new route, and that route,
     // handed over after the end (core.replaceRoute), put the screen back into a guidance without
@@ -1765,7 +1774,7 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     lastOnRouteTraveled = 0.0
     core.stopNavigation()
     AppGraph.smartLocation.setRoute(null)
-    voice.clear()
+    if (stopVoice) voice.clear()
     drivenPending = 0L
     stopLive()
     locationProvider.disableSimulation()
