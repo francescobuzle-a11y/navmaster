@@ -68,13 +68,13 @@ jobs:
       - name: Estratto OSM
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          # Geofabrik, else geo2day.com, openstreetmap.fr, Europe from the GWDG mirror (data/osm_extract.sh)
           if [ "${{ matrix.region }}" = "test" ]; then
-            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+            bash data/osm_extract.sh italy src.osm.pbf
             osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
             rm src.osm.pbf
           else
-            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o region.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf" \
-              || { echo "Geofabrik non risponde: copia di openstreetmap.fr"; curl -fsSL --retry 5 --retry-delay 30 --retry-all-errors -o region.osm.pbf "https://download.openstreetmap.fr/extracts/europe/$(echo ${{ matrix.region }} | tr - _)-latest.osm.pbf"; }
+            bash data/osm_extract.sh "${{ matrix.region }}" region.osm.pbf
           fi
           ls -la region.osm.pbf
           echo "PBF_MB=$(( $(stat -c%s region.osm.pbf) / 1000000 ))" >> $GITHUB_ENV
@@ -116,8 +116,8 @@ jobs:
           # inside the outline Geofabrik cuts the region with (data/region_area.py): the box of the OSM
           # places was stretched over half of Europe by one far object of the extract
           python3 -m pip install --quiet --break-system-packages duckdb shapely || python3 -m pip install --quiet duckdb shapely || true
-          curl -fsSL --connect-timeout 30 --max-time 300 --retry 5 --retry-delay 30 --retry-all-errors --retry-connrefused -o geofabrik-index.json "https://download.geofabrik.de/index-v1.json" \
-            || rm -f geofabrik-index.json
+          curl -fsSL --connect-timeout 30 --max-time 300 --retry 5 --retry-delay 30 --retry-all-errors --retry-connrefused --max-redirs 5 -o geofabrik-index.json "https://download.geofabrik.de/index-v1.json" \
+            || cp data/outlines.geojson geofabrik-index.json   # the same outlines, saved in the repo
           timeout 1500 python3 data/merge_overture.py out/poi.sqlite "${{ matrix.region }}" --area=geofabrik-index.json || true
           rm -f poi.osm.pbf poi.geojsonseq
       - name: Luoghi (aziende, negozi, posti) per la ricerca per nome sul tablet

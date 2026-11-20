@@ -93,13 +93,12 @@ jobs:
         working-directory: /mnt/w
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          # Geofabrik, else geo2day.com, openstreetmap.fr, Europe from the GWDG mirror (data/osm_extract.sh)
           if [ "${{ matrix.region }}" = "test" ]; then
-            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o src.osm.pbf "$GEOFABRIK/italy-latest.osm.pbf"
+            bash $GITHUB_WORKSPACE/data/osm_extract.sh italy src.osm.pbf
             osmium extract -b "$TEST_BBOX" src.osm.pbf -o region.osm.pbf --overwrite
           else
-            curl -fsSL --retry 8 --retry-delay 45 --retry-all-errors --retry-connrefused -o src.osm.pbf "$GEOFABRIK/${{ matrix.region }}-latest.osm.pbf" \
-              || { echo "Geofabrik non risponde: copia di openstreetmap.fr"; curl -fsSL --retry 5 --retry-delay 30 --retry-all-errors -o src.osm.pbf "https://download.openstreetmap.fr/extracts/europe/$(echo ${{ matrix.region }} | tr - _)-latest.osm.pbf"; }
-            mv src.osm.pbf region.osm.pbf
+            bash $GITHUB_WORKSPACE/data/osm_extract.sh "${{ matrix.region }}" region.osm.pbf
           fi
           rm -f src.osm.pbf
           osmium tags-filter region.osm.pbf w/highway=$VEHICLE_ROADS w/route=ferry,shuttle_train r/type=restriction \
