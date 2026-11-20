@@ -84,7 +84,8 @@ jobs:
       - name: Compila il motore
         working-directory: engine
         run: |
-          ./gradlew :engine-cli:installDist -q
+          # the Gradle plugin portal answers 5xx now and then (seen many times): three tries, a minute apart
+          for i in 1 2 3; do ./gradlew :engine-cli:installDist -q && break; [ $i = 3 ] && exit 1; echo "compilazione fallita, nuovo tentativo fra 60 s"; sleep 60; done
           ENGINE_VERSION=$(grep -oE 'VERSION = "[^"]+"' engine-core/src/main/kotlin/it/navmaster/engine/Engine.kt | cut -d'"' -f2)
           echo "ENGINE_VERSION=$ENGINE_VERSION" >> $GITHUB_ENV
           echo "motore $ENGINE_VERSION"
