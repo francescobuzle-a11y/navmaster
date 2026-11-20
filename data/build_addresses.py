@@ -182,8 +182,13 @@ def main():
         street_row(pid, name, p[0], p[1])
     print(f"streets: {len(srows)} ({time.time() - started:.0f}s)")
 
-    # 3. house numbers
+    # 3. house numbers. The same number on the same street once only (the first one met): the app
+    # keeps only the first of each number of a street anyway (AddressIndex.houses, distinctBy num),
+    # and the doubles (an entrance node and the building, an address on two buildings) were 47 % of
+    # the rows in Germany
     houses = []
+    seen_houses = set()
+    doubles = 0
     for f in read_geojsonseq(addr_src):
         t = f.get("properties") or {}
         num = t.get("addr:housenumber")
@@ -223,8 +228,13 @@ def main():
         for n in num.replace(",", ";").split(";"):
             n = n.strip()
             if n and len(n) <= 12:
+                if (row[0], n) in seen_houses:
+                    doubles += 1
+                    continue
+                seen_houses.add((row[0], n))
                 houses.append((row[0], n, round(p[1], 6), round(p[0], 6)))
-    print(f"houses: {len(houses)} ({time.time() - started:.0f}s)")
+    seen_houses = None
+    print(f"houses: {len(houses)}, {doubles} doubles left out ({time.time() - started:.0f}s)")
 
     # 4. write
     db = sqlite3.connect(dst)

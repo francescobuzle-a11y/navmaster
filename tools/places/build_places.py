@@ -8,7 +8,7 @@ the places the driver needs along the way (fuel, parkings, areas) in poi.sqlite:
 answers "where is <name>".
 
 Input: osmium export -f geojsonseq --add-unique-id=type_id of the extract filtered on the keys of
-KEYS (see dati.yml). Usage: build_places.py <in.geojsonseq> <out.sqlite> <region> [--overture]
+KEYS (see dati.yml). Usage: build_places.py <in.geojsonseq> <out.sqlite> <region> [--overture] [--area=<index-v1.json|.poly>]
 With --overture the places of Overture Maps are added (DuckDB and the network needed: without
 them the file keeps only OpenStreetMap, never fails).
 
@@ -27,6 +27,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data"))
 from nmcommon import cell_id, norm, read_geojsonseq, representative_point  # noqa: E402
+from region_area import allowed_countries, load_area, robust_box  # noqa: E402
 
 # the OSM keys a place is recognised by (the osmium filter of dati.yml uses the same list)
 KEYS = ["amenity", "shop", "office", "craft", "tourism", "leisure", "industrial", "man_made", "healthcare", "historic",
@@ -265,9 +266,10 @@ def near_keys(name, lat, lon):
             yield (w, a + da, b + db_)
 
 
-def build_osm(src, w):
+def build_osm(src, w, area=None):
     n = 0
     skipped = 0
+    outside = 0
     for f in read_geojsonseq(src):
         t = f.get("properties") or {}
         name = t.get("name") or t.get("brand") or t.get("operator") or t.get("official_name")
@@ -280,11 +282,17 @@ def build_osm(src, w):
         p = representative_point(f.get("geometry") or {"type": "None"})
         if p is None:
             continue
+        # an object of the extract that lies in another country (a ferry line's far terminal)
+        if area is not None and not area.contains(p[0], p[1]):
+            outside += 1
+            continue
         alt = " ".join(x for x in (t.get("brand"), t.get("alt_name"), t.get("official_name"), t.get("old_name"), t.get("short_name"),
                                    t.get("name:it"), t.get("name:en"), t.get("operator")) if x and x != name)
         w.add("osm", f.get("id"), name, alt or None, kind, label_of(kind), p[1], p[0], t.get("addr:city"), t.get("addr:street"),
               t.get("addr:housenumber"), t.get("phone") or t.get("contact:phone"), t.get("website") or t.get("contact:website"))
         n += 1
+    if outside:
+        print(f"luoghi: {outside} OpenStreetMap places outside the region left out")
     return n, skipped
 
 
@@ -299,13 +307,21 @@ def latest_release():
     return rel[-1]
 
 
-def build_overture(db, w, region):
-    """Adds every Overture place of the region's box (the box of its OSM places) not in OpenStreetMap."""
+def build_overture(db, w, region, area=None, countries=None):
+    """Adds every Overture place of the region not in OpenStreetMap: inside its outline ([area], the
+    one Geofabrik cuts the extract with; without it the box of its OSM places less the farthest 0.1 %)
+    and, when Overture gives a country, one of the region's (data/region_area.allowed_countries: the
+    places of the neighbours in the border strip of the outline are in their own packages)."""
     import duckdb  # noqa: F401  (import error = nothing added)
-    row = db.execute("SELECT min(lat), max(lat), min(lon), max(lon), count(*) FROM place").fetchone()
-    if not row or row[4] == 0:
-        return 0
-    s, n, we, e = row[0] - 0.02, row[1] + 0.02, row[2] - 0.02, row[3] + 0.02
+    if area is not None:
+        boxes = area.boxes()
+    else:
+        pts = db.execute("SELECT lat, lon FROM place").fetchall()
+        box = robust_box([p[0] for p in pts], [p[1] for p in pts])
+        if box is None:
+            return 0
+        boxes = [box]
+    print("overture boxes:", ", ".join(f"{b[0]:.2f},{b[1]:.2f},{b[2]:.2f},{b[3]:.2f}" for b in boxes))
     rel = latest_release()
     path = f"s3://overturemaps-us-west-2/release/{rel}/theme=places/type=place/*"
     con = duckdb.connect()
@@ -329,22 +345,44 @@ def build_overture(db, w, region):
     phone_expr = "phones[1]" if "phones" in cols else "NULL"
     web_expr = "websites[1]" if "websites" in cols else "NULL"
     conf_expr = "confidence" if "confidence" in cols else "1.0"
-    q = f"""
-      SELECT id, {name_expr} AS name, {cat_expr} AS cat, bbox.xmin AS lon, bbox.ymin AS lat, {conf_expr} AS confidence,
-             {city_expr} AS city, {street_expr} AS street, {phone_expr} AS phone, {web_expr} AS website,
-             {brand_expr} AS brand
-      FROM read_parquet('{path}', hive_partitioning=1)
-      WHERE bbox.xmin BETWEEN {we} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND {conf_expr} >= 0.5 AND {name_expr} IS NOT NULL
-    """
-    added = 0
-    for oid, name, cat, lon, lat, conf, city, street, phone, website, brand in con.execute(q).fetchall():
-        if not name:
-            continue
-        if any(k in w.keys for k in near_keys(name, lat, lon)):
-            continue
-        kind = "overture=" + (cat or "place")
-        w.add("ovt", oid, name, brand if brand and brand != name else None, kind, ovt_label(cat), lat, lon, city, street, None, phone, website)
-        added += 1
+    country_expr = "addresses[1].country" if "addresses" in cols else "NULL"
+    added = outside = foreign = 0
+    seen = set() if len(boxes) > 1 else None
+    for we, s, e, n in boxes:
+        q = f"""
+          SELECT id, {name_expr} AS name, {cat_expr} AS cat, bbox.xmin AS lon, bbox.ymin AS lat, {conf_expr} AS confidence,
+                 {city_expr} AS city, {street_expr} AS street, {phone_expr} AS phone, {web_expr} AS website,
+                 {brand_expr} AS brand, {country_expr} AS country
+          FROM read_parquet('{path}', hive_partitioning=1)
+          WHERE bbox.xmin BETWEEN {we} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND {conf_expr} >= 0.5 AND {name_expr} IS NOT NULL
+        """
+        cur = con.execute(q)
+        # a batch at a time: a big country has millions of rows (all of them at once ran the runner
+        # out of memory)
+        while True:
+            batch = cur.fetchmany(20000)
+            if not batch:
+                break
+            inside = area.contains_many([r[3] for r in batch], [r[4] for r in batch]) if area is not None else [True] * len(batch)
+            for (oid, name, cat, lon, lat, conf, city, street, phone, website, brand, country), ok in zip(batch, inside):
+                if not name or lat is None or lon is None:
+                    continue
+                if not ok:
+                    outside += 1
+                    continue
+                if countries and country and country.upper() not in countries:
+                    foreign += 1
+                    continue
+                if seen is not None:
+                    if oid in seen:
+                        continue
+                    seen.add(oid)
+                if any(k in w.keys for k in near_keys(name, lat, lon)):
+                    continue
+                kind = "overture=" + (cat or "place")
+                w.add("ovt", oid, name, brand if brand and brand != name else None, kind, ovt_label(cat), lat, lon, city, street, None, phone, website)
+                added += 1
+    print(f"overture: {outside} places outside the region and {foreign} with another country left out")
     return added
 
 
@@ -352,6 +390,10 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     src, dst, region = args[0], args[1], args[2]
     overture = "--overture" in sys.argv
+    area_file = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--area=")), None)
+    area = load_area(area_file, region)
+    print(f"luoghi: outline of {region}: " + (f"{len(area.parts)} parts" if area is not None else "none, box of the OSM places"))
+    countries = allowed_countries(region, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "countries.json"))
     db = sqlite3.connect(dst)
     db.executescript("""
         DROP TABLE IF EXISTS meta; DROP TABLE IF EXISTS place; DROP TABLE IF EXISTS place_cells; DROP TABLE IF EXISTS place_fts;
@@ -364,18 +406,22 @@ def main():
     """)
     started = time.time()
     w = Writer(db)
-    n_osm, skipped = build_osm(src, w)
+    n_osm, skipped = build_osm(src, w, area)
     w.flush()
     db.commit()
     print(f"luoghi: {n_osm} places from OpenStreetMap ({skipped} named features that are no place) in {time.time() - started:.0f}s")
     n_ovt = 0
     if overture:
         try:
-            n_ovt = build_overture(db, w, region)
+            n_ovt = build_overture(db, w, region, area, countries)
             w.flush()
             db.commit()
             print(f"luoghi: {n_ovt} places added from Overture Maps in {time.time() - started:.0f}s")
         except Exception as e:  # noqa: BLE001
+            # the rows of the batches already written go too: OpenStreetMap only, as the meta says
+            db.rollback()
+            w.rows, w.cells, w.fts = [], [], []
+            n_ovt = 0
             print(f"luoghi: Overture Maps left out ({e})")
     db.execute("CREATE INDEX place_cells_cell ON place_cells(cell)")
     db.executemany("INSERT INTO meta VALUES (?,?)", [

@@ -5,7 +5,8 @@ supermarkets, tyre shops ... along the routes. OpenStreetMap stays the main sour
 the gaps. Places are read straight from the public Parquet files (no account) with DuckDB, only
 inside the region's box and for the kinds the app shows.
 
-Usage: merge_overture.py <poi.sqlite> <region-id>
+Usage: merge_overture.py <poi.sqlite> <region-id> [--area=<index-v1.json|.poly>]
+(the area: only the places inside the outline Geofabrik cuts the region with, see region_area.py)
 Never fails the build: without network or DuckDB it leaves poi.sqlite as it is.
 """
 import json
@@ -19,6 +20,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nmcommon import cell_id, norm  # noqa: E402
+from region_area import allowed_countries, load_area, robust_box  # noqa: E402
 
 BUCKET = "https://overturemaps-us-west-2.s3.amazonaws.com"
 
@@ -81,22 +83,25 @@ CATS = ["gas_station", "fuel_station", "truck_stop", "rest_stop", "rest_area", "
 
 
 def main():
-    dbp, region = sys.argv[1], sys.argv[2]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    dbp, region = args[0], args[1]
+    area_file = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--area=")), None)
     started = time.time()
     db = sqlite3.connect(dbp)
-    row = db.execute("SELECT min(lat), max(lat), min(lon), max(lon), count(*) FROM poi").fetchone()
-    if not row or row[4] == 0:
-        print("overture: no OSM places to take the box from, skipped")
-        return
-    s, n, w, e = row[0] - 0.02, row[1] + 0.02, row[2] - 0.02, row[3] + 0.02
-    iso = None
     here = os.path.dirname(os.path.abspath(__file__))
-    try:
-        for c in json.load(open(os.path.join(here, "countries.json"))):
-            if c["id"] == region:
-                iso = c["iso"]
-    except Exception:
-        pass
+    countries = allowed_countries(region, os.path.join(here, "countries.json"))
+    area = load_area(area_file, region)
+    if area is not None:
+        boxes = area.boxes()
+    else:
+        # the box of the OSM places less the farthest 0.1 % (one far object stretched it over Europe)
+        pts = db.execute("SELECT lat, lon FROM poi").fetchall()
+        box = robust_box([p[0] for p in pts], [p[1] for p in pts])
+        if box is None:
+            print("overture: no OSM places to take the box from, skipped")
+            return
+        boxes = [box]
+    print("overture boxes:", ", ".join(f"{b[0]:.2f},{b[1]:.2f},{b[2]:.2f},{b[3]:.2f}" for b in boxes))
     import duckdb  # noqa: E402  (installed by the workflow)
 
     rel = latest_release()
@@ -125,15 +130,29 @@ def main():
     web_expr = "websites[1]" if has("websites") else "NULL"
     phone_expr = "phones[1]" if has("phones") else "NULL"
     conf_expr = "confidence" if has("confidence") else "1.0"
-    q = f"""
-      SELECT id, {name_expr} AS name, {cat_expr} AS cat, bbox.xmin AS lon, bbox.ymin AS lat, {conf_expr} AS confidence,
-             {brand_expr} AS brand, {country_expr} AS country, {web_expr} AS web, {phone_expr} AS phone
-      FROM read_parquet('{path}', hive_partitioning=1)
-      WHERE bbox.xmin BETWEEN {w} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND {conf_expr} >= 0.55
-        AND ({cat_expr} IN ({cats}) OR {cat_expr} LIKE '%\\_restaurant' ESCAPE '\\')
-    """
-    rows = con.execute(q).fetchall()
-    print(f"overture {rel}: {len(rows)} candidates in {time.time() - started:.0f}s")
+    rows, seen, outside = [], set(), 0
+    for w, s, e, n in boxes:
+        q = f"""
+          SELECT id, {name_expr} AS name, {cat_expr} AS cat, bbox.xmin AS lon, bbox.ymin AS lat, {conf_expr} AS confidence,
+                 {brand_expr} AS brand, {country_expr} AS country, {web_expr} AS web, {phone_expr} AS phone
+          FROM read_parquet('{path}', hive_partitioning=1)
+          WHERE bbox.xmin BETWEEN {w} AND {e} AND bbox.ymin BETWEEN {s} AND {n} AND {conf_expr} >= 0.55
+            AND ({cat_expr} IN ({cats}) OR {cat_expr} LIKE '%\\_restaurant' ESCAPE '\\')
+        """
+        cur = con.execute(q)
+        while True:
+            batch = cur.fetchmany(20000)
+            if not batch:
+                break
+            batch = [r for r in batch if r[3] is not None and r[4] is not None]
+            inside = area.contains_many([r[3] for r in batch], [r[4] for r in batch]) if area is not None else [True] * len(batch)
+            for r, ok in zip(batch, inside):
+                if not ok:
+                    outside += 1
+                elif r[0] not in seen:
+                    seen.add(r[0])
+                    rows.append(r)
+    print(f"overture {rel}: {len(rows)} candidates ({outside} outside the region left out) in {time.time() - started:.0f}s")
 
     # OpenStreetMap places by cell, to skip what OSM already has
     existing = {}
@@ -145,7 +164,9 @@ def main():
     for oid, name, cat, lon, lat, conf, brand, country, web, phone in rows:
         if lat is None or lon is None:
             continue
-        if iso and country and country.upper() != iso:
+        # the region's countries only (Northern Ireland GB in "ireland-and-northern-ireland", Jersey JE
+        # in "guernsey-jersey": data/region_area.py)
+        if countries and country and country.upper() not in countries:
             continue
         mapped = our_category(cat, name)
         if mapped is None:
