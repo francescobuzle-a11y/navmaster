@@ -137,7 +137,7 @@ jobs:
           timeout 2700 python3 tools/places/build_places.py places.geojsonseq out/luoghi.sqlite "${{ matrix.region }}" --overture --area=geofabrik-index.json || \
             python3 tools/places/build_places.py places.geojsonseq out/luoghi.sqlite "${{ matrix.region }}" --area=geofabrik-index.json
           rm -f places.osm.pbf places.geojsonseq
-      - name: Strade (per indirizzi e valichi)
+      - name: Strade (per gli indirizzi)
         if: matrix.part == 'dati'
         run: |
           cat > roads-cfg.json <<'EOF'
@@ -151,18 +151,6 @@ jobs:
             --add-unique-id=type_id --format-option print_record_separator=false -o roads.geojsonseq --overwrite
           rm -f roads.osm.pbf
           ls -la roads.geojsonseq
-      - name: Valichi (strade che passano il confine, per unire i grafi GraphHopper dei Paesi)
-        if: matrix.part == 'dati' && matrix.region != 'test'
-        run: |
-          python3 -m pip install --quiet --break-system-packages shapely 2>/dev/null || python3 -m pip install --quiet shapely
-          mkdir -p poly
-          for c in $(python3 -c "import json; print(' '.join(x['id'] for x in json.load(open('data/countries.json'))))"); do
-            curl -fsSL --retry 5 --retry-delay 30 --retry-all-errors --retry-connrefused -o poly/$c.poly "$GEOFABRIK/$c.poly" || rm -f poly/$c.poly
-          done
-          ls poly | wc -l
-          python3 tools/gh/build_crossings.py roads.geojsonseq out/valichi.json "${{ matrix.region }}" poly \
-            || echo "valichi non calcolati per ${{ matrix.region }}"
-          rm -rf poly
       - name: Indirizzi (Paese → città → via → civico)
         if: matrix.part == 'dati'
         run: |
@@ -274,7 +262,7 @@ jobs:
             gh release edit "$TAG" -R "$R" --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)"
           else
             gh release create "$TAG" pkg/* -R "$R" --title "Dati offline ${{ matrix.region }} $(date +%Y-%m-%d)" \
-              --notes "Mappa (PMTiles), valichi, POI, luoghi e indirizzi per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
+              --notes "Mappa (PMTiles), POI, luoghi e indirizzi per mezzi pesanti. Dati © OpenStreetMap contributors (ODbL)." \
               --latest=false
           fi
 
