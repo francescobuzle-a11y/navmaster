@@ -53,6 +53,8 @@ data class EdgeInfo(
     val conditional: List<String> = emptyList(),
     /** The signs over the lanes at the end of this road (destination:lanes and the like, lanes separated by |). */
     val laneSigns: EdgeLaneSigns? = null,
+    /** The speed limit signed on this road for the vehicle (km/h; a lorry: the lower of maxspeed and maxspeed:hgv), null when not mapped. */
+    val signedKmh: Int? = null,
 ) {
   /** Road numbers only: "A14", "SS16", "E45", "DN1". */
   val refs: List<String>
@@ -436,6 +438,7 @@ class RouteAnalysis(
             adrTunnel = e.str("adr_tunnel")?.let { "BCDE".indexOf(it.trim().uppercase()) }?.takeIf { it >= 0 }?.let { it + 2 } ?: 0,
             conditional = (e["conditional"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
             laneSigns = (e["lane_signs"] as? JsonObject)?.let { ls -> EdgeLaneSigns(ls.str("destination") ?: "", ls.str("ref") ?: "", ls.str("colour") ?: "") },
+            signedKmh = e["signed_kmh"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 },
         )
       }
       val points = (root["points"] as? JsonArray)?.mapNotNull { x ->

@@ -1216,11 +1216,17 @@ private fun NavigatingOverlay(
   }
   val speedKmh = if (!simulatingNow && (reckoningNow || speedStale)) null
       else (ui.location?.speed?.value?.takeIf { it >= 0 } ?: measured)?.let { (it * 3.6).roundToInt() }
-  // the limit to RESPECT here: the lowest of the signs (the route's annotation), the law for this
+  // the limit to RESPECT here: the lowest of the signs (the route's roads), the law for this
   // vehicle on this kind of road in this country, and the vehicle's own maximum; one number for the
   // sign, the speedometer, the trip bar and the warnings (SpeedRules)
-  val signedKmh = ui.currentAnnotation?.speedLimit?.value(MeasurementSpeedUnit.KilometersPerHour)?.roundToInt()
-  val limit = limitAt(vehicle, analysis, traveled, signedKmh, countryIso)
+  // only the analysis of the route being guided: right after a new route (a recalculation, a joined
+  // route) the analysis is still the old one's, and its roads at the new route's metres are other
+  // roads (in the simulation the guidance has only the route's tail: its analysis is the whole one)
+  val guidedKey = remember(ui.routeGeometry) { AppGraph.smartLocation.routeKeyOf(ui.routeGeometry) }
+  val analysisKey = remember(analysis) { AppGraph.smartLocation.routeKeyOf(analysis?.route?.geometry) }
+  val guidedAnalysis = analysis?.takeIf { simulatingNow || analysisKey == guidedKey }
+  val signedKmh = guidedAnalysis?.edgeAt(traveled)?.signedKmh
+  val limit = limitAt(vehicle, guidedAnalysis, traveled, signedKmh, countryIso)
   val limitKmh = limit?.kmh
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(10.dp)) {
   // the junction view fits the screen: about a third of the height upright, never taller than wide

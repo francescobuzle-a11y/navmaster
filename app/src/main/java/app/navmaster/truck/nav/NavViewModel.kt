@@ -91,6 +91,8 @@ data class RouteVariant(
     val source: String? = null,
     /** The engine's roads of a variant ("A1 · A21 · A1"), to tell the same route offered twice; null for the others. */
     val signature: String? = null,
+    /** Its roads (OrsGuide's attributes), kept with it: pinned when it is guided (RouteSplice). */
+    val attributes: String? = null,
     /** Found by «Altri percorsi»: its cards come after the automatic variants ([NavViewModel.cardOrder]). */
     val more: Boolean = false,
 ) {
@@ -559,6 +561,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
 
   /** A new trip, or its end: nothing of the wrong turns of before counts. */
   private fun resetOffRoute() {
+    fullJob?.cancel()
+    pendingSpliceKey = null
     rerouteStreak = 0
     rerouteAt = 0L
     rerouteFrom = null
@@ -577,15 +581,60 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // said once: not again for each new try on a road the routes do not keep the vehicle on
     val announce = rerouteStreak == 1
     stopSideRoutes()
+    fullJob?.cancel()
     val heading = loc.courseOverGround?.degrees?.toInt()
     Log.i(TAG, "off the route at ${"%.5f,%.5f".format(java.util.Locale.ROOT, loc.coordinates.lat, loc.coordinates.lng)} going ${heading ?: "?"}°, " +
         "${"%.0f".format((loc.speed?.value ?: 0.0) * 3.6)} km/h: new route from this road")
+    // the trip's choices (tolls, motorways, points to avoid, its pass-through headings), one route
+    // only, leaving in the vehicle's direction; the stops read now, on the route being left
+    val options = AppGraph.trip.value.copy(alternates = 0, moreRoutes = false, quick = false, strictStart = true)
+    val stops = remainingStops()
+    // a long trip: a short route to a point of the old one ahead, joined to it (RouteSplice), at once;
+    // the full route in the background. Not in the simulation (its jumps slice the route)
+    val old = _nav.value.analysis?.takeIf { !_simulating.value && geometryKey(it.route.geometry) == lastGeometryKey }
+    val rejoin = old?.let { runCatching { RouteSplice.pickRejoin(it, lastOnRouteTraveled, stopsAlong(it)) }.getOrNull() }
     launchRecalc { seq ->
       try {
-        // the trip's choices (tolls, motorways, points to avoid, its pass-through headings), one
-        // route only, leaving in the vehicle's direction
-        val options = AppGraph.trip.value.copy(alternates = 0, moreRoutes = false, quick = false, strictStart = true)
-        val r = AppGraph.routes.routes(loc, remainingStops(), options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
+        if (old != null && rejoin != null) {
+          val joined = runCatching { joinedRoute(loc, old, rejoin, options) }
+              .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; Log.w(TAG, "joined route: $it") }.getOrNull()
+          if (joined != null) {
+            val key = geometryKey(joined.route.geometry)
+            val applied = withContext(Dispatchers.Main) {
+              if (!recalcs.isLatest(seq) || lastGeometryKey != geometryKey(old.route.geometry)) return@withContext false
+              // its analysis waits for its roads (joined below): none from an empty one meanwhile
+              pendingSpliceKey = key
+              AppGraph.keep(joined.route)
+              applyIfLatest(seq, joined.route)
+            }
+            Log.i(TAG, "wrong-turn route ready in ${System.currentTimeMillis() - now} ms: joined to the old one " +
+                "${"%.1f".format((rejoin.alongM - lastOnRouteTraveled) / 1000)} km ahead (short route ${joined.headMs} ms)" + (if (applied) "" else " (not handed over)"))
+            if (applied) {
+              if (announce) say("Percorso ricalcolato.")
+              val t0 = System.currentTimeMillis()
+              var json: String? = null
+              try {
+                json = runCatching { RouteSplice.attributes(joined.oldJson, joined.headJson, rejoin, old.route.geometry.size, joined.head.geometry, joined.route.geometry) }
+                    .onFailure { Log.w(TAG, "joined roads: $it") }.getOrNull()
+                json?.let { AppGraph.routes.rememberAttributes(joined.route, it) }
+              } finally {
+                // even when this recalculation is cancelled meanwhile (a newer one): the joined
+                // route must not stay without its analysis
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                  if (pendingSpliceKey == key) pendingSpliceKey = null
+                  if (json != null) AppGraph.routes.pinGuided(joined.route)
+                  Log.i(TAG, "joined roads ${if (json != null) "ready" else "NOT joined"} in ${System.currentTimeMillis() - t0} ms")
+                  if (lastGeometryKey == key) reanalyse(joined.route.geometry)
+                  // the full route meanwhile: it takes the place of the joined one when it is better
+                  // (always when the joined one has no roads)
+                  if (recalcs.isLatest(seq)) fullRouteAfterJoin(loc, stops, options, joined.route, key, force = json == null)
+                }
+              }
+            }
+            return@launchRecalc
+          }
+        }
+        val r = AppGraph.routes.routes(loc, stops, options).firstOrNull() ?: throw IllegalStateException("nessun percorso")
         val applied = withContext(Dispatchers.Main) { applyIfLatest(seq, r) }
         Log.i(TAG, "wrong-turn route ready in ${System.currentTimeMillis() - now} ms" + (if (applied) "" else " (not handed over)"))
         if (applied && announce) say("Percorso ricalcolato.")
@@ -596,6 +645,79 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
         if (!recalcs.isLatest(seq)) return@launchRecalc
         // tried again in 3 s (the vehicle may be on a road the engine knows by then)
         withContext(Dispatchers.Main) { noRoadCheckedAt = System.currentTimeMillis() + 3_000 }
+      }
+    }
+  }
+
+  /** A joined route (RouteSplice) with what its roads are joined from. */
+  private class Joined(val route: Route, val head: Route, val headJson: String, val oldJson: String, val headMs: Long)
+
+  /** The joined route of a wrong turn: the short route from [loc] to [r] on the old route [old], joined to the old one from there. */
+  private suspend fun joinedRoute(loc: UserLocation, old: RouteAnalysis, r: RouteSplice.Rejoin, options: TripOptions): Joined? {
+    val oldJson = AppGraph.routes.attributesFor(old.route) ?: run { Log.i(TAG, "joined route: no roads of the old route"); return null }
+    val t0 = System.currentTimeMillis()
+    // R reached going the old route's way (its carriageway, not the opposite one)
+    val o = options.copy(viaHeadings = options.viaHeadings + (TripOptions.pointKey(r.point.lat, r.point.lng) to r.bearing))
+    val head = AppGraph.routes.routes(loc, listOf(Waypoint(coordinate = r.point, kind = WaypointKind.BREAK)), o).firstOrNull() ?: return null
+    val headMs = System.currentTimeMillis() - t0
+    // its roads now, before other routes push them out of the provider's short list
+    val headJson = AppGraph.routes.attributesFor(head) ?: return null
+    val route = RouteSplice.route(old.route, old.cum, r, head, loc.coordinates) ?: run { Log.w(TAG, "joined route: the steps do not fit"); return null }
+    return Joined(route, head, headJson, oldJson, headMs)
+  }
+
+  /** The metres of the old route [a] where the intermediate stops still to make are (the destination is not one). */
+  private fun stopsAlong(a: RouteAnalysis): List<Double> {
+    val stops = remainingStopList().dropLast(1)
+    val g = a.route.geometry
+    return stops.map { st ->
+      val reach = reachPoint(st)
+      var best = Double.MAX_VALUE
+      var at = 0.0
+      for (k in g.indices) {
+        val d = Geo.dist(g[k], reach)
+        if (d < best) { best = d; at = a.cum[k] }
+      }
+      at
+    }
+  }
+
+  /** The full route computed after a joined one (see [fullRouteAfterJoin]). */
+  private var fullJob: Job? = null
+  /** The joined route (its geometry key) whose analysis waits for its roads: [reanalyse] leaves it alone meanwhile. */
+  private var pendingSpliceKey: String? = null
+
+  /**
+   * The full route from [loc] after a joined one ([joined], its key [key]): it takes the joined
+   * one's place, silently, when it is faster by more than 30 s (or 0.5 %), or always ([force]: the
+   * joined one has no roads), as long as the joined one is still guided, no other recalculation is
+   * under way and the vehicle is on the full route's line (it starts where the joined one does).
+   */
+  private fun fullRouteAfterJoin(loc: UserLocation, stops: List<Waypoint>, options: TripOptions, joined: Route, key: String, force: Boolean) {
+    fullJob?.cancel()
+    fullJob = viewModelScope.launch(Dispatchers.IO) {
+      val t0 = System.currentTimeMillis()
+      val f = runCatching { AppGraph.routes.routes(loc, stops, options).firstOrNull() }
+          .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; Log.w(TAG, "full route after the joined one: $it") }.getOrNull() ?: return@launch
+      val sDur = joined.steps.sumOf { it.duration }
+      val fDur = f.steps.sumOf { it.duration }
+      withContext(Dispatchers.Main) {
+        if (lastGeometryKey != key || _nav.value.recalculating || !guiding) return@withContext
+        // the vehicle on the full route's line, going its way (not on a stretch of it beside a road
+        // where the two routes already part: a junction passed since)
+        val raw = AppGraph.smartLocation.raw.value
+        val hdg = if (raw != null && raw.hasBearing() && raw.hasSpeed() && raw.speed >= 3f) raw.bearing.toDouble() else Double.NaN
+        val onIt = raw == null || f.geometry.size < 2 || (0 until minOf(f.geometry.size - 1, 400)).any { k ->
+          Geo.pointToSegment(GeographicCoordinate(raw.latitude, raw.longitude), f.geometry[k], f.geometry[k + 1]).first < 30.0 &&
+              (hdg.isNaN() || kotlin.math.abs(Geo.angleDiff(hdg, Geo.bearing(f.geometry[k], f.geometry[k + 1]))) < 40.0)
+        }
+        val better = force || fDur < sDur - maxOf(30.0, sDur * 0.005)
+        Log.i(TAG, "full route after the joined one in ${System.currentTimeMillis() - t0} ms: ${(fDur / 60).toInt()} min vs ${(sDur / 60).toInt()} min joined" +
+            when { !better -> ", joined kept"; !onIt -> ", vehicle not on it: joined kept"; else -> ", takes its place" })
+        if (better && onIt) {
+          AppGraph.keep(f)
+          replaceIfGuiding(f)
+        }
       }
     }
   }
@@ -1123,7 +1245,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     val weight = v.tripWeightT(garage.loadT)
     val limits = AppGraph.limits.scan(m, v, weight, departure, a = analysis)
     val crit = AppGraph.criticalities.find(analysis, m, limits, v, garage.loadT, departure)
-    return RouteVariant(kind, title, r, analysis, limits, crit, opts, source = AppGraph.routes.sourceOf(r), signature = signature)
+    return RouteVariant(kind, title, r, analysis, limits, crit, opts, source = AppGraph.routes.sourceOf(r), signature = signature,
+        attributes = AppGraph.routes.attributesFor(r))
   }
 
   /**
@@ -1250,6 +1373,9 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
     // of a new trip look already passed)
     lastOnRouteTraveled = 0.0
     lastGeometryKey = geometryKey(v.route.geometry)
+    // the roads of the route chosen, kept apart (a wrong turn joins a short route to it, RouteSplice):
+    // computed with the plan, they may already be out of the provider's short list
+    v.attributes?.let { AppGraph.routes.pinGuided(v.route, it) }
     // the trip starts away from the road the route begins on (a yard, a car park): said once
     if (!simulate) lastLocation.value?.coordinates?.let { here ->
       val d = v.route.geometry.firstOrNull()?.let { Geo.dist(here, it) } ?: 0.0
@@ -1806,6 +1932,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
       // none until the new analysis hands them over; before, the old route's spans, in metres of
       // the old line, gave the new route 90 m of tolerance in the wrong places)
       val a0 = _nav.value.analysis?.takeIf { geometryKey(it.route.geometry) == key }
+      // its roads kept apart (a wrong turn later joins a short route to it, RouteSplice)
+      AppGraph.findRoute(geometry)?.let { AppGraph.routes.pinGuided(it) }
       AppGraph.smartLocation.setRoute(if (_simulating.value) null else geometry, wideSpans(a0), tunnelSpans(a0))
       laneTracker.reset()
       if (key == simPendingKey) {
@@ -2601,6 +2729,8 @@ class NavViewModel : DefaultNavigationViewModel(AppGraph.ferrostar, routeAnnotat
   }
 
   private fun reanalyse(geometry: List<GeographicCoordinate>) {
+    // a joined route whose roads are still being joined: analysed once they are (reroute)
+    if (pendingSpliceKey != null && pendingSpliceKey == geometryKey(geometry)) return
     viewModelScope.launch(Dispatchers.IO) {
       try {
         // Ferrostar gives only the geometry of the new route: find the route we computed for it

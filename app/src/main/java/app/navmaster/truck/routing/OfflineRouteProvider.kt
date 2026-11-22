@@ -95,7 +95,29 @@ class OfflineRouteProvider(
   }
 
   /** The roads of [route] (OrsGuide's attributes) kept when it was computed, null when it was not. */
-  fun attributesFor(route: Route): String? = synchronized(attributes) { attributes[key(route)] }
+  fun attributesFor(route: Route): String? = synchronized(attributes) { attributes[key(route)] ?: guidedAttributes?.takeIf { it.first == key(route) }?.second }
+
+  /**
+   * The roads of the route being guided, kept apart from the last few routes computed: a wrong turn
+   * on a long trip joins a short new route to it (RouteSplice), and by then the routes computed
+   * beside it (variants, a toll-free check, an offer) may have pushed it out of the list.
+   */
+  @Volatile private var guidedAttributes: Pair<String, String>? = null
+
+  /** [route] is the one being guided now: its roads are kept (see [guidedAttributes]). */
+  fun pinGuided(route: Route) {
+    val k = key(route)
+    val j = synchronized(attributes) { attributes[k] } ?: return
+    guidedAttributes = k to j
+  }
+
+  /** [route] is the one being guided now, with its roads [json] kept from when it was computed. */
+  fun pinGuided(route: Route, json: String) {
+    guidedAttributes = key(route) to json
+  }
+
+  /** The roads of a route made in the app (a joined route, RouteSplice). */
+  fun rememberAttributes(route: Route, json: String) = remember(route, json)
 
   private fun remember(route: Route, json: String?) = synchronized(attributes) {
     if (json == null) return@synchronized

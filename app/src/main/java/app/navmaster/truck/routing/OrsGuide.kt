@@ -75,24 +75,11 @@ object OrsGuide {
       val ld = seg.jsonObject["distance"]?.jsonPrimitive?.doubleOrNull ?: (cum[lp1] - cum[lp0])
       val lt = seg.jsonObject["duration"]?.jsonPrimitive?.doubleOrNull ?: 0.0
       b.append("{\"distance\":").append(num(ld)).append(",\"duration\":").append(num(lt)).append(",\"weight\":").append(num(lt))
-          .append(",\"summary\":\"\",\"via_waypoints\":[],\"annotation\":{")
-      // per point segment: the time of the leg spread by distance; the speed limit of the road
-      val legLen = (cum[lp1] - cum[lp0]).coerceAtLeast(1.0)
-      val dd = StringBuilder(); val du = StringBuilder(); val sp = StringBuilder(); val mx = StringBuilder()
-      for (i in lp0 until lp1) {
-        if (i > lp0) { dd.append(','); du.append(','); sp.append(','); mx.append(',') }
-        val d = cum[i + 1] - cum[i]
-        val t = lt * d / legLen
-        // the numbers written by hand: String.format costs microseconds on the tablet and here there are three per point (950 km: tens of thousands)
-        fixed(dd, d, 1)
-        fixed(du, t, 3)
-        fixed(sp, if (t > 0) d / t else 0.0, 1)
-        val lim = on.getOrNull(i)?.limit(heavy)
-        if (lim != null && lim > 0) mx.append("{\"speed\":").append(Math.round(lim)).append(",\"unit\":\"km/h\"}")
-        else mx.append("{\"unknown\":true}")
-      }
-      b.append("\"distance\":[").append(dd).append("],\"duration\":[").append(du).append("],\"speed\":[").append(sp)
-          .append("],\"maxspeed\":[").append(mx).append("]},\"steps\":[")
+          .append(",\"summary\":\"\",\"via_waypoints\":[],\"steps\":[")
+      // (no per-point "annotation" any more: one block for the whole leg, which Ferrostar's parser
+      // went through again for every step — 2.3 s for 70 steps × 15 000 points on the tablet, on
+      // every long route; the signed limit the guidance showed from it now comes from the route's
+      // roads, RouteAnalysis EdgeInfo.signedKmh)
       // the end of a leg that is not the last one: a stop ("Hai raggiunto la tappa", said by the
       // step before it, whose next manoeuvre it is), or a point only passed through (nothing said,
       // and the start of the next leg not said either)
@@ -119,7 +106,7 @@ object OrsGuide {
     }
     b.append("]}")
     val tSteps = System.nanoTime()
-    val attributes = if (roads.isEmpty()) null else attributes(pts, cum, roads, points, countryOf)
+    val attributes = if (roads.isEmpty()) null else attributes(pts, cum, roads, points, countryOf, heavy)
     val tEnd = System.nanoTime()
     val ms = { a: Long, z: Long -> (z - a) / 1_000_000 }
     return Output(b.toString(), attributes, roads.size, "lettura ${ms(t0, tParsed)} ms, passi ${ms(tParsed, tSteps)} ms, strade ${ms(tSteps, tEnd)} ms, $n punti")
@@ -197,7 +184,7 @@ object OrsGuide {
    * at toll booths, gantries and border controls (the node then ends the edge), with the signed
    * limits, the direction signs (destination tags, motorway junctions) and the lanes.
    */
-  private fun attributes(pts: List<GeographicCoordinate>, cum: DoubleArray, roads: List<RouteRoad>, points: List<RoutePoint>, countryOf: ((Double, Double) -> String?)?): String {
+  private fun attributes(pts: List<GeographicCoordinate>, cum: DoubleArray, roads: List<RouteRoad>, points: List<RoutePoint>, countryOf: ((Double, Double) -> String?)?, heavy: Boolean): String {
     val n = pts.size
     val b = StringBuilder(32 * 1024)
     b.append("{\"units\":\"kilometers\",\"shape\":")
@@ -234,6 +221,8 @@ object OrsGuide {
             .append(",\"tunnel\":").append(r.tunnel).append(",\"bridge\":").append(r.bridge)
             .append(",\"roundabout\":").append(r.roundabout)
         r.maxspeed?.takeIf { it > 0 }?.let { edges.append(",\"speed_limit\":").append(it) }
+        // the limit signed for this vehicle (the lower of maxspeed and maxspeed:hgv for a lorry)
+        r.limit(heavy)?.takeIf { it > 0 }?.let { edges.append(",\"signed_kmh\":").append(Math.round(it)) }
         r.turnLanes?.let { edges.append(",\"turn_lanes\":").append(JsonPrimitive(it)) }
         val names = r.names
         if (names.isNotEmpty()) edges.append(",\"names\":").append(names.joinToString(",", "[", "]") { JsonPrimitive(it).toString() })
