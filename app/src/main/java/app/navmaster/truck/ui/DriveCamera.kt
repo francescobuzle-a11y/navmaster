@@ -180,9 +180,16 @@ internal object DriveCamera {
     /** The map's direction held through a roundabout. */
     var heldBearing = Double.NaN
     var lastNanos = 0L
+    /**
+     * The tilt and zoom drawn last (NaN before the first frame): the view glides to the one of the
+     * moment instead of jumping (one stretch replaced by another with another view, a new route
+     * whose stretches came with its analysis).
+     */
+    var shownTilt = Double.NaN
+    var shownZoom = Double.NaN
 
     fun reset() {
-      active = false; blend = 0.0; window = null; heldBearing = Double.NaN; lastNanos = 0L
+      active = false; blend = 0.0; window = null; heldBearing = Double.NaN; lastNanos = 0L; shownTilt = Double.NaN; shownZoom = Double.NaN
     }
   }
 }

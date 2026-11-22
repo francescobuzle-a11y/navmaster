@@ -489,6 +489,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       if (d < 40.0) along else -1.0
     } ?: -1.0
     track.lastFrame = 0L
+    track.lastBrg = shownNow[0]?.courseOverGround?.degrees?.toDouble() ?: -1.0
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
         val next = track.step(t, a)
@@ -575,6 +576,13 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   // the stretches read at each frame: a change of their values (the buttons, the settings) goes on
   // from the view of the moment, it does not start the stretch's easing again
   val camWindowsNow = androidx.compose.runtime.rememberUpdatedState(camWindows)
+  // the guided route is not the one analysed yet (a recalculation just handed over)
+  val routeKeyNow = remember(ui.routeGeometry) { AppGraph.smartLocation.routeKeyOf(ui.routeGeometry) }
+  // (not in the simulation, whose jumps hand the guidance only the route's tail; at most 5 s: an
+  // analysis that never comes does not hold the view for ever)
+  val staleSince = remember(routeKeyNow, trackKey) { System.nanoTime() }
+  val camStale = androidx.compose.runtime.rememberUpdatedState(navigating && !simulatingTrack && trackKey != 0 && routeKeyNow != 0 &&
+      routeKeyNow != trackKey && System.nanoTime() - staleSince < 5_000_000_000L)
   LaunchedEffect(navigating, is3d) {
     if (camDriver.active) {
       camDriver.reset()
@@ -585,7 +593,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       androidx.compose.runtime.withFrameNanos { t ->
         val loc = smoothLoc.value?.let { DriveCamera.laneShift(it, camShift.value) } ?: freeLoc.value ?: camUiLoc.value ?: return@withFrameNanos
         val along = smoothAlong.value.takeIf { it >= 0 } ?: camTraveled.value
-        val win = DriveCamera.windowAt(camWindowsNow.value, along)
+        // a route just replaced whose analysis (its stretches, its metres) is not there yet: the
+        // view stays as it is (before, the stretch of the old route ended for half a second and the
+        // new one came back with another view, in a jump)
+        val stale = camStale.value
+        val win = if (stale) camDriver.window.takeIf { camDriver.active } else DriveCamera.windowAt(camWindowsNow.value, along)
         val cs = mapState.cameraState
         if (!camDriver.active) {
           if (win == null) return@withFrameNanos
@@ -618,15 +630,21 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         val course = loc.courseOverGround?.degrees?.toDouble() ?: cs.position.bearing
         val bearing = if (wv.roundabout && !camDriver.heldBearing.isNaN()) DriveCamera.lerpAngle(course, camDriver.heldBearing, e) else course
         val tiltW = if (is3d) wv.tilt else 0.0
+        // glided towards the view of the moment (a third of a second), from the one drawn last
+        val glide = 1.0 - kotlin.math.exp(-dt / 0.3)
+        val tiltNow = t0 + (tiltW - t0) * e
+        val zoomNow = z0 + (wv.zoom - z0) * e
+        camDriver.shownTilt = if (camDriver.shownTilt.isNaN()) cs.position.tilt else camDriver.shownTilt + (tiltNow - camDriver.shownTilt) * glide
+        camDriver.shownZoom = if (camDriver.shownZoom.isNaN()) cs.position.zoom else camDriver.shownZoom + (zoomNow - camDriver.shownZoom) * glide
         cs.position = org.maplibre.compose.camera.CameraPosition(
             bearing = bearing,
             target = org.maplibre.spatialk.geojson.Position(loc.coordinates.lng, loc.coordinates.lat),
-            tilt = t0 + (tiltW - t0) * e,
-            zoom = z0 + (wv.zoom - z0) * e,
+            tilt = camDriver.shownTilt,
+            zoom = camDriver.shownZoom,
             padding = pad,
         )
         // out of the stretch and eased back: Ferrostar follows again, from the same view
-        if (win == null && camDriver.blend <= 0.0) {
+        if (win == null && camDriver.blend <= 0.0 && kotlin.math.abs(camDriver.shownTilt - t0) < 0.5 && kotlin.math.abs(camDriver.shownZoom - z0) < 0.02) {
           camDriver.reset()
           mapState.cameraMode = com.stadiamaps.ferrostar.maplibreui.runtime.NavigationCameraMode.FOLLOW_USER_WITH_BEARING
         }
@@ -1671,7 +1689,8 @@ private class SmoothTrack {
   var speed = 0.0
   var accuracy = 5.0
   var speedObj: uniffi.ferrostar.Speed? = null
-  private var lastBrg = -1.0
+  /** The heading drawn last (−1: none yet; set from the free arrow when the route takes over). */
+  var lastBrg = -1.0
 
   fun step(t: Long, a: app.navmaster.truck.routing.RouteAnalysis): uniffi.ferrostar.UserLocation {
     val dt = if (lastFrame == 0L) 0.0 else ((t - lastFrame) / 1e9).coerceIn(0.0, 0.1)
@@ -1700,8 +1719,14 @@ private class SmoothTrack {
     val p = a.pointAt(shown)
     val b0 = a.pointAt((shown - 5).coerceAtLeast(0.0))
     val b1 = a.pointAt((shown + 15).coerceAtMost(a.length))
-    // standing still the heading stays as it was (the arrow does not turn on the spot)
-    if (speed >= 0.8 || lastBrg < 0) lastBrg = ((app.navmaster.truck.core.Geo.bearing(b0, b1) % 360.0) + 360.0) % 360.0
+    // standing still the heading stays as it was (the arrow does not turn on the spot); moving it
+    // turns towards the road's, the short way round, in a quarter of a second (the arrow and the map
+    // turned in one frame when the route took over from the free arrow mid-turn, and at every bend
+    // of the line)
+    if (speed >= 0.8 || lastBrg < 0) {
+      val road = ((app.navmaster.truck.core.Geo.bearing(b0, b1) % 360.0) + 360.0) % 360.0
+      lastBrg = if (lastBrg < 0) road else DriveCamera.lerpAngle(lastBrg, road, 1.0 - kotlin.math.exp(-dt / 0.25))
+    }
     return uniffi.ferrostar.UserLocation(
         p, accuracy, uniffi.ferrostar.CourseOverGround(lastBrg.toInt().coerceIn(0, 359).toUShort(), 5u.toUShort()),
         java.time.Instant.now(), speedObj)
