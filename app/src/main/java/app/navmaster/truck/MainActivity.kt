@@ -131,6 +131,12 @@ class MainActivity : ComponentActivity(), AndroidTtsStatusListener {
     }
     vm.scheduleLiveTests(app.navmaster.truck.live.LiveKind.of(reportAhead?.getOrNull(0)), reportAhead?.getOrNull(1)?.toDoubleOrNull() ?: 2000.0,
         detour, intent?.getBooleanExtra("nm_livetest", false) == true)
+    // tests of leaving the route and of the free arrow: fixes fed along a track from the first point
+    // through the others (`--es nm_drive "lat,lon;lat,lon" --ei nm_drive_kmh 70 --ei nm_drive_wait 12`)
+    intent?.getStringExtra("nm_drive")?.let { d ->
+      val pts = d.split(';').mapNotNull { q -> q.split(',').takeIf { it.size == 2 }?.let { GeographicCoordinate(it[0].trim().toDouble(), it[1].trim().toDouble()) } }
+      if (pts.isNotEmpty()) vm.driveTrack(pts, intent?.getIntExtra("nm_drive_kmh", 70)?.toDouble() ?: 70.0, intent?.getIntExtra("nm_drive_wait", 12) ?: 12)
+    }
     val dest = intent?.getStringExtra("nm_dest") ?: return
     val parts = dest.split(',')
     if (parts.size != 2) return

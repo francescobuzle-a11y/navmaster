@@ -50,7 +50,7 @@ import kotlinx.coroutines.delay
 /** The question of the moment, in the middle of the screen with two big answers. */
 @Composable
 fun PromptCard(p: DriverPrompt, traveledM: Double, onRamp: (Boolean) -> Unit, onToll: (Boolean) -> Unit, onBreakGo: (RoutePoi) -> Unit,
-               onDismiss: () -> Unit, onClosure: (Boolean) -> Unit = {}, onOffRoute: (Boolean) -> Unit = {}) {
+               onDismiss: () -> Unit, onClosure: (Boolean) -> Unit = {}) {
   Box(Modifier.fillMaxSize().background(Color(0x55000000)), contentAlignment = Alignment.Center) {
     Panel(Modifier.widthIn(max = 620.dp).padding(18.dp), padding = 20.dp) {
       when (p) {
@@ -103,28 +103,6 @@ fun PromptCard(p: DriverPrompt, traveledM: Double, onRamp: (Boolean) -> Unit, on
             val pk = p.parking
             if (pk != null) BigButton("Portami lì", Modifier.weight(1f), Icons.Rounded.LocalParking) { onBreakGo(pk) }
             BigButton("Ok", Modifier.weight(1f), style = BtnStyle.SECONDARY, onClick = onDismiss)
-          }
-        }
-        is DriverPrompt.OffRoute -> {
-          // the seconds left before the app chooses by itself (NavViewModel: 30 s)
-          var left by remember(p.id) { mutableIntStateOf(30) }
-          LaunchedEffect(p.id) {
-            while (left > 0) {
-              delay(1000)
-              left = (30 - (System.currentTimeMillis() - p.askedAt) / 1000).toInt().coerceAtLeast(0)
-            }
-          }
-          Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("↩", fontSize = 34.sp)
-            Spacer(Modifier.width(10.dp))
-            Title("Percorso ricalcolato da questa strada", size = 22)
-          }
-          Caption("Hai lasciato il percorso: ora ti guido da qui. Vuoi invece tornare sul percorso di prima?" +
-              (if (left > 0) " Senza risposta tra $left s scelgo io." else ""), color = Nm.Text, size = 17, lines = 4)
-          Spacer(Modifier.height(14.dp))
-          Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            BigButton("Resta su questa strada", Modifier.weight(1.2f), Icons.Rounded.Check) { onOffRoute(true) }
-            BigButton("Torna sul percorso di prima", Modifier.weight(1f), Icons.Rounded.Route, BtnStyle.SECONDARY) { onOffRoute(false) }
           }
         }
         is DriverPrompt.Closure -> {

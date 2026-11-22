@@ -335,13 +335,21 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     // side lane of the plaza was "off the route" and the route was recalculated from the nearest
     // road, at times a ramp: off the motorway and back onto it)
     if (bestI < 0) return null
-    val wide = bestD > 30 && ln.isWide(bestS)
-    if (bestD > 30 && !(wide && bestD <= 90)) return null
+    // a precise fix (8 m) is off the route from 20 m aside: the outer lane of a wide motorway is
+    // some 10 m from the line, a slip road 20 m from it after 80-100 m (before, 30 m for every fix:
+    // a gentle exit was seen 5-8 s late)
+    val good = l.hasAccuracy() && l.accuracy <= 8f
+    val offAt = if (good) 20.0 else 30.0
+    val wide = bestD > offAt && ln.isWide(bestS)
+    if (bestD > offAt && !(wide && bestD <= 90)) return null
     val moving = l.hasBearing() && l.hasSpeed() && l.speed >= 3f
     if (bestD > 6 && moving) {
       val rb = bearing(ln.pts[bestI], ln.pts[bestI + 1])
       val diff = ((l.bearing - rb + 540.0) % 360.0) - 180.0
       if (Math.abs(diff) > (if (wide) 35 else 50)) return null
+      // 10 m aside and going 25 degrees another way, with a precise fix at speed: a slip road or a
+      // fork leaving the route (a lane change on the motorway is a few degrees)
+      if (!ln.isWide(bestS) && bestD > 10 && good && l.speed >= 8f && Math.abs(diff) > 25) return null
     } else if (wide && !moving && bestD > 60) {
       // far from the line and no direction to tell by: not on the route
       return null
@@ -358,6 +366,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
     fixLateral = if (ex * py - ey * px > 0) -bestD else bestD
     return bestS
   }
+
+  /**
+   * Tests on the tablet (NavViewModel.driveTrack): fixes fed by the app along a track, handled
+   * exactly as the receiver's; while [injecting] the receiver's own fixes are left out.
+   */
+  val injected = kotlinx.coroutines.flow.MutableSharedFlow<Location>(extraBufferCapacity = 16)
+  @Volatile var injecting = false
 
   override fun locationUpdates(intervalMillis: Long): Flow<Location> = synchronized(this) {
     shared ?: updates(intervalMillis).shareIn(scope, SharingStarted.WhileSubscribed(5_000), replay = 1).also { shared = it }
@@ -416,12 +431,13 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
         // satellites were silent, so the position goes on along the route (below) until good fixes
         // come back. A GOOD fix off the route is handed on at once (the vehicle really left it: the
         // arrow and the recalculation must follow immediately); a doubtful one (over 20 m of
-        // accuracy) only after 4 s off. But not for long: after 2.5 s without a better fix a poor
+        // accuracy) only after 1.5 s off (4 s before: the arrow ran on along the old route, stopped,
+        // then jumped aside, and the new route came that much later). But not for long: after 2.5 s without a better fix a poor
         // one (up to 80 m) is used all the same, projected on the route: a receiver under a roof or
         // in a built-up area gives 40 m fixes for minutes, and leaving them all out meant driving
         // the arrow on the last speed alone, ahead of the vehicle at every braking
         val stale = el - fixAt > 2_500
-        if (driving && (acc > 80.0 || (acc > 35.0 && !stale) || (s == null && acc > 20.0 && el - lastOnRouteAt < 4_000))) {
+        if (driving && (acc > 80.0 || (acc > 35.0 && !stale) || (s == null && acc > 20.0 && el - lastOnRouteAt < 1_500))) {
           diag.dropped++
           Log.d(TAG, "poor fix left out (accuracy ${acc.toInt()} m, on route ${s != null})")
           return
@@ -475,13 +491,14 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       diag.report()
     }
     recentLastLocation()?.let { trySend(it) }
+    val fed = launch { injected.collect { accept(it) } }
     val list = providers()
     Log.d(TAG, "location from ${list.joinToString()}")
     for (p in list) {
       // every method spelt out: on Android 10 they have no default and switching a provider off
       // crashed the app (AbstractMethodError onProviderDisabled)
       val listener = object : LocationListener {
-        override fun onLocationChanged(location: android.location.Location) = accept(location)
+        override fun onLocationChanged(location: android.location.Location) { if (!injecting) accept(location) }
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) {}
         @Deprecated("Deprecated in Java")
@@ -544,6 +561,7 @@ class SmartLocationProvider(context: Context) : NavigationLocationProviding {
       }
     }
     awaitClose {
+      fed.cancel()
       reckoning.cancel()
       listeners.forEach { lm.removeUpdates(it) }
     }

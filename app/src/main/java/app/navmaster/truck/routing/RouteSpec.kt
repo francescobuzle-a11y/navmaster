@@ -41,6 +41,8 @@ data class RouteSpec(
     val preference: String,
     /** Rings of [lon, lat] the route must not touch (`avoid_polygons`). */
     val avoidZones: List<List<List<Double>>> = emptyList(),
+    /** A recalculation while driving: the start in the vehicle's direction, never a turn round there (`navmaster.start_heading`). */
+    val strictStart: Boolean = false,
 ) {
   val profile: String
     get() = if (hgv) "driving-hgv" else "driving-car"
@@ -48,7 +50,7 @@ data class RouteSpec(
   override fun toString(): String =
       "RouteSpec{$profile" + (if (hgv && vehicleType != "hgv") "/$vehicleType" else "") + ", h=$heightM, w=$widthM, l=$lengthM, t=$weightT, axle=$axleLoadT" +
           ", hazmat=$hazmat" + (if (adrTunnelCode.isNotEmpty()) "/$adrTunnelCode" else "") + (if (hazmatWater) "/water" else "") + ", v=$topSpeedKmh, $preference, tolls=${!avoidTolls}, ferries=${!avoidFerries}" +
-          (if (avoidMotorways) ", noMotorway" else "") + ", zones=${avoidZones.size}}"
+          (if (avoidMotorways) ", noMotorway" else "") + (if (strictStart) ", strictStart" else "") + ", zones=${avoidZones.size}}"
 }
 
 /** The vehicle and the trip's choices as the engine needs them. */
@@ -74,5 +76,6 @@ fun VehicleProfile.routeSpec(loadT: Double, trip: TripOptions): RouteSpec {
         else -> "fastest"
       },
       avoidZones = trip.excludePolygons,
+      strictStart = trip.strictStart,
   )
 }

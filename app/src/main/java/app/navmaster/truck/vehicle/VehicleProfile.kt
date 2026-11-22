@@ -161,6 +161,12 @@ data class TripOptions(
      * background (it gives way to the route on screen) within 15 s, so that it never keeps the tablet busy.
      */
     val quick: Boolean = false,
+    /**
+     * A recalculation while driving: the route must leave in the vehicle's direction of travel and
+     * never turn round at the start (the engine's `navmaster.start_heading = strict`: the road going
+     * the vehicle's way within 40 m, starting the other way only when there is no other way).
+     */
+    val strictStart: Boolean = false,
 ) {
   companion object {
     fun pointKey(lat: Double, lon: Double): String = String.format(java.util.Locale.ROOT, "%.5f,%.5f", lat, lon)

@@ -470,6 +470,11 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       track.speedObj = coreLoc?.speed
     }
   }
+  // the arrow last drawn (as drawn: the route's one on its lane), whichever of the two below drew
+  // it: the other one goes on from there when it takes over, instead of jumping
+  val shownNow = remember { arrayOfNulls<uniffi.ferrostar.UserLocation>(1) }
+  // the lane shift of the moment (worked out further down), read in the frames
+  val laneShiftNow = remember { doubleArrayOf(0.0) }
   LaunchedEffect(trackOk, trackAnalysis) {
     val a = trackAnalysis
     if (!trackOk || a == null) {
@@ -477,11 +482,18 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       smoothAlong.value = -1.0
       return@LaunchedEffect
     }
-    track.shown = -1.0
+    // back on the route after the free arrow (a recalculation, a stretch off the route): from the
+    // point of the route beside the arrow shown, when near (the correction then glides it on)
+    track.shown = shownNow[0]?.let { s ->
+      val (along, d) = app.navmaster.truck.core.Geo.locate(a.route.geometry, a.cum, s.coordinates)
+      if (d < 40.0) along else -1.0
+    } ?: -1.0
     track.lastFrame = 0L
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
         val next = track.step(t, a)
+        // as drawn (on the lane of the driving side): the free arrow goes on from there
+        shownNow[0] = DriveCamera.laneShift(next, laneShiftNow[0])
         val cur = smoothLoc.value
         // a new position for the map only when the arrow really moved (4 cm) or turned: standing
         // still the map was redrawn 60 times a second for nothing (the tablet heated and slowed down)
@@ -490,6 +502,51 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
           smoothLoc.value = next
         }
         smoothAlong.value = track.shown
+      }
+    }
+  }
+
+  // ---- the arrow off the route (a road not on the route, a recalculation under way, before the
+  // new route is attached) and with no route at all (the map open while driving): it glides at every
+  // frame from fix to fix as it does on the route (FreeTrack). Before, it was drawn where each
+  // satellite fix put it, once a second: it hopped along the road 20-25 m at a time
+  val freeTrack = remember { FreeTrack() }
+  val freeLoc = remember { mutableStateOf<uniffi.ferrostar.UserLocation?>(null) }
+  // a counter of the fixes fed: the free arrow, asleep while the vehicle stands, wakes up at the next one
+  val fixSeq = remember { androidx.compose.runtime.mutableIntStateOf(0) }
+  LaunchedEffect(rawFix) {
+    rawFix?.let { l ->
+      // when it was measured (a fix arrives some hundreds of ms late)
+      val ageNs = if (l.elapsedRealtimeNanos > 0) (android.os.SystemClock.elapsedRealtimeNanos() - l.elapsedRealtimeNanos).coerceIn(0L, 2_000_000_000L) else 0L
+      freeTrack.feed(l.latitude, l.longitude, if (l.hasSpeed()) l.speed.toDouble() else Double.NaN,
+          if (l.hasBearing()) l.bearing.toDouble() else Double.NaN, if (l.hasAccuracy()) l.accuracy.toDouble() else 10.0, System.nanoTime() - ageNs)
+      fixSeq.intValue++
+    }
+  }
+  val freeOn = !trackOk && rawFix != null && !(navigating && simulatingTrack)
+  LaunchedEffect(freeOn) {
+    if (!freeOn) {
+      freeLoc.value = null
+      return@LaunchedEffect
+    }
+    freeTrack.seed(shownNow[0])
+    while (true) {
+      // the vehicle stands and the arrow is there: no frames (the screen is not redrawn 60 times a
+      // second for nothing, parked with the map open) until the next fix
+      if (freeTrack.settled()) {
+        val seen = fixSeq.intValue
+        androidx.compose.runtime.snapshotFlow { fixSeq.intValue }.first { it != seen }
+        freeTrack.seed(null)
+      }
+      androidx.compose.runtime.withFrameNanos { t ->
+        val next = freeTrack.step(t) ?: return@withFrameNanos
+        shownNow[0] = next
+        val cur = freeLoc.value
+        // only when it moved (4 cm) or turned: standing still the map is not redrawn for nothing
+        if (cur == null || kotlin.math.abs(cur.coordinates.lat - next.coordinates.lat) > 4e-7 ||
+            kotlin.math.abs(cur.coordinates.lng - next.coordinates.lng) > 4e-7 || cur.courseOverGround?.degrees != next.courseOverGround?.degrees) {
+          freeLoc.value = next
+        }
       }
     }
   }
@@ -507,6 +564,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
   val laneLht = (nav.analysis?.edgeAt(traveled)?.country ?: here?.iso)?.uppercase() in setOf("GB", "IE", "CY", "MT", "IM", "GG", "JE")
   val laneShiftM = if (settings.driveLaneSide) (if (laneLht) -DriveCamera.LANE_SHIFT_M else DriveCamera.LANE_SHIFT_M) else 0.0
   val camShift = androidx.compose.runtime.rememberUpdatedState(laneShiftM)
+  laneShiftNow[0] = laneShiftM
   val routeDone = androidx.compose.runtime.rememberUpdatedState(settings.doneRoute)
   val routeTraveled = androidx.compose.runtime.rememberUpdatedState(traveled)
   // the length of the route the position is measured on (the line drawn may be only its end: simulation jumps)
@@ -525,7 +583,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
     if (!navigating) return@LaunchedEffect
     while (true) {
       androidx.compose.runtime.withFrameNanos { t ->
-        val loc = smoothLoc.value?.let { DriveCamera.laneShift(it, camShift.value) } ?: camUiLoc.value ?: return@withFrameNanos
+        val loc = smoothLoc.value?.let { DriveCamera.laneShift(it, camShift.value) } ?: freeLoc.value ?: camUiLoc.value ?: return@withFrameNanos
         val along = smoothAlong.value.takeIf { it >= 0 } ?: camTraveled.value
         val win = DriveCamera.windowAt(camWindowsNow.value, along)
         val cs = mapState.cameraState
@@ -623,6 +681,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       NavigationMapPuckStyle(dotFillColorCurrentLocation = Nm.Route, bearingColor = Nm.RouteBorder, dotRadius = 11.dp, dotStrokeWidth = 4.dp)
     }
     val smooth = smoothLoc.value
+    val free = freeLoc.value
     NavigationMapView(
         baseStyle = BaseStyle.Uri(styleUri),
         navigationMapState = mapState,
@@ -631,7 +690,9 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
         uiState = when {
           smooth != null -> ui.copy(location = DriveCamera.laneShift(smooth, laneShiftM),
               routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
-          // off the route while guided: the real position, drawn as it is (no snapping by the map)
+          // off the route while guided, and with no route: the real position, glided from fix to fix
+          // (FreeTrack), drawn as it is (no snapping by the map)
+          free != null -> ui.copy(location = free, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
           navigating && !simulatingTrack && rawLoc != null -> ui.copy(location = rawLoc, routeDeviation = uniffi.ferrostar.RouteDeviation.Deviation(uniffi.ferrostar.DeviationKind.OffStepOnRoute(0.0)))
           else -> ui
         },
@@ -748,7 +809,7 @@ fun MainScreen(vm: NavViewModel, initialSheet: String? = null, initialCrit: Int?
       nav.prompt?.let { p ->
         PromptCard(p, traveled, onRamp = vm::answerRamp, onToll = vm::answerToll,
             onBreakGo = { pk -> vm.dismissPrompt(); vm.addStopDuringNav(pk.poi.coordinate, pk.poi.title.ifBlank { "Parcheggio" }) },
-            onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure, onOffRoute = vm::answerOffRoute)
+            onDismiss = vm::dismissPrompt, onClosure = vm::answerClosure)
       }
       // the route offered aside: lying down at the right, upright above the trip bar; the guidance goes on
       offer?.let { o ->

@@ -405,6 +405,9 @@ class NmRouting(
       // only when there is no other way (the vehicle already on the motorway, an island, a pass
       // reached only through a toll), so the trip never fails nor starts on a road it cannot reach
       if (avoid.isNotEmpty()) nav["avoid_penalty"] = JsonPrimitive(true)
+      // NavMaster: a recalculation while driving leaves in the vehicle's direction of travel, never
+      // turning round at the start (an older engine ignores it and keeps openrouteservice's bearings)
+      if (s.strictStart && headings?.firstOrNull()?.isNaN() == false) nav["start_heading"] = JsonPrimitive("strict")
       // pass-through points (the driver going on along his road, or back onto the planned route): no
       // u-turn at them; point by point for the engine, so a stop among them stays a stop
       val passThrough = points.size > 2 && kinds.size == points.size && kinds.subList(1, kinds.size - 1).any { it == "via" }

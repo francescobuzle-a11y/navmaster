@@ -53,7 +53,6 @@ import app.navmaster.truck.settings.PoiCategory
 import app.navmaster.truck.settings.PoiGroup
 import app.navmaster.truck.settings.PoiSide
 import app.navmaster.truck.settings.Settings
-import app.navmaster.truck.settings.DeviationChoice
 import app.navmaster.truck.settings.TollPolicy
 import app.navmaster.truck.settings.VoiceLevel
 
@@ -197,19 +196,8 @@ private fun RoutePage(s: Settings, set: ((Settings) -> Settings) -> Unit) {
     } + " Gli altri due tipi compaiono comunque come schede accanto.", lines = 5)
   }
   Card("Se lasci il percorso") {
-    Pills { for (d in DeviationChoice.entries) Pill(d.label, s.deviation == d) { set { it.copy(deviation = d) } } }
-    Spacer(Modifier.height(6.dp))
-    Caption(when (s.deviation) {
-      DeviationChoice.ASK -> "La voce lo dice e sullo schermo compaiono due tasti: «Continua su questa strada» (nuovo percorso dalla strada " +
-          "che stai facendo, senza tornare indietro) o «Torna sul percorso». Nessuna risposta a voce."
-      DeviationChoice.CONTINUE -> "Senza chiedere: nuovo percorso dalla strada che stai facendo, con le tue opzioni."
-      DeviationChoice.RETURN -> "Senza chiedere: percorso per tornare su quello calcolato."
-    }, lines = 4)
-    if (s.deviation == DeviationChoice.ASK) {
-      ToggleRow("Senza risposta entro 30 s, continua sulla strada", "Spento: senza risposta torna sul percorso", s.deviationDefaultContinue) { v ->
-        set { it.copy(deviationDefaultContinue = v) }
-      }
-    }
+    Caption("Il percorso si ricalcola subito dalla strada che hai preso, nel tuo senso di marcia e verso la destinazione: " +
+        "non ti fa tornare indietro e non chiede niente.", lines = 4)
   }
   Card("Calcolo del percorso") {
     Caption("Il percorso lo calcola il motore NavMaster sul tablet, con la logica di openrouteservice e le misure del mezzo: " +
